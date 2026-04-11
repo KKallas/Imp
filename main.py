@@ -364,8 +364,19 @@ async def on_message(msg: cl.Message) -> None:
     # server/intercept.py pipeline. See tests/test_intercept.py for the
     # underlying contract. This is how you'd exercise the interception
     # spine end-to-end before the real Foreman worker lands (KKallas/Imp#11).
-    if msg.content.lower().startswith("run:") or msg.content.lower().startswith("run "):
+    content_lower = msg.content.lower()
+    if content_lower.startswith("run:") or content_lower.startswith("run "):
         await run_demo_command(msg.content)
+        return
+
+    # `log <action_id>` or `logs` (list recent)
+    if (
+        content_lower.startswith("log ")
+        or content_lower.startswith("logs")
+        or content_lower == "log"
+        or content_lower.startswith("show log")
+    ):
+        await show_log_command(msg.content)
         return
 
     if any(k in text for k in ("gantt", "chart", "timeline")):
@@ -419,7 +430,9 @@ async def on_message(msg: cl.Message) -> None:
                 "- *scope to 42, 43*\n"
                 "- *reset setup* (re-runs the Setup Agent on next refresh)\n"
                 "- *run: echo hello* (exercises server/intercept.py "
-                "end-to-end, real pipeline)"
+                "end-to-end, real pipeline)\n"
+                "- *logs* (list recent log files)\n"
+                "- *log act_xxxx* (view the contents of a specific log file)"
             ),
         ).send()
 
@@ -473,6 +486,23 @@ async def run_demo_command(user_content: str) -> None:
             step=step,
         )
 
+    # Attach the log file contents as a side-panel element so the admin
+    # can view them after the live cl.Step is collapsed or scrolled past.
+    log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
+    elements = []
+    if log_path.exists():
+        try:
+            log_content = log_path.read_text()
+        except OSError as e:
+            log_content = f"(failed to read log file: {e})"
+        elements.append(
+            cl.Text(
+                name=f"{action.action_id}.log",
+                content=log_content or "(empty)",
+                display="side",
+            )
+        )
+
     await cl.Message(
         author="Foreman",
         content=(
@@ -485,11 +515,99 @@ async def run_demo_command(user_content: str) -> None:
             f"| verdict_reason | {action.verdict_reason} |\n"
             f"| return code | `{rc}` |\n"
             f"| log file | `.imp/output/{action.action_id}.log` |\n\n"
+            f"Click the **{action.action_id}.log** chip below to open the log "
+            f"in a side panel. You can also view it any time with `log "
+            f"{action.action_id}` in chat.\n\n"
             f"This was a real subprocess, streamed live into the step above "
             f"via `server/intercept.py:execute_command`. The stub guard "
             f"auto-approved (see `_stub_guard`, replaced by the real Guard "
             f"Agent in KKallas/Imp#7)."
         ),
+        elements=elements,
+    ).send()
+
+
+async def show_log_command(user_content: str) -> None:
+    """Chat command: `log <action_id>` posts the log file's contents.
+
+    Reads `.imp/output/<action_id>.log` directly from disk (not from
+    intercept.action_log, which is in-memory and may have rotated). Works
+    for any action whose log file still exists, even from a previous
+    session. Also supports `logs` (no arg) to list recent log files.
+    """
+    from server import intercept
+
+    arg = user_content.strip()
+    # Drop the leading "log" / "logs" / "show log" / "show logs"
+    for prefix in ("show logs", "show log", "logs", "log"):
+        if arg.lower().startswith(prefix):
+            arg = arg[len(prefix) :].strip()
+            break
+
+    if not arg:
+        # List recent log files
+        if not intercept.OUTPUT_DIR.exists():
+            await cl.Message(
+                author="Foreman",
+                content="No logs yet. Run something with `run: <cmd>` first.",
+            ).send()
+            return
+        files = sorted(
+            intercept.OUTPUT_DIR.glob("act_*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:20]
+        if not files:
+            await cl.Message(
+                author="Foreman",
+                content="No logs yet. Run something with `run: <cmd>` first.",
+            ).send()
+            return
+        lines = ["**Recent log files:**\n"]
+        for f in files:
+            stat = f.stat()
+            size_kb = stat.st_size / 1024
+            lines.append(
+                f"- `{f.stem}` — {size_kb:.1f} KB "
+                f"(`log {f.stem}` to view)"
+            )
+        await cl.Message(author="Foreman", content="\n".join(lines)).send()
+        return
+
+    # View a specific log
+    action_id = arg.split()[0]  # take first token in case of trailing text
+    if not action_id.startswith("act_"):
+        action_id = "act_" + action_id  # allow bare hex IDs too
+    log_path = intercept.OUTPUT_DIR / f"{action_id}.log"
+    if not log_path.exists():
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"No log file at `{log_path}`. Check the action_id, or type "
+                f"`logs` to list recent ones."
+            ),
+        ).send()
+        return
+
+    try:
+        content = log_path.read_text()
+    except OSError as e:
+        await cl.Message(
+            author="Foreman",
+            content=f"Couldn't read `{log_path}`: {e}",
+        ).send()
+        return
+
+    await cl.Message(
+        author="Foreman",
+        content=f"Log for `{action_id}` (`{log_path.stat().st_size} bytes`):",
+        elements=[
+            cl.Text(
+                name=f"{action_id}.log",
+                content=content or "(empty)",
+                display="inline",
+            )
+        ],
     ).send()
 
 
