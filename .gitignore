@@ -15,3 +15,7 @@ venv/
 # Editors
 .vscode/
 .idea/
+
+# Chainlit auto-generated files (spike branch)
+.chainlit/
+chainlit.md
