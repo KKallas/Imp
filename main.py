@@ -523,13 +523,66 @@ async def run_demo_command(user_content: str) -> None:
     ).send()
 
 
+async def _view_log_by_id(action_id: str) -> None:
+    """Post the contents of `.imp/output/<action_id>.log` as inline text.
+
+    Shared by the `log <id>` chat command and the `view_log` action
+    callback. Accepts either `act_xxxxxxxx` or bare `xxxxxxxx`.
+    """
+    from server import intercept
+
+    if not action_id.startswith("act_"):
+        action_id = "act_" + action_id
+    log_path = intercept.OUTPUT_DIR / f"{action_id}.log"
+    if not log_path.exists():
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"No log file at `{log_path}`. Check the action_id, or type "
+                f"`logs` to list recent ones."
+            ),
+        ).send()
+        return
+    try:
+        content = log_path.read_text()
+    except OSError as e:
+        await cl.Message(
+            author="Foreman",
+            content=f"Couldn't read `{log_path}`: {e}",
+        ).send()
+        return
+    await cl.Message(
+        author="Foreman",
+        content=f"Log for `{action_id}` ({log_path.stat().st_size} bytes):",
+        elements=[
+            cl.Text(
+                name=f"{action_id}.log",
+                content=content or "(empty)",
+                display="inline",
+            )
+        ],
+    ).send()
+
+
+@cl.action_callback("view_log")
+async def on_view_log_action(action: cl.Action) -> None:
+    """Handler for the clickable log buttons attached to the `logs` listing."""
+    action_id = (action.payload or {}).get("action_id")
+    if not action_id:
+        return
+    await _view_log_by_id(action_id)
+
+
 async def show_log_command(user_content: str) -> None:
-    """Chat command: `log <action_id>` posts the log file's contents.
+    """Chat command: `log <action_id>` or `logs` (list with clickable chips).
 
     Reads `.imp/output/<action_id>.log` directly from disk (not from
     intercept.action_log, which is in-memory and may have rotated). Works
     for any action whose log file still exists, even from a previous
-    session. Also supports `logs` (no arg) to list recent log files.
+    session.
+
+    With no argument, lists the 10 most recent log files as clickable
+    `cl.Action` buttons — click any button to view that log inline.
     """
     from server import intercept
 
@@ -541,7 +594,7 @@ async def show_log_command(user_content: str) -> None:
             break
 
     if not arg:
-        # List recent log files
+        # List recent log files with clickable action buttons
         if not intercept.OUTPUT_DIR.exists():
             await cl.Message(
                 author="Foreman",
@@ -552,59 +605,35 @@ async def show_log_command(user_content: str) -> None:
             intercept.OUTPUT_DIR.glob("act_*.log"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
-        )[:20]
+        )[:10]
         if not files:
             await cl.Message(
                 author="Foreman",
                 content="No logs yet. Run something with `run: <cmd>` first.",
             ).send()
             return
-        lines = ["**Recent log files:**\n"]
-        for f in files:
-            stat = f.stat()
-            size_kb = stat.st_size / 1024
-            lines.append(
-                f"- `{f.stem}` — {size_kb:.1f} KB "
-                f"(`log {f.stem}` to view)"
+        actions = [
+            cl.Action(
+                name="view_log",
+                payload={"action_id": f.stem},
+                label=f.stem,
+                tooltip=f"{f.stat().st_size} bytes",
             )
-        await cl.Message(author="Foreman", content="\n".join(lines)).send()
-        return
-
-    # View a specific log
-    action_id = arg.split()[0]  # take first token in case of trailing text
-    if not action_id.startswith("act_"):
-        action_id = "act_" + action_id  # allow bare hex IDs too
-    log_path = intercept.OUTPUT_DIR / f"{action_id}.log"
-    if not log_path.exists():
+            for f in files
+        ]
         await cl.Message(
             author="Foreman",
             content=(
-                f"No log file at `{log_path}`. Check the action_id, or type "
-                f"`logs` to list recent ones."
+                f"**Recent logs ({len(files)})** — click any button to view "
+                f"inline."
             ),
+            actions=actions,
         ).send()
         return
 
-    try:
-        content = log_path.read_text()
-    except OSError as e:
-        await cl.Message(
-            author="Foreman",
-            content=f"Couldn't read `{log_path}`: {e}",
-        ).send()
-        return
-
-    await cl.Message(
-        author="Foreman",
-        content=f"Log for `{action_id}` (`{log_path.stat().st_size} bytes`):",
-        elements=[
-            cl.Text(
-                name=f"{action_id}.log",
-                content=content or "(empty)",
-                display="inline",
-            )
-        ],
-    ).send()
+    # View a specific log by id
+    action_id = arg.split()[0]  # take first token in case of trailing text
+    await _view_log_by_id(action_id)
 
 
 # ---------- stub responses ----------
