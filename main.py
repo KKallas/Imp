@@ -429,30 +429,43 @@ async def fake_chart_response() -> None:
     async with cl.Step(
         name="python pipeline/render_chart.py --template gantt", type="tool"
     ) as step:
-        step.output = "Rendered .imp/output/gantt.html (mermaid)"
+        step.output = "Built plotly timeline figure"
 
-    mermaid = """```mermaid
-gantt
-    title Imp v0.1 Build Phases (stub)
-    dateFormat  YYYY-MM-DD
-    section Phase 1
-    Chat shell + auth     :p1, 2026-04-15, 7d
-    section Phase 2
-    Security spine        :p2, after p1, 5d
-    section Phase 3
-    Setup Agent           :p3, after p2, 4d
-    section Phase 4
-    Foreman + visibility  :p4, after p3, 12d
-    section Phase 5
-    Wire 99-tools         :p5, after p4, 5d
-    section Phase 6
-    Autonomous loop       :p6, after p5, 4d
-    section Phase 7
-    Polish                :p7, after p6, 3d
-```"""
+    import pandas as pd
+    import plotly.express as px
+
+    tasks = [
+        {"Task": "Phase 1 — chat shell + auth",        "Start": "2026-04-15", "End": "2026-04-22", "Phase": "P1"},
+        {"Task": "Phase 2 — security spine",           "Start": "2026-04-22", "End": "2026-04-27", "Phase": "P2"},
+        {"Task": "Phase 3 — Setup Agent",              "Start": "2026-04-27", "End": "2026-05-01", "Phase": "P3"},
+        {"Task": "Phase 4 — Foreman + visibility",     "Start": "2026-05-01", "End": "2026-05-13", "Phase": "P4"},
+        {"Task": "Phase 5 — wire 99-tools",            "Start": "2026-05-13", "End": "2026-05-18", "Phase": "P5"},
+        {"Task": "Phase 6 — autonomous loop",          "Start": "2026-05-18", "End": "2026-05-22", "Phase": "P6"},
+        {"Task": "Phase 7 — polish",                   "Start": "2026-05-22", "End": "2026-05-25", "Phase": "P7"},
+    ]
+    df = pd.DataFrame(tasks)
+    fig = px.timeline(
+        df,
+        x_start="Start",
+        x_end="End",
+        y="Task",
+        color="Phase",
+        title="Imp v0.1 Build Phases (stub)",
+    )
+    fig.update_yaxes(autorange="reversed")  # Phase 1 at top
+    fig.update_layout(
+        showlegend=False,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+
     await cl.Message(
         author="Foreman",
-        content=f"Here's the current build timeline:\n\n{mermaid}",
+        content=(
+            "Here's the current build timeline. Plotly's toolbar (top-right of "
+            "the chart) has pan, zoom, box-select, reset-view, and **Download "
+            "PNG**. Real data lands with KKallas/Imp#14."
+        ),
+        elements=[cl.Plotly(name="build_timeline", figure=fig, display="inline")],
     ).send()
 
 
