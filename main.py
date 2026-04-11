@@ -486,22 +486,20 @@ async def run_demo_command(user_content: str) -> None:
             step=step,
         )
 
-    # Attach the log file contents as an inline element so each run gets
-    # its own self-contained view. display="side" causes Chainlit to
-    # append to an already-open side panel when a new run's element is
-    # created while the panel is visible — inline avoids that entirely.
+    # Attach the log as a cl.File so it shows up as a small clickable chip
+    # in the verdict message. Click to download or preview — no content is
+    # shown by default, nothing gets appended to shared panels, and every
+    # run is isolated.
     log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
     elements = []
     if log_path.exists():
-        try:
-            log_content = log_path.read_text()
-        except OSError as e:
-            log_content = f"(failed to read log file: {e})"
         elements.append(
-            cl.Text(
+            cl.File(
                 name=f"{action.action_id}.log",
-                content=log_content or "(empty)",
+                path=str(log_path),
                 display="inline",
+                mime="text/plain",
+                size="small",
             )
         )
 
@@ -515,14 +513,11 @@ async def run_demo_command(user_content: str) -> None:
             f"| classified_as | `{action.classified_as}` |\n"
             f"| verdict | `{action.verdict}` |\n"
             f"| verdict_reason | {action.verdict_reason} |\n"
-            f"| return code | `{rc}` |\n"
-            f"| log file | `.imp/output/{action.action_id}.log` |\n\n"
-            f"The captured log is inline below. You can also view it any time "
-            f"with `log {action.action_id}` in chat.\n\n"
-            f"This was a real subprocess, streamed live into the step above "
-            f"via `server/intercept.py:execute_command`. The stub guard "
-            f"auto-approved (see `_stub_guard`, replaced by the real Guard "
-            f"Agent in KKallas/Imp#7)."
+            f"| return code | `{rc}` |\n\n"
+            f"Click the `{action.action_id}.log` chip below to open the log "
+            f"file, or type `log {action.action_id}` in chat to view it "
+            f"inline. The command is also streamed live into the step above "
+            f"via `server/intercept.py:execute_command`."
         ),
         elements=elements,
     ).send()
