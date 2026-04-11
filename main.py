@@ -3,16 +3,25 @@
 The entire frontend of Imp. Chainlit owns the wire; everything the user sees
 is produced by the handlers in this file calling Chainlit primitives.
 
-At this stage (P1.2) the Setup Agent and Foreman handlers are still largely
-stubbed — they demonstrate the UX and exercise the auth / dispatch / message
-plumbing, but the real agents replace them in later phases (see KKallas/Imp#9
-for setup_agent.py and KKallas/Imp#11 for foreman_agent.py).
+Auth is real as of P1.2: single-admin argon2id hash stored in
+.imp/config.json, seeded by imp.py via a getpass prompt on very first run.
+There is no bootstrap mode in the browser — by the time Chainlit starts,
+the hash is either there or the user was given a chance to set it in the
+terminal.
 
-Auth and the bootstrap flow are real as of P1.2:
-  - Single-admin argon2id password hash stored in .imp/config.json
-  - Bootstrap mode: when no hash is set yet, any password logs in, and the
-    Setup Agent immediately asks the admin to pick a real password that gets
-    hashed + persisted before the rest of setup runs.
+Setup Agent is partially real as of P1.2:
+  - Checks `gh auth status`; if not authenticated, tells the user to run
+    `gh auth login --web` in a terminal and waits for them to say "ready"
+  - Detects the target repo from `git remote get-url origin` — Imp is
+    expected to live inside the repo it manages, so the local git context
+    IS the config. If no origin is found, asks the user manually.
+  - Verifies the repo exists via `gh repo view`
+  - Stops there. Project-board bootstrap, loop config, etc. land in
+    KKallas/Imp#10, KKallas/Imp#23, etc.
+
+Foreman is still stubbed — the chat-command echo responses exercise the
+dispatch UX but produce no real work. Replaced by the real worker agent
+in KKallas/Imp#11.
 
 Try these messages after logging in (stub responses until later phases):
   - "show me the gantt chart"
@@ -23,12 +32,16 @@ Try these messages after logging in (stub responses until later phases):
   - "reset setup"
 
 To re-run the Setup Agent from scratch, delete .imp/config.json and refresh.
+To also wipe the admin password, delete the file outright — `reset setup`
+preserves the hash.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import chainlit as cl
@@ -39,6 +52,67 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
 
 _hasher = PasswordHasher()
+
+
+# ---------- git / gh helpers ----------
+
+
+def detect_repo_from_git() -> str | None:
+    """Return `owner/name` from the local git origin, or None.
+
+    Imp is expected to live inside the repo it manages: you `git clone`
+    Imp into your project (or vendor it with git subtree), `cd` into the
+    project root, and run `python imp/imp.py`. From there, the local git
+    origin IS the target repo — no need to ask the admin which one.
+
+    Looks at the current working directory's `git remote get-url origin`.
+    Parses both SSH (`git@github.com:foo/bar.git`) and HTTPS
+    (`https://github.com/foo/bar.git`) forms.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    url = result.stdout.strip()
+    m = re.match(
+        r"(?:git@github\.com:|https://github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$",
+        url,
+    )
+    return m.group(1) if m else None
+
+
+async def gh_auth_status() -> tuple[bool, str]:
+    """Return `(authenticated, combined_output)` from `gh auth status`."""
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "auth",
+        "status",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    return proc.returncode == 0, out.decode().strip()
+
+
+async def gh_repo_view(owner_repo: str) -> tuple[bool, str]:
+    """Return `(exists, combined_output)` from `gh repo view`."""
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "repo",
+        "view",
+        owner_repo,
+        "--json",
+        "nameWithOwner,defaultBranchRef,visibility",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    return proc.returncode == 0, out.decode().strip()
 
 
 # ---------- config helpers ----------
@@ -62,16 +136,7 @@ def is_setup_complete() -> bool:
     return load_config().get("setup_complete", False)
 
 
-def has_admin_password() -> bool:
-    return bool(load_config().get("admin_password_hash"))
-
-
-# ---------- password helpers ----------
-
-
-def hash_password(plain: str) -> str:
-    """Hash a plaintext password with argon2id."""
-    return _hasher.hash(plain)
+# ---------- password verify ----------
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -83,13 +148,6 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def set_admin_password(plain: str) -> None:
-    """Hash the password and persist it to .imp/config.json."""
-    cfg = load_config()
-    cfg["admin_password_hash"] = hash_password(plain)
-    save_config(cfg)
-
-
 # ---------- auth ----------
 
 
@@ -97,23 +155,18 @@ def set_admin_password(plain: str) -> None:
 def auth(username: str, password: str) -> cl.User | None:
     """Single-admin auth.
 
-    If no admin_password_hash is set in config (fresh install / bootstrap
-    mode), accept any password — the first chat session will immediately be
-    routed to the Setup Agent which sets a real password before doing
-    anything else.
-
-    Once a hash is set, the password must verify against it.
+    `imp.py` seeds `admin_password_hash` into `.imp/config.json` on very
+    first run via a terminal `getpass` prompt, so by the time Chainlit
+    starts the hash is always present. If for some reason it isn't
+    (config got deleted or corrupted), fail closed — we never let the
+    user in without a verified password.
 
     Username is ignored; this is a single-admin deployment.
     """
     cfg = load_config()
     hashed = cfg.get("admin_password_hash")
     if not hashed:
-        # Bootstrap mode — no password set yet.
-        return cl.User(
-            identifier="admin",
-            metadata={"role": "admin", "bootstrap": True},
-        )
+        return None
     if verify_password(password, hashed):
         return cl.User(identifier="admin", metadata={"role": "admin"})
     return None
@@ -130,150 +183,147 @@ async def on_start() -> None:
         await greet_foreman()
 
 
-# ---------- setup agent (stub) ----------
+# ---------- setup agent ----------
 
 
 async def run_setup_agent() -> None:
+    """Real setup flow, kept strictly to what's actually implementable at P1.2.
+
+    Steps:
+      1. Check `gh auth status`. If not authenticated, tell the admin to run
+         `gh auth login --web` in a terminal and wait for them to say "ready".
+      2. Auto-detect the target repo from `git remote get-url origin`.
+         Imp is expected to live inside the repo it manages, so the local
+         git context IS the config.
+      3. Verify the repo is accessible via `gh repo view`.
+      4. Save `{repo, setup_complete=true}` to config and hand off to Foreman.
+
+    No fake project-board bootstrap step — that's KKallas/Imp#10. No fake
+    loop configuration — that's KKallas/Imp#23. The wizard stops the
+    moment the next step would be bogus.
+    """
     await cl.Message(
         author="Setup Agent",
         content=(
-            "Hi — I'm the **Setup Agent**. I'll walk you through configuring "
-            "Imp for your GitHub project.\n\n"
-            "_(At this stage most steps are still stubs. Real `gh` auth, real "
-            "Claude auth, real repo listing, and real project board bootstrap "
-            "land in later phases — see KKallas/Imp#9 and KKallas/Imp#10. The "
-            "password-setting step below is real now.)_"
+            "Hi — I'm the **Setup Agent**. I'll do the real checks I can do "
+            "right now and stop before anything that isn't implemented yet."
         ),
     ).send()
 
-    # Step 0: set a real password if we're in bootstrap mode.
-    if not has_admin_password():
+    # --- Step 1: gh auth status ---
+    async with cl.Step(name="gh auth status", type="tool") as step:
+        authed, status = await gh_auth_status()
+        step.input = "gh auth status"
+        step.output = status or "(no output)"
+
+    if not authed:
         await cl.Message(
             author="Setup Agent",
             content=(
-                "First, let's set an admin password. Right now anyone who can "
-                "reach this URL can log in with any password — let's fix that.\n\n"
-                "Pick a password you'll remember. I'll hash it with argon2id "
-                "and store the hash (not the plaintext) in `.imp/config.json`. "
-                "From the next login onwards, only this password works."
+                "Your local `gh` CLI isn't authenticated. Open a terminal and run:\n\n"
+                "```\ngh auth login --web\n```\n\n"
+                "Follow the device-code flow in your browser. When `gh auth "
+                "status` reports you're logged in, come back here and type "
+                "*ready*."
             ),
         ).send()
 
-        pw_msg = await cl.AskUserMessage(
-            content="Type your admin password:",
-            timeout=300,
+        ready = await cl.AskUserMessage(
+            content="Type *ready* once you've completed `gh auth login`:",
+            timeout=600,
         ).send()
-        if not pw_msg:
-            return
-        plain = pw_msg.get("output", "").strip()
-        if len(plain) < 4:
+        if not ready or "ready" not in (ready.get("output") or "").lower():
             await cl.Message(
                 author="Setup Agent",
                 content=(
-                    "That's too short. Pick something at least 4 characters. "
-                    "Say *reset setup* and try again."
+                    "No confirmation received. Say *retry setup* when you're "
+                    "ready to continue, or complete `gh auth login` and refresh."
                 ),
             ).send()
             return
 
-        async with cl.Step(name="argon2id.hash(password)", type="tool") as step:
-            step.input = "<redacted>"
-            set_admin_password(plain)
-            step.output = (
-                f"Hash stored in .imp/config.json → "
-                f"admin_password_hash (argon2id, "
-                f"{len(load_config()['admin_password_hash'])} chars)"
-            )
+        async with cl.Step(name="gh auth status (retry)", type="tool") as step:
+            authed, status = await gh_auth_status()
+            step.input = "gh auth status"
+            step.output = status or "(no output)"
 
+        if not authed:
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    "Still not authenticated. Stopping here — fix the `gh` "
+                    "setup and re-run `python imp.py` or say *retry setup*."
+                ),
+            ).send()
+            return
+
+    # --- Step 2: detect the target repo ---
+    detected = detect_repo_from_git()
+    if detected:
         await cl.Message(
             author="Setup Agent",
             content=(
-                "✅ Password set. Bootstrap mode is off — from the next login, "
-                "that password is required."
+                f"This directory's git origin points at **`{detected}`**. "
+                f"Imp lives inside the repo it manages, so that's the target."
             ),
         ).send()
+        repo = detected
+    else:
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                "This directory doesn't look like a git repo with a GitHub "
+                "remote. I'll need you to tell me manually which repo to manage."
+            ),
+        ).send()
+        repo_msg = await cl.AskUserMessage(
+            content="Type the repo as `owner/name`:",
+            timeout=300,
+        ).send()
+        if not repo_msg:
+            return
+        repo = (repo_msg.get("output") or "").strip()
+        if not re.match(r"^[^/\s]+/[^/\s]+$", repo):
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    f"`{repo}` doesn't look like `owner/name`. Stopping — say "
+                    f"*retry setup* when you're ready to try again."
+                ),
+            ).send()
+            return
 
-    # Step 1: pick a repo (still stubbed until KKallas/Imp#9).
-    await cl.Message(
-        author="Setup Agent",
-        content="Now let's pick the GitHub repo Imp will manage.",
-    ).send()
+    # --- Step 3: verify the repo via gh ---
+    async with cl.Step(name=f"gh repo view {repo}", type="tool") as step:
+        exists, info = await gh_repo_view(repo)
+        step.input = f"gh repo view {repo} --json nameWithOwner,defaultBranchRef,visibility"
+        step.output = info or "(no output)"
 
-    repo_msg = await cl.AskUserMessage(
-        content="Type a repo as `owner/name` (anything works at this stage):",
-        timeout=300,
-    ).send()
-    if not repo_msg:
+    if not exists:
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                f"I couldn't access `{repo}` via `gh`. Check the repo exists "
+                f"and your `gh` token has read access. Stopping here."
+            ),
+        ).send()
         return
-    repo = repo_msg.get("output", "you/your-repo")
 
-    async with cl.Step(name="gh repo view", type="tool") as step:
-        step.input = f"gh repo view {repo} --json defaultBranchRef,visibility"
-        step.output = '{"defaultBranchRef":{"name":"main"},"visibility":"PUBLIC"}'
-
-    await cl.Message(
-        author="Setup Agent",
-        content=f"✅ Got it: `{repo}`. Default branch is `main`, repo is public.",
-    ).send()
-
-    res = await cl.AskActionMessage(
-        author="Setup Agent",
-        content=(
-            "Next: do you want me to bootstrap a Projects v2 board called `Imp` "
-            "with the 7 custom fields (`duration_days`, `start_date`, `end_date`, "
-            "`confidence`, `source`, `assignee_verified`, `depends_on`)?\n\n"
-            "Without it, Imp runs in **read-only mode** — charts work, but I "
-            "can't annotate issues."
-        ),
-        actions=[
-            cl.Action(
-                name="bootstrap",
-                payload={"action": "bootstrap"},
-                label="✅ Yes, create the project board",
-            ),
-            cl.Action(
-                name="skip",
-                payload={"action": "skip"},
-                label="⏭ Skip (read-only mode)",
-            ),
-        ],
-        timeout=300,
-    ).send()
-
-    bootstrap = bool(res and res.get("payload", {}).get("action") == "bootstrap")
-
-    if bootstrap:
-        async with cl.Step(name="gh project create --title Imp", type="tool") as step:
-            step.input = "Creating Projects v2 board"
-            step.output = "Created project #2 https://github.com/users/you/projects/2"
-
-        async with cl.Step(name="gh project field-create (×7)", type="tool") as step:
-            step.input = (
-                "duration_days (NUMBER), start_date (DATE), end_date (DATE), "
-                "confidence (SINGLE_SELECT), source (SINGLE_SELECT), "
-                "assignee_verified (SINGLE_SELECT), depends_on (TEXT)"
-            )
-            step.output = "All 7 custom fields created on project #2"
-
-    # Merge into existing config so we don't blow away the password hash
-    # set earlier in this conversation.
+    # --- Step 4: save and hand off ---
     cfg = load_config()
-    cfg.update(
-        {
-            "setup_complete": True,
-            "repo": repo,
-            "project_number": 2 if bootstrap else None,
-            "read_only_mode": not bootstrap,
-        }
-    )
+    cfg.update({"repo": repo, "setup_complete": True})
     save_config(cfg)
 
-    mode = "read-only mode" if not bootstrap else "full mode"
     await cl.Message(
         author="Setup Agent",
         content=(
-            f"🎉 Setup complete ({mode}). Handing off to **Foreman** now — "
-            "your next message goes to the worker agent."
+            f"✅ Verified access to `{repo}` and saved to `.imp/config.json`.\n\n"
+            f"That's everything I can do for real right now. The project-"
+            f"board bootstrap (KKallas/Imp#10), loop configuration "
+            f"(KKallas/Imp#23), and real Foreman worker (KKallas/Imp#11) land "
+            f"in later phases.\n\n"
+            f"Handing off to **Foreman** — the chat commands below are still "
+            f"stub demos for now, but they show the shape of the real UX."
         ),
     ).send()
     await greet_foreman()
