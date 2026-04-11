@@ -360,6 +360,25 @@ async def on_message(msg: cl.Message) -> None:
 
     text = msg.content.lower().strip()
 
+    # Demo hook for P2.6: `run: <cmd>` runs the command through the real
+    # server/intercept.py pipeline. See tests/test_intercept.py for the
+    # underlying contract. This is how you'd exercise the interception
+    # spine end-to-end before the real Foreman worker lands (KKallas/Imp#11).
+    content_lower = msg.content.lower()
+    if content_lower.startswith("run:") or content_lower.startswith("run "):
+        await run_demo_command(msg.content)
+        return
+
+    # `log <action_id>` or `logs` (list recent)
+    if (
+        content_lower.startswith("log ")
+        or content_lower.startswith("logs")
+        or content_lower == "log"
+        or content_lower.startswith("show log")
+    ):
+        await show_log_command(msg.content)
+        return
+
     if any(k in text for k in ("gantt", "chart", "timeline")):
         await fake_chart_response()
     elif any(k in text for k in ("moderate", "solve", "fix")):
@@ -409,9 +428,279 @@ async def on_message(msg: cl.Message) -> None:
                 "- *budget*\n"
                 "- *pause* / *resume*\n"
                 "- *scope to 42, 43*\n"
-                "- *reset setup* (re-runs the Setup Agent on next refresh)"
+                "- *reset setup* (re-runs the Setup Agent on next refresh)\n"
+                "- *run: echo hello* (exercises server/intercept.py "
+                "end-to-end, real pipeline)\n"
+                "- *logs* (list recent log files)\n"
+                "- *log act_xxxx* (view the contents of a specific log file)"
             ),
         ).send()
+
+
+# ---------- real intercept demo (P2.6) ----------
+
+
+async def run_demo_command(user_content: str) -> None:
+    """Run `run: <cmd>` or `run <cmd>` through server/intercept.py.
+
+    This is the P2.6 demo: the interception pipeline is real — the
+    subprocess is spawned for real, stdout/stderr stream live into the
+    `cl.Step`, and the final verdict / budget update is applied. The
+    stub guard in `intercept._stub_guard` auto-approves every write,
+    so you can safely test the full flow without real GitHub writes by
+    sticking to safe read-only commands like `echo`, `date`, `ls`, `sleep`.
+    """
+    import shlex
+
+    from server import intercept
+
+    # Strip the "run:" or "run " prefix, preserving the rest verbatim
+    stripped = user_content.strip()
+    if stripped.lower().startswith("run:"):
+        cmd_str = stripped[4:].strip()
+    else:
+        cmd_str = stripped[4:].strip()
+    if not cmd_str:
+        await cl.Message(
+            author="Foreman",
+            content="Usage: `run: <command>` — e.g. `run: echo hello` or `run: date`.",
+        ).send()
+        return
+
+    try:
+        argv = shlex.split(cmd_str)
+    except ValueError as e:
+        await cl.Message(
+            author="Foreman",
+            content=f"Couldn't parse the command (`{e}`). Try again with simpler quoting.",
+        ).send()
+        return
+
+    async with cl.Step(name=f"intercept: {' '.join(argv)}", type="tool") as step:
+        step.input = cmd_str
+        rc, output, action = await intercept.execute_command(
+            argv,
+            user_intent=user_content,
+            rationale="Admin demo of server/intercept.py via chat",
+            kind="demo",
+            step=step,
+        )
+
+    # Collapsed-by-default step with just the verdict table. No elements
+    # attached — we use a separate action button below the step so the
+    # user can explicitly open the log sidebar, instead of Chainlit
+    # auto-pushing side elements on step completion.
+    summary = (
+        f"intercept.py result · {action.action_id} · "
+        f"{action.verdict} · rc={rc}"
+    )
+    async with cl.Step(
+        name=summary,
+        type="tool",
+        default_open=False,
+    ) as verdict_step:
+        verdict_step.input = cmd_str
+        verdict_step.output = (
+            f"| Field | Value |\n"
+            f"|---|---|\n"
+            f"| action_id | `{action.action_id}` |\n"
+            f"| classified_as | `{action.classified_as}` |\n"
+            f"| verdict | `{action.verdict}` |\n"
+            f"| verdict_reason | {action.verdict_reason or '—'} |\n"
+            f"| return code | `{rc}` |"
+        )
+
+    # Below the step: a small message with an action button (opens the
+    # log sidebar on click — closing and re-clicking works because the
+    # callback explicitly calls ElementSidebar.set_elements every time)
+    # plus an inline download chip. Sidebar stays closed until the user
+    # explicitly clicks the "Open log" button.
+    log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
+    if log_path.exists():
+        await cl.Message(
+            author="Foreman",
+            content=f"📄 `{action.action_id}.log`:",
+            actions=[
+                cl.Action(
+                    name="open_log_sidebar",
+                    payload={"action_id": action.action_id},
+                    label="📂 Open log",
+                    tooltip="View the log contents in the side panel",
+                ),
+            ],
+            elements=[
+                cl.File(
+                    name=f"{action.action_id}.log",
+                    path=str(log_path),
+                    display="inline",
+                    mime="text/plain",
+                ),
+            ],
+        ).send()
+
+
+async def _view_log_by_id(action_id: str) -> None:
+    """Post a clickable link to `.imp/output/<action_id>.log`.
+
+    Shared by the `log <id>` chat command and the `view_log` action
+    callback. Accepts either `act_xxxxxxxx` or bare `xxxxxxxx`.
+
+    Posts a message with two elements: a `cl.Text(display="side")`
+    that shows the contents when clicked, and a `cl.File(display="inline")`
+    as a download chip.
+    """
+    from server import intercept
+
+    if not action_id.startswith("act_"):
+        action_id = "act_" + action_id
+    log_path = intercept.OUTPUT_DIR / f"{action_id}.log"
+    if not log_path.exists():
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"No log file at `{log_path}`. Check the action_id, or type "
+                f"`logs` to list recent ones."
+            ),
+        ).send()
+        return
+
+    try:
+        content = log_path.read_text()
+    except OSError as e:
+        await cl.Message(
+            author="Foreman",
+            content=f"Couldn't read `{log_path}`: {e}",
+        ).send()
+        return
+
+    size = log_path.stat().st_size
+    await cl.Message(
+        author="Foreman",
+        content=f"Log `{action_id}.log` ({size} bytes):",
+        elements=[
+            cl.Text(
+                name=f"{action_id}.log",
+                content=content or "(empty)",
+                display="side",
+            ),
+            cl.File(
+                name=f"{action_id}.log",
+                path=str(log_path),
+                display="inline",
+                mime="text/plain",
+            ),
+        ],
+    ).send()
+
+
+@cl.action_callback("view_log")
+async def on_view_log_action(action: cl.Action) -> None:
+    """Handler for the clickable log buttons attached to the `logs` listing."""
+    action_id = (action.payload or {}).get("action_id")
+    if not action_id:
+        return
+    await _view_log_by_id(action_id)
+
+
+@cl.action_callback("open_log_sidebar")
+async def on_open_log_sidebar(action: cl.Action) -> None:
+    """Open the side panel with the log contents.
+
+    Explicitly calls cl.ElementSidebar.set_elements every time — so if
+    the user closes the panel and clicks the button again, a fresh
+    sidebar opens with the same content. This is the only reliable way
+    I've found to get a "reopen the log" button in Chainlit 2.11.
+
+    Payload: {"action_id": "act_xxxxxxxx"}
+    """
+    from server import intercept
+
+    action_id = (action.payload or {}).get("action_id")
+    if not action_id:
+        return
+    log_path = intercept.OUTPUT_DIR / f"{action_id}.log"
+    if not log_path.exists():
+        return
+    try:
+        content = log_path.read_text()
+    except OSError:
+        return
+    try:
+        await cl.ElementSidebar.set_title(f"{action_id}.log")
+    except Exception:
+        pass
+    await cl.ElementSidebar.set_elements(
+        [
+            cl.Text(
+                name=f"{action_id}.log",
+                content=content or "(empty)",
+                display="side",
+            ),
+        ]
+    )
+
+
+async def show_log_command(user_content: str) -> None:
+    """Chat command: `log <action_id>` or `logs` (list with clickable chips).
+
+    Reads `.imp/output/<action_id>.log` directly from disk (not from
+    intercept.action_log, which is in-memory and may have rotated). Works
+    for any action whose log file still exists, even from a previous
+    session.
+
+    With no argument, lists the 10 most recent log files as clickable
+    `cl.Action` buttons — click any button to view that log inline.
+    """
+    from server import intercept
+
+    arg = user_content.strip()
+    # Drop the leading "log" / "logs" / "show log" / "show logs"
+    for prefix in ("show logs", "show log", "logs", "log"):
+        if arg.lower().startswith(prefix):
+            arg = arg[len(prefix) :].strip()
+            break
+
+    if not arg:
+        # List recent log files with clickable action buttons
+        if not intercept.OUTPUT_DIR.exists():
+            await cl.Message(
+                author="Foreman",
+                content="No logs yet. Run something with `run: <cmd>` first.",
+            ).send()
+            return
+        files = sorted(
+            intercept.OUTPUT_DIR.glob("act_*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:10]
+        if not files:
+            await cl.Message(
+                author="Foreman",
+                content="No logs yet. Run something with `run: <cmd>` first.",
+            ).send()
+            return
+        actions = [
+            cl.Action(
+                name="view_log",
+                payload={"action_id": f.stem},
+                label=f.stem,
+                tooltip=f"{f.stat().st_size} bytes",
+            )
+            for f in files
+        ]
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"**Recent logs ({len(files)})** — click any button to view "
+                f"inline."
+            ),
+            actions=actions,
+        ).send()
+        return
+
+    # View a specific log by id
+    action_id = arg.split()[0]  # take first token in case of trailing text
+    await _view_log_by_id(action_id)
 
 
 # ---------- stub responses ----------
