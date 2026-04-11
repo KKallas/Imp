@@ -486,48 +486,60 @@ async def run_demo_command(user_content: str) -> None:
             step=step,
         )
 
-    # Attach the log as a cl.File so it shows up as a small clickable chip
-    # in the verdict message. Click to download or preview — no content is
-    # shown by default, nothing gets appended to shared panels, and every
-    # run is isolated.
-    log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
-    elements = []
-    if log_path.exists():
-        elements.append(
-            cl.File(
-                name=f"{action.action_id}.log",
-                path=str(log_path),
-                display="inline",
-                mime="text/plain",
-                size="small",
-            )
-        )
-
-    await cl.Message(
-        author="Foreman",
-        content=(
-            f"**intercept.py result**\n\n"
+    # Collapsed-by-default step with the full verdict table. The step name
+    # is a one-liner summary; click the name to expand and see the full
+    # table, classification, guard reason, etc.
+    summary = (
+        f"intercept.py result · {action.action_id} · "
+        f"{action.verdict} · rc={rc}"
+    )
+    async with cl.Step(
+        name=summary,
+        type="tool",
+        default_open=False,
+    ) as verdict_step:
+        verdict_step.input = cmd_str
+        verdict_step.output = (
             f"| Field | Value |\n"
             f"|---|---|\n"
             f"| action_id | `{action.action_id}` |\n"
             f"| classified_as | `{action.classified_as}` |\n"
             f"| verdict | `{action.verdict}` |\n"
-            f"| verdict_reason | {action.verdict_reason} |\n"
-            f"| return code | `{rc}` |\n\n"
-            f"Click the `{action.action_id}.log` chip below to open the log "
-            f"file, or type `log {action.action_id}` in chat to view it "
-            f"inline. The command is also streamed live into the step above "
-            f"via `server/intercept.py:execute_command`."
-        ),
-        elements=elements,
-    ).send()
+            f"| verdict_reason | {action.verdict_reason or '—'} |\n"
+            f"| return code | `{rc}` |\n"
+            f"| log file | `.imp/output/{action.action_id}.log` |"
+        )
+
+    # Always-visible clickable link to the log file, opens on the side.
+    # cl.File with mime=text/plain + language=plaintext tells Chainlit's
+    # side viewer to render as monospace plain text.
+    log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
+    if log_path.exists():
+        await cl.Message(
+            author="Foreman",
+            content=f"📄 Log file:",
+            elements=[
+                cl.File(
+                    name=f"{action.action_id}.log",
+                    path=str(log_path),
+                    display="side",
+                    mime="text/plain",
+                    language="plaintext",
+                )
+            ],
+        ).send()
 
 
 async def _view_log_by_id(action_id: str) -> None:
-    """Post the contents of `.imp/output/<action_id>.log` as inline text.
+    """Post a clickable link to `.imp/output/<action_id>.log`.
 
     Shared by the `log <id>` chat command and the `view_log` action
     callback. Accepts either `act_xxxxxxxx` or bare `xxxxxxxx`.
+
+    The log is attached as a `cl.File(display="side")` so clicking the
+    chip opens the file on the side in Chainlit's native file viewer.
+    `mime="text/plain"` + `language="plaintext"` tells the viewer to
+    render as monospace plaintext.
     """
     from server import intercept
 
@@ -543,22 +555,18 @@ async def _view_log_by_id(action_id: str) -> None:
             ),
         ).send()
         return
-    try:
-        content = log_path.read_text()
-    except OSError as e:
-        await cl.Message(
-            author="Foreman",
-            content=f"Couldn't read `{log_path}`: {e}",
-        ).send()
-        return
+
+    size = log_path.stat().st_size
     await cl.Message(
         author="Foreman",
-        content=f"Log for `{action_id}` ({log_path.stat().st_size} bytes):",
+        content=f"📄 `{action_id}.log` ({size} bytes) — click to view on the side:",
         elements=[
-            cl.Text(
+            cl.File(
                 name=f"{action_id}.log",
-                content=content or "(empty)",
-                display="inline",
+                path=str(log_path),
+                display="side",
+                mime="text/plain",
+                language="plaintext",
             )
         ],
     ).send()
