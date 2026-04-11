@@ -204,7 +204,14 @@ def start_server() -> None:
         flush=True,
     )
     print(f"\nWill be available at http://{HOST}:{PORT}", flush=True)
-    print("Default spike password: imp", flush=True)
+    cfg_file = STATE_DIR / "config.json"
+    if not cfg_file.exists() or "admin_password_hash" not in cfg_file.read_text():
+        print(
+            "First-run bootstrap: no admin password set yet. On first login "
+            "any password works — the Setup Agent will immediately ask you "
+            "to set a real one.",
+            flush=True,
+        )
     print("Ctrl+C to stop.\n", flush=True)
 
     main_py = ROOT / "main.py"

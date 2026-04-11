@@ -1,2 +1,3 @@
 chainlit>=2.11
 claude-agent-sdk
+argon2-cffi

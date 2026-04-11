@@ -1,33 +1,44 @@
-"""Imp — Chainlit spike (throwaway).
+"""Imp — Chainlit app.
 
-A stub demo of how Imp would feel if we use Chainlit instead of building the
-FastAPI + WebSocket + JS frontend ourselves. Every interaction is faked: no
-real Claude API calls, no real GitHub writes, no real venv work — the goal
-is to evaluate the UX and decide whether to commit to this stack.
+The entire frontend of Imp. Chainlit owns the wire; everything the user sees
+is produced by the handlers in this file calling Chainlit primitives.
 
-Try these messages after logging in:
+At this stage (P1.2) the Setup Agent and Foreman handlers are still largely
+stubbed — they demonstrate the UX and exercise the auth / dispatch / message
+plumbing, but the real agents replace them in later phases (see KKallas/Imp#9
+for setup_agent.py and KKallas/Imp#11 for foreman_agent.py).
 
+Auth and the bootstrap flow are real as of P1.2:
+  - Single-admin argon2id password hash stored in .imp/config.json
+  - Bootstrap mode: when no hash is set yet, any password logs in, and the
+    Setup Agent immediately asks the admin to pick a real password that gets
+    hashed + persisted before the rest of setup runs.
+
+Try these messages after logging in (stub responses until later phases):
   - "show me the gantt chart"
   - "moderate issue 42"  (or any number)
   - "what's the budget?"
   - "pause the loop"
   - "scope to 42, 43"
+  - "reset setup"
 
-To re-run the Setup Agent, delete .imp/config.json and refresh.
+To re-run the Setup Agent from scratch, delete .imp/config.json and refresh.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 
 import chainlit as cl
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
-SPIKE_PASSWORD = os.environ.get("IMP_SPIKE_PASSWORD", "imp")
+
+_hasher = PasswordHasher()
 
 
 # ---------- config helpers ----------
@@ -35,7 +46,10 @@ SPIKE_PASSWORD = os.environ.get("IMP_SPIKE_PASSWORD", "imp")
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text())
+        try:
+            return json.loads(CONFIG_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 
@@ -48,13 +62,59 @@ def is_setup_complete() -> bool:
     return load_config().get("setup_complete", False)
 
 
+def has_admin_password() -> bool:
+    return bool(load_config().get("admin_password_hash"))
+
+
+# ---------- password helpers ----------
+
+
+def hash_password(plain: str) -> str:
+    """Hash a plaintext password with argon2id."""
+    return _hasher.hash(plain)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """Return True if plain matches the stored argon2 hash."""
+    try:
+        _hasher.verify(hashed, plain)
+        return True
+    except VerifyMismatchError:
+        return False
+
+
+def set_admin_password(plain: str) -> None:
+    """Hash the password and persist it to .imp/config.json."""
+    cfg = load_config()
+    cfg["admin_password_hash"] = hash_password(plain)
+    save_config(cfg)
+
+
 # ---------- auth ----------
 
 
 @cl.password_auth_callback
 def auth(username: str, password: str) -> cl.User | None:
-    """Single-admin auth. Username is ignored; only the password matters."""
-    if password == SPIKE_PASSWORD:
+    """Single-admin auth.
+
+    If no admin_password_hash is set in config (fresh install / bootstrap
+    mode), accept any password — the first chat session will immediately be
+    routed to the Setup Agent which sets a real password before doing
+    anything else.
+
+    Once a hash is set, the password must verify against it.
+
+    Username is ignored; this is a single-admin deployment.
+    """
+    cfg = load_config()
+    hashed = cfg.get("admin_password_hash")
+    if not hashed:
+        # Bootstrap mode — no password set yet.
+        return cl.User(
+            identifier="admin",
+            metadata={"role": "admin", "bootstrap": True},
+        )
+    if verify_password(password, hashed):
         return cl.User(identifier="admin", metadata={"role": "admin"})
     return None
 
@@ -77,17 +137,70 @@ async def run_setup_agent() -> None:
     await cl.Message(
         author="Setup Agent",
         content=(
-            "Hi — I'm the **Setup Agent**. I'll walk you through configuring Imp "
-            "for your GitHub project.\n\n"
-            "_(This is a stub spike. In the real version I'd call gh and Claude "
-            "tools to actually do these things — here every step is faked so "
-            "you can see the conversational flow.)_\n\n"
-            "Let's start by picking a repo. Which one would you like Imp to manage?"
+            "Hi — I'm the **Setup Agent**. I'll walk you through configuring "
+            "Imp for your GitHub project.\n\n"
+            "_(At this stage most steps are still stubs. Real `gh` auth, real "
+            "Claude auth, real repo listing, and real project board bootstrap "
+            "land in later phases — see KKallas/Imp#9 and KKallas/Imp#10. The "
+            "password-setting step below is real now.)_"
         ),
     ).send()
 
+    # Step 0: set a real password if we're in bootstrap mode.
+    if not has_admin_password():
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                "First, let's set an admin password. Right now anyone who can "
+                "reach this URL can log in with any password — let's fix that.\n\n"
+                "Pick a password you'll remember. I'll hash it with argon2id "
+                "and store the hash (not the plaintext) in `.imp/config.json`. "
+                "From the next login onwards, only this password works."
+            ),
+        ).send()
+
+        pw_msg = await cl.AskUserMessage(
+            content="Type your admin password:",
+            timeout=300,
+        ).send()
+        if not pw_msg:
+            return
+        plain = pw_msg.get("output", "").strip()
+        if len(plain) < 4:
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    "That's too short. Pick something at least 4 characters. "
+                    "Say *reset setup* and try again."
+                ),
+            ).send()
+            return
+
+        async with cl.Step(name="argon2id.hash(password)", type="tool") as step:
+            step.input = "<redacted>"
+            set_admin_password(plain)
+            step.output = (
+                f"Hash stored in .imp/config.json → "
+                f"admin_password_hash (argon2id, "
+                f"{len(load_config()['admin_password_hash'])} chars)"
+            )
+
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                "✅ Password set. Bootstrap mode is off — from the next login, "
+                "that password is required."
+            ),
+        ).send()
+
+    # Step 1: pick a repo (still stubbed until KKallas/Imp#9).
+    await cl.Message(
+        author="Setup Agent",
+        content="Now let's pick the GitHub repo Imp will manage.",
+    ).send()
+
     repo_msg = await cl.AskUserMessage(
-        content="Type a repo as `owner/name` (anything works for the spike):",
+        content="Type a repo as `owner/name` (anything works at this stage):",
         timeout=300,
     ).send()
     if not repo_msg:
@@ -142,7 +255,10 @@ async def run_setup_agent() -> None:
             )
             step.output = "All 7 custom fields created on project #2"
 
-    save_config(
+    # Merge into existing config so we don't blow away the password hash
+    # set earlier in this conversation.
+    cfg = load_config()
+    cfg.update(
         {
             "setup_complete": True,
             "repo": repo,
@@ -150,6 +266,7 @@ async def run_setup_agent() -> None:
             "read_only_mode": not bootstrap,
         }
     )
+    save_config(cfg)
 
     mode = "read-only mode" if not bootstrap else "full mode"
     await cl.Message(
@@ -215,11 +332,22 @@ async def on_message(msg: cl.Message) -> None:
     elif "scope" in text:
         await fake_scope(text)
     elif "reset" in text and "setup" in text:
-        if CONFIG_FILE.exists():
-            CONFIG_FILE.unlink()
+        # Clear everything EXCEPT the admin password hash. "reset setup"
+        # re-runs the Setup Agent (repo, project board, loop config) but
+        # keeps the admin authenticated. To wipe the password too, the
+        # admin edits .imp/config.json on disk or deletes it outright.
+        cfg = load_config()
+        preserved = {}
+        if cfg.get("admin_password_hash"):
+            preserved["admin_password_hash"] = cfg["admin_password_hash"]
+        save_config(preserved)
         await cl.Message(
             author="Foreman",
-            content="Setup state cleared. Refresh the page to re-run the Setup Agent.",
+            content=(
+                "Setup state cleared (password kept). Refresh the page to "
+                "re-run the Setup Agent. To wipe the password too, delete "
+                "`.imp/config.json` from disk."
+            ),
         ).send()
     else:
         await cl.Message(
