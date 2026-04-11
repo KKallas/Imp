@@ -360,6 +360,14 @@ async def on_message(msg: cl.Message) -> None:
 
     text = msg.content.lower().strip()
 
+    # Demo hook for P2.6: `run: <cmd>` runs the command through the real
+    # server/intercept.py pipeline. See tests/test_intercept.py for the
+    # underlying contract. This is how you'd exercise the interception
+    # spine end-to-end before the real Foreman worker lands (KKallas/Imp#11).
+    if msg.content.lower().startswith("run:") or msg.content.lower().startswith("run "):
+        await run_demo_command(msg.content)
+        return
+
     if any(k in text for k in ("gantt", "chart", "timeline")):
         await fake_chart_response()
     elif any(k in text for k in ("moderate", "solve", "fix")):
@@ -409,9 +417,80 @@ async def on_message(msg: cl.Message) -> None:
                 "- *budget*\n"
                 "- *pause* / *resume*\n"
                 "- *scope to 42, 43*\n"
-                "- *reset setup* (re-runs the Setup Agent on next refresh)"
+                "- *reset setup* (re-runs the Setup Agent on next refresh)\n"
+                "- *run: echo hello* (exercises server/intercept.py "
+                "end-to-end, real pipeline)"
             ),
         ).send()
+
+
+# ---------- real intercept demo (P2.6) ----------
+
+
+async def run_demo_command(user_content: str) -> None:
+    """Run `run: <cmd>` or `run <cmd>` through server/intercept.py.
+
+    This is the P2.6 demo: the interception pipeline is real — the
+    subprocess is spawned for real, stdout/stderr stream live into the
+    `cl.Step`, and the final verdict / budget update is applied. The
+    stub guard in `intercept._stub_guard` auto-approves every write,
+    so you can safely test the full flow without real GitHub writes by
+    sticking to safe read-only commands like `echo`, `date`, `ls`, `sleep`.
+    """
+    import shlex
+
+    from server import intercept
+
+    # Strip the "run:" or "run " prefix, preserving the rest verbatim
+    stripped = user_content.strip()
+    if stripped.lower().startswith("run:"):
+        cmd_str = stripped[4:].strip()
+    else:
+        cmd_str = stripped[4:].strip()
+    if not cmd_str:
+        await cl.Message(
+            author="Foreman",
+            content="Usage: `run: <command>` — e.g. `run: echo hello` or `run: date`.",
+        ).send()
+        return
+
+    try:
+        argv = shlex.split(cmd_str)
+    except ValueError as e:
+        await cl.Message(
+            author="Foreman",
+            content=f"Couldn't parse the command (`{e}`). Try again with simpler quoting.",
+        ).send()
+        return
+
+    async with cl.Step(name=f"intercept: {' '.join(argv)}", type="tool") as step:
+        step.input = cmd_str
+        rc, output, action = await intercept.execute_command(
+            argv,
+            user_intent=user_content,
+            rationale="Admin demo of server/intercept.py via chat",
+            kind="demo",
+            step=step,
+        )
+
+    await cl.Message(
+        author="Foreman",
+        content=(
+            f"**intercept.py result**\n\n"
+            f"| Field | Value |\n"
+            f"|---|---|\n"
+            f"| action_id | `{action.action_id}` |\n"
+            f"| classified_as | `{action.classified_as}` |\n"
+            f"| verdict | `{action.verdict}` |\n"
+            f"| verdict_reason | {action.verdict_reason} |\n"
+            f"| return code | `{rc}` |\n"
+            f"| log file | `.imp/output/{action.action_id}.log` |\n\n"
+            f"This was a real subprocess, streamed live into the step above "
+            f"via `server/intercept.py:execute_command`. The stub guard "
+            f"auto-approved (see `_stub_guard`, replaced by the real Guard "
+            f"Agent in KKallas/Imp#7)."
+        ),
+    ).send()
 
 
 # ---------- stub responses ----------
