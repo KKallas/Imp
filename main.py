@@ -486,8 +486,10 @@ async def run_demo_command(user_content: str) -> None:
             step=step,
         )
 
-    # Attach the log file contents as a side-panel element so the admin
-    # can view them after the live cl.Step is collapsed or scrolled past.
+    # Attach the log file contents as an inline element so each run gets
+    # its own self-contained view. display="side" causes Chainlit to
+    # append to an already-open side panel when a new run's element is
+    # created while the panel is visible — inline avoids that entirely.
     log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
     elements = []
     if log_path.exists():
@@ -499,7 +501,7 @@ async def run_demo_command(user_content: str) -> None:
             cl.Text(
                 name=f"{action.action_id}.log",
                 content=log_content or "(empty)",
-                display="side",
+                display="inline",
             )
         )
 
@@ -515,9 +517,8 @@ async def run_demo_command(user_content: str) -> None:
             f"| verdict_reason | {action.verdict_reason} |\n"
             f"| return code | `{rc}` |\n"
             f"| log file | `.imp/output/{action.action_id}.log` |\n\n"
-            f"Click the **{action.action_id}.log** chip below to open the log "
-            f"in a side panel. You can also view it any time with `log "
-            f"{action.action_id}` in chat.\n\n"
+            f"The captured log is inline below. You can also view it any time "
+            f"with `log {action.action_id}` in chat.\n\n"
             f"This was a real subprocess, streamed live into the step above "
             f"via `server/intercept.py:execute_command`. The stub guard "
             f"auto-approved (see `_stub_guard`, replaced by the real Guard "
