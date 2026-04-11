@@ -147,12 +147,27 @@ def find_missing(packages: list[str]) -> list[str]:
 def install(packages: list[str]) -> None:
     print(f"Installing: {', '.join(packages)}", flush=True)
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", *packages],
+        [sys.executable, "-m", "pip", "install", "--quiet", "--compile", *packages],
         check=False,
     )
     if result.returncode != 0:
         print("\npip install failed. Fix the error above and re-run.", flush=True)
         sys.exit(1)
+    # Pre-compile bytecode for the freshly-installed packages so the very
+    # first chainlit run isn't a 30-60s "looks hung" wait while macOS
+    # Python compiles aiohttp / chainlit / literalai / traceloop on demand.
+    print("Compiling bytecode (one-time)...", flush=True)
+    site_packages = (
+        Path(sys.executable).parent.parent
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    if site_packages.exists():
+        subprocess.run(
+            [sys.executable, "-m", "compileall", "-q", "-j", "0", str(site_packages)],
+            check=False,
+        )
 
 
 def ensure_dependencies() -> None:
@@ -164,13 +179,48 @@ def ensure_dependencies() -> None:
 
 # ---------- server launch ----------
 
-def start_server() -> None:
-    # Imported lazily so dependency installation runs first.
-    import uvicorn
+def ensure_chainlit_secret() -> str:
+    """Generate and persist a CHAINLIT_AUTH_SECRET on first run."""
+    secret_file = STATE_DIR / "chainlit_secret"
+    if secret_file.exists():
+        return secret_file.read_text().strip()
+    import secrets
+    secret = secrets.token_urlsafe(32)
+    STATE_DIR.mkdir(exist_ok=True)
+    secret_file.write_text(secret)
+    secret_file.chmod(0o600)
+    return secret
 
-    print(f"\nImp listening on http://{HOST}:{PORT}", flush=True)
-    print("Open in your browser to talk to Foreman. Ctrl+C to stop.\n", flush=True)
-    uvicorn.run("server.app:app", host=HOST, port=PORT, log_level="info")
+
+def start_server() -> None:
+    secret = ensure_chainlit_secret()
+    os.environ["CHAINLIT_AUTH_SECRET"] = secret
+
+    print("\nLoading chainlit...", flush=True)
+    print(
+        "(First run can take 30-60s on macOS while Python compiles bytecode "
+        "for the chainlit dep tree. Subsequent runs are fast. Don't Ctrl+C "
+        "unless it's been over a minute with no output.)",
+        flush=True,
+    )
+    print(f"\nWill be available at http://{HOST}:{PORT}", flush=True)
+    print("Default spike password: imp", flush=True)
+    print("Ctrl+C to stop.\n", flush=True)
+
+    main_py = ROOT / "main.py"
+    os.execvp(
+        sys.executable,
+        [
+            sys.executable,
+            "-m",
+            "chainlit",
+            "run",
+            str(main_py),
+            "--host", HOST,
+            "--port", str(PORT),
+            "--headless",
+        ],
+    )
 
 
 def main() -> None:
