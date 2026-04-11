@@ -1,33 +1,118 @@
-"""Imp — Chainlit spike (throwaway).
+"""Imp — Chainlit app.
 
-A stub demo of how Imp would feel if we use Chainlit instead of building the
-FastAPI + WebSocket + JS frontend ourselves. Every interaction is faked: no
-real Claude API calls, no real GitHub writes, no real venv work — the goal
-is to evaluate the UX and decide whether to commit to this stack.
+The entire frontend of Imp. Chainlit owns the wire; everything the user sees
+is produced by the handlers in this file calling Chainlit primitives.
 
-Try these messages after logging in:
+Auth is real as of P1.2: single-admin argon2id hash stored in
+.imp/config.json, seeded by imp.py via a getpass prompt on very first run.
+There is no bootstrap mode in the browser — by the time Chainlit starts,
+the hash is either there or the user was given a chance to set it in the
+terminal.
 
+Setup Agent is partially real as of P1.2:
+  - Checks `gh auth status`; if not authenticated, tells the user to run
+    `gh auth login --web` in a terminal and waits for them to say "ready"
+  - Detects the target repo from `git remote get-url origin` — Imp is
+    expected to live inside the repo it manages, so the local git context
+    IS the config. If no origin is found, asks the user manually.
+  - Verifies the repo exists via `gh repo view`
+  - Stops there. Project-board bootstrap, loop config, etc. land in
+    KKallas/Imp#10, KKallas/Imp#23, etc.
+
+Foreman is still stubbed — the chat-command echo responses exercise the
+dispatch UX but produce no real work. Replaced by the real worker agent
+in KKallas/Imp#11.
+
+Try these messages after logging in (stub responses until later phases):
   - "show me the gantt chart"
   - "moderate issue 42"  (or any number)
   - "what's the budget?"
   - "pause the loop"
   - "scope to 42, 43"
+  - "reset setup"
 
-To re-run the Setup Agent, delete .imp/config.json and refresh.
+To re-run the Setup Agent from scratch, delete .imp/config.json and refresh.
+To also wipe the admin password, delete the file outright — `reset setup`
+preserves the hash.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-import os
 import re
+import subprocess
 from pathlib import Path
 
 import chainlit as cl
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
-SPIKE_PASSWORD = os.environ.get("IMP_SPIKE_PASSWORD", "imp")
+
+_hasher = PasswordHasher()
+
+
+# ---------- git / gh helpers ----------
+
+
+def detect_repo_from_git() -> str | None:
+    """Return `owner/name` from the local git origin, or None.
+
+    Imp is expected to live inside the repo it manages: you `git clone`
+    Imp into your project (or vendor it with git subtree), `cd` into the
+    project root, and run `python imp/imp.py`. From there, the local git
+    origin IS the target repo — no need to ask the admin which one.
+
+    Looks at the current working directory's `git remote get-url origin`.
+    Parses both SSH (`git@github.com:foo/bar.git`) and HTTPS
+    (`https://github.com/foo/bar.git`) forms.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    url = result.stdout.strip()
+    m = re.match(
+        r"(?:git@github\.com:|https://github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$",
+        url,
+    )
+    return m.group(1) if m else None
+
+
+async def gh_auth_status() -> tuple[bool, str]:
+    """Return `(authenticated, combined_output)` from `gh auth status`."""
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "auth",
+        "status",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    return proc.returncode == 0, out.decode().strip()
+
+
+async def gh_repo_view(owner_repo: str) -> tuple[bool, str]:
+    """Return `(exists, combined_output)` from `gh repo view`."""
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "repo",
+        "view",
+        owner_repo,
+        "--json",
+        "nameWithOwner,defaultBranchRef,visibility",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    return proc.returncode == 0, out.decode().strip()
 
 
 # ---------- config helpers ----------
@@ -35,7 +120,10 @@ SPIKE_PASSWORD = os.environ.get("IMP_SPIKE_PASSWORD", "imp")
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text())
+        try:
+            return json.loads(CONFIG_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 
@@ -48,13 +136,38 @@ def is_setup_complete() -> bool:
     return load_config().get("setup_complete", False)
 
 
+# ---------- password verify ----------
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """Return True if plain matches the stored argon2 hash."""
+    try:
+        _hasher.verify(hashed, plain)
+        return True
+    except VerifyMismatchError:
+        return False
+
+
 # ---------- auth ----------
 
 
 @cl.password_auth_callback
 def auth(username: str, password: str) -> cl.User | None:
-    """Single-admin auth. Username is ignored; only the password matters."""
-    if password == SPIKE_PASSWORD:
+    """Single-admin auth.
+
+    `imp.py` seeds `admin_password_hash` into `.imp/config.json` on very
+    first run via a terminal `getpass` prompt, so by the time Chainlit
+    starts the hash is always present. If for some reason it isn't
+    (config got deleted or corrupted), fail closed — we never let the
+    user in without a verified password.
+
+    Username is ignored; this is a single-admin deployment.
+    """
+    cfg = load_config()
+    hashed = cfg.get("admin_password_hash")
+    if not hashed:
+        return None
+    if verify_password(password, hashed):
         return cl.User(identifier="admin", metadata={"role": "admin"})
     return None
 
@@ -70,93 +183,147 @@ async def on_start() -> None:
         await greet_foreman()
 
 
-# ---------- setup agent (stub) ----------
+# ---------- setup agent ----------
 
 
 async def run_setup_agent() -> None:
+    """Real setup flow, kept strictly to what's actually implementable at P1.2.
+
+    Steps:
+      1. Check `gh auth status`. If not authenticated, tell the admin to run
+         `gh auth login --web` in a terminal and wait for them to say "ready".
+      2. Auto-detect the target repo from `git remote get-url origin`.
+         Imp is expected to live inside the repo it manages, so the local
+         git context IS the config.
+      3. Verify the repo is accessible via `gh repo view`.
+      4. Save `{repo, setup_complete=true}` to config and hand off to Foreman.
+
+    No fake project-board bootstrap step — that's KKallas/Imp#10. No fake
+    loop configuration — that's KKallas/Imp#23. The wizard stops the
+    moment the next step would be bogus.
+    """
     await cl.Message(
         author="Setup Agent",
         content=(
-            "Hi — I'm the **Setup Agent**. I'll walk you through configuring Imp "
-            "for your GitHub project.\n\n"
-            "_(This is a stub spike. In the real version I'd call gh and Claude "
-            "tools to actually do these things — here every step is faked so "
-            "you can see the conversational flow.)_\n\n"
-            "Let's start by picking a repo. Which one would you like Imp to manage?"
+            "Hi — I'm the **Setup Agent**. I'll do the real checks I can do "
+            "right now and stop before anything that isn't implemented yet."
         ),
     ).send()
 
-    repo_msg = await cl.AskUserMessage(
-        content="Type a repo as `owner/name` (anything works for the spike):",
-        timeout=300,
-    ).send()
-    if not repo_msg:
+    # --- Step 1: gh auth status ---
+    async with cl.Step(name="gh auth status", type="tool") as step:
+        authed, status = await gh_auth_status()
+        step.input = "gh auth status"
+        step.output = status or "(no output)"
+
+    if not authed:
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                "Your local `gh` CLI isn't authenticated. Open a terminal and run:\n\n"
+                "```\ngh auth login --web\n```\n\n"
+                "Follow the device-code flow in your browser. When `gh auth "
+                "status` reports you're logged in, come back here and type "
+                "*ready*."
+            ),
+        ).send()
+
+        ready = await cl.AskUserMessage(
+            content="Type *ready* once you've completed `gh auth login`:",
+            timeout=600,
+        ).send()
+        if not ready or "ready" not in (ready.get("output") or "").lower():
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    "No confirmation received. Say *retry setup* when you're "
+                    "ready to continue, or complete `gh auth login` and refresh."
+                ),
+            ).send()
+            return
+
+        async with cl.Step(name="gh auth status (retry)", type="tool") as step:
+            authed, status = await gh_auth_status()
+            step.input = "gh auth status"
+            step.output = status or "(no output)"
+
+        if not authed:
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    "Still not authenticated. Stopping here — fix the `gh` "
+                    "setup and re-run `python imp.py` or say *retry setup*."
+                ),
+            ).send()
+            return
+
+    # --- Step 2: detect the target repo ---
+    detected = detect_repo_from_git()
+    if detected:
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                f"This directory's git origin points at **`{detected}`**. "
+                f"Imp lives inside the repo it manages, so that's the target."
+            ),
+        ).send()
+        repo = detected
+    else:
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                "This directory doesn't look like a git repo with a GitHub "
+                "remote. I'll need you to tell me manually which repo to manage."
+            ),
+        ).send()
+        repo_msg = await cl.AskUserMessage(
+            content="Type the repo as `owner/name`:",
+            timeout=300,
+        ).send()
+        if not repo_msg:
+            return
+        repo = (repo_msg.get("output") or "").strip()
+        if not re.match(r"^[^/\s]+/[^/\s]+$", repo):
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    f"`{repo}` doesn't look like `owner/name`. Stopping — say "
+                    f"*retry setup* when you're ready to try again."
+                ),
+            ).send()
+            return
+
+    # --- Step 3: verify the repo via gh ---
+    async with cl.Step(name=f"gh repo view {repo}", type="tool") as step:
+        exists, info = await gh_repo_view(repo)
+        step.input = f"gh repo view {repo} --json nameWithOwner,defaultBranchRef,visibility"
+        step.output = info or "(no output)"
+
+    if not exists:
+        await cl.Message(
+            author="Setup Agent",
+            content=(
+                f"I couldn't access `{repo}` via `gh`. Check the repo exists "
+                f"and your `gh` token has read access. Stopping here."
+            ),
+        ).send()
         return
-    repo = repo_msg.get("output", "you/your-repo")
 
-    async with cl.Step(name="gh repo view", type="tool") as step:
-        step.input = f"gh repo view {repo} --json defaultBranchRef,visibility"
-        step.output = '{"defaultBranchRef":{"name":"main"},"visibility":"PUBLIC"}'
+    # --- Step 4: save and hand off ---
+    cfg = load_config()
+    cfg.update({"repo": repo, "setup_complete": True})
+    save_config(cfg)
 
     await cl.Message(
         author="Setup Agent",
-        content=f"✅ Got it: `{repo}`. Default branch is `main`, repo is public.",
-    ).send()
-
-    res = await cl.AskActionMessage(
-        author="Setup Agent",
         content=(
-            "Next: do you want me to bootstrap a Projects v2 board called `Imp` "
-            "with the 7 custom fields (`duration_days`, `start_date`, `end_date`, "
-            "`confidence`, `source`, `assignee_verified`, `depends_on`)?\n\n"
-            "Without it, Imp runs in **read-only mode** — charts work, but I "
-            "can't annotate issues."
-        ),
-        actions=[
-            cl.Action(
-                name="bootstrap",
-                payload={"action": "bootstrap"},
-                label="✅ Yes, create the project board",
-            ),
-            cl.Action(
-                name="skip",
-                payload={"action": "skip"},
-                label="⏭ Skip (read-only mode)",
-            ),
-        ],
-        timeout=300,
-    ).send()
-
-    bootstrap = bool(res and res.get("payload", {}).get("action") == "bootstrap")
-
-    if bootstrap:
-        async with cl.Step(name="gh project create --title Imp", type="tool") as step:
-            step.input = "Creating Projects v2 board"
-            step.output = "Created project #2 https://github.com/users/you/projects/2"
-
-        async with cl.Step(name="gh project field-create (×7)", type="tool") as step:
-            step.input = (
-                "duration_days (NUMBER), start_date (DATE), end_date (DATE), "
-                "confidence (SINGLE_SELECT), source (SINGLE_SELECT), "
-                "assignee_verified (SINGLE_SELECT), depends_on (TEXT)"
-            )
-            step.output = "All 7 custom fields created on project #2"
-
-    save_config(
-        {
-            "setup_complete": True,
-            "repo": repo,
-            "project_number": 2 if bootstrap else None,
-            "read_only_mode": not bootstrap,
-        }
-    )
-
-    mode = "read-only mode" if not bootstrap else "full mode"
-    await cl.Message(
-        author="Setup Agent",
-        content=(
-            f"🎉 Setup complete ({mode}). Handing off to **Foreman** now — "
-            "your next message goes to the worker agent."
+            f"✅ Verified access to `{repo}` and saved to `.imp/config.json`.\n\n"
+            f"That's everything I can do for real right now. The project-"
+            f"board bootstrap (KKallas/Imp#10), loop configuration "
+            f"(KKallas/Imp#23), and real Foreman worker (KKallas/Imp#11) land "
+            f"in later phases.\n\n"
+            f"Handing off to **Foreman** — the chat commands below are still "
+            f"stub demos for now, but they show the shape of the real UX."
         ),
     ).send()
     await greet_foreman()
@@ -215,11 +382,22 @@ async def on_message(msg: cl.Message) -> None:
     elif "scope" in text:
         await fake_scope(text)
     elif "reset" in text and "setup" in text:
-        if CONFIG_FILE.exists():
-            CONFIG_FILE.unlink()
+        # Clear everything EXCEPT the admin password hash. "reset setup"
+        # re-runs the Setup Agent (repo, project board, loop config) but
+        # keeps the admin authenticated. To wipe the password too, the
+        # admin edits .imp/config.json on disk or deletes it outright.
+        cfg = load_config()
+        preserved = {}
+        if cfg.get("admin_password_hash"):
+            preserved["admin_password_hash"] = cfg["admin_password_hash"]
+        save_config(preserved)
         await cl.Message(
             author="Foreman",
-            content="Setup state cleared. Refresh the page to re-run the Setup Agent.",
+            content=(
+                "Setup state cleared (password kept). Refresh the page to "
+                "re-run the Setup Agent. To wipe the password too, delete "
+                "`.imp/config.json` from disk."
+            ),
         ).send()
     else:
         await cl.Message(
@@ -251,30 +429,43 @@ async def fake_chart_response() -> None:
     async with cl.Step(
         name="python pipeline/render_chart.py --template gantt", type="tool"
     ) as step:
-        step.output = "Rendered .imp/output/gantt.html (mermaid)"
+        step.output = "Built plotly timeline figure"
 
-    mermaid = """```mermaid
-gantt
-    title Imp v0.1 Build Phases (stub)
-    dateFormat  YYYY-MM-DD
-    section Phase 1
-    Chat shell + auth     :p1, 2026-04-15, 7d
-    section Phase 2
-    Security spine        :p2, after p1, 5d
-    section Phase 3
-    Setup Agent           :p3, after p2, 4d
-    section Phase 4
-    Foreman + visibility  :p4, after p3, 12d
-    section Phase 5
-    Wire 99-tools         :p5, after p4, 5d
-    section Phase 6
-    Autonomous loop       :p6, after p5, 4d
-    section Phase 7
-    Polish                :p7, after p6, 3d
-```"""
+    import pandas as pd
+    import plotly.express as px
+
+    tasks = [
+        {"Task": "Phase 1 — chat shell + auth",        "Start": "2026-04-15", "End": "2026-04-22", "Phase": "P1"},
+        {"Task": "Phase 2 — security spine",           "Start": "2026-04-22", "End": "2026-04-27", "Phase": "P2"},
+        {"Task": "Phase 3 — Setup Agent",              "Start": "2026-04-27", "End": "2026-05-01", "Phase": "P3"},
+        {"Task": "Phase 4 — Foreman + visibility",     "Start": "2026-05-01", "End": "2026-05-13", "Phase": "P4"},
+        {"Task": "Phase 5 — wire 99-tools",            "Start": "2026-05-13", "End": "2026-05-18", "Phase": "P5"},
+        {"Task": "Phase 6 — autonomous loop",          "Start": "2026-05-18", "End": "2026-05-22", "Phase": "P6"},
+        {"Task": "Phase 7 — polish",                   "Start": "2026-05-22", "End": "2026-05-25", "Phase": "P7"},
+    ]
+    df = pd.DataFrame(tasks)
+    fig = px.timeline(
+        df,
+        x_start="Start",
+        x_end="End",
+        y="Task",
+        color="Phase",
+        title="Imp v0.1 Build Phases (stub)",
+    )
+    fig.update_yaxes(autorange="reversed")  # Phase 1 at top
+    fig.update_layout(
+        showlegend=False,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+
     await cl.Message(
         author="Foreman",
-        content=f"Here's the current build timeline:\n\n{mermaid}",
+        content=(
+            "Here's the current build timeline. Plotly's toolbar (top-right of "
+            "the chart) has pan, zoom, box-select, reset-view, and **Download "
+            "PNG**. Real data lands with KKallas/Imp#14."
+        ),
+        elements=[cl.Plotly(name="build_timeline", figure=fig, display="inline")],
     ).send()
 
 
