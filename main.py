@@ -486,9 +486,10 @@ async def run_demo_command(user_content: str) -> None:
             step=step,
         )
 
-    # Collapsed-by-default step with the full verdict table. The step name
-    # is a one-liner summary; click the name to expand and see the full
-    # table, classification, guard reason, etc.
+    # Collapsed-by-default step with just the verdict table. No elements
+    # attached — we use a separate action button below the step so the
+    # user can explicitly open the log sidebar, instead of Chainlit
+    # auto-pushing side elements on step completion.
     summary = (
         f"intercept.py result · {action.action_id} · "
         f"{action.verdict} · rc={rc}"
@@ -506,26 +507,34 @@ async def run_demo_command(user_content: str) -> None:
             f"| classified_as | `{action.classified_as}` |\n"
             f"| verdict | `{action.verdict}` |\n"
             f"| verdict_reason | {action.verdict_reason or '—'} |\n"
-            f"| return code | `{rc}` |\n"
-            f"| log file | `.imp/output/{action.action_id}.log` |"
+            f"| return code | `{rc}` |"
         )
 
-    # Always-visible clickable link to the log file, opens on the side.
-    # cl.File with mime=text/plain + language=plaintext tells Chainlit's
-    # side viewer to render as monospace plain text.
+    # Below the step: a small message with an action button (opens the
+    # log sidebar on click — closing and re-clicking works because the
+    # callback explicitly calls ElementSidebar.set_elements every time)
+    # plus an inline download chip. Sidebar stays closed until the user
+    # explicitly clicks the "Open log" button.
     log_path = intercept.OUTPUT_DIR / f"{action.action_id}.log"
     if log_path.exists():
         await cl.Message(
             author="Foreman",
-            content=f"📄 Log file:",
+            content=f"📄 `{action.action_id}.log`:",
+            actions=[
+                cl.Action(
+                    name="open_log_sidebar",
+                    payload={"action_id": action.action_id},
+                    label="📂 Open log",
+                    tooltip="View the log contents in the side panel",
+                ),
+            ],
             elements=[
                 cl.File(
                     name=f"{action.action_id}.log",
                     path=str(log_path),
-                    display="side",
+                    display="inline",
                     mime="text/plain",
-                    language="plaintext",
-                )
+                ),
             ],
         ).send()
 
@@ -536,10 +545,9 @@ async def _view_log_by_id(action_id: str) -> None:
     Shared by the `log <id>` chat command and the `view_log` action
     callback. Accepts either `act_xxxxxxxx` or bare `xxxxxxxx`.
 
-    The log is attached as a `cl.File(display="side")` so clicking the
-    chip opens the file on the side in Chainlit's native file viewer.
-    `mime="text/plain"` + `language="plaintext"` tells the viewer to
-    render as monospace plaintext.
+    Posts a message with two elements: a `cl.Text(display="side")`
+    that shows the contents when clicked, and a `cl.File(display="inline")`
+    as a download chip.
     """
     from server import intercept
 
@@ -556,18 +564,31 @@ async def _view_log_by_id(action_id: str) -> None:
         ).send()
         return
 
+    try:
+        content = log_path.read_text()
+    except OSError as e:
+        await cl.Message(
+            author="Foreman",
+            content=f"Couldn't read `{log_path}`: {e}",
+        ).send()
+        return
+
     size = log_path.stat().st_size
     await cl.Message(
         author="Foreman",
-        content=f"📄 `{action_id}.log` ({size} bytes) — click to view on the side:",
+        content=f"Log `{action_id}.log` ({size} bytes):",
         elements=[
+            cl.Text(
+                name=f"{action_id}.log",
+                content=content or "(empty)",
+                display="side",
+            ),
             cl.File(
                 name=f"{action_id}.log",
                 path=str(log_path),
-                display="side",
+                display="inline",
                 mime="text/plain",
-                language="plaintext",
-            )
+            ),
         ],
     ).send()
 
@@ -579,6 +600,44 @@ async def on_view_log_action(action: cl.Action) -> None:
     if not action_id:
         return
     await _view_log_by_id(action_id)
+
+
+@cl.action_callback("open_log_sidebar")
+async def on_open_log_sidebar(action: cl.Action) -> None:
+    """Open the side panel with the log contents.
+
+    Explicitly calls cl.ElementSidebar.set_elements every time — so if
+    the user closes the panel and clicks the button again, a fresh
+    sidebar opens with the same content. This is the only reliable way
+    I've found to get a "reopen the log" button in Chainlit 2.11.
+
+    Payload: {"action_id": "act_xxxxxxxx"}
+    """
+    from server import intercept
+
+    action_id = (action.payload or {}).get("action_id")
+    if not action_id:
+        return
+    log_path = intercept.OUTPUT_DIR / f"{action_id}.log"
+    if not log_path.exists():
+        return
+    try:
+        content = log_path.read_text()
+    except OSError:
+        return
+    try:
+        await cl.ElementSidebar.set_title(f"{action_id}.log")
+    except Exception:
+        pass
+    await cl.ElementSidebar.set_elements(
+        [
+            cl.Text(
+                name=f"{action_id}.log",
+                content=content or "(empty)",
+                display="side",
+            ),
+        ]
+    )
 
 
 async def show_log_command(user_content: str) -> None:
