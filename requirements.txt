@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+websockets
+claude-agent-sdk
+argon2-cffi
+itsdangerous
