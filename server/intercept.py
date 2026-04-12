@@ -11,9 +11,12 @@ pipeline script. Owns:
      builds a `ProposedAction` record (id, command, kind, rationale,
      user_intent, classification, timestamp, eventual verdict).
 
-  3. **Guard check** — for writes, calls `_stub_guard(action)` which
-     auto-approves everything and logs the call. Replaced by the real
-     Guard Agent in KKallas/Imp#7 via `from server.guard import check`.
+  3. **Guard check** — for writes, calls `guard.check(action)` (the real
+     Guard Agent in `server/guard.py`, KKallas/Imp#7). The guard is a
+     separate Claude session with no tools; it only emits a structured
+     `{verdict, reason}` judgment. Reads skip the guard entirely. On
+     backend errors the guard fails closed — writes are rejected, not
+     silently approved.
 
   4. **Budget enforcement** — before executing, consults
      `server/budgets.py`. If `edits` or `tasks` is exhausted, or if the
@@ -62,7 +65,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from . import budgets
+from . import budgets, guard
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / ".imp"
@@ -268,20 +271,6 @@ def _load_pause_flag_from_config() -> None:
 _load_pause_flag_from_config()
 
 
-# ---------- stub guard (real one lands in server/guard.py KKallas/Imp#7) ----------
-
-
-def _stub_guard(action: ProposedAction) -> tuple[bool, str]:
-    """Placeholder Guard Agent. Always approves.
-
-    The real Guard Agent calls Claude with the user intent + proposed
-    action + worker rationale and returns an on-task judgment. Until
-    KKallas/Imp#7 lands, we auto-approve everything so intercept.py's
-    plumbing can be tested end-to-end.
-    """
-    return (True, "stub guard — always approves (real one in KKallas/Imp#7)")
-
-
 # ---------- log files ----------
 
 
@@ -331,7 +320,7 @@ async def execute_command(
 
     Returns `(returncode, combined_output, action_record)`.
 
-    Reads skip the guard entirely. Writes go through `_stub_guard` (and
+    Reads skip the guard entirely. Writes go through `guard.check` (and
     through budget checks). Unknown commands are refused outright.
 
     If `step` is a chainlit `cl.Step`, stdout/stderr are streamed into
@@ -401,7 +390,7 @@ async def execute_command(
 
     # Guard check (writes only)
     if action.classified_as == "write":
-        approved, reason = _stub_guard(action)
+        approved, reason = await guard.check(action)
         action.verdict = "approve" if approved else "reject"
         action.verdict_reason = reason
         if not approved:
