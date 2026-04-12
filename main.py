@@ -358,6 +358,19 @@ async def on_message(msg: cl.Message) -> None:
         await run_setup_agent()
         return
 
+    # ---- Checkpoint A: screen every inbound message ----
+    # The guard sees the raw text and decides whether it's safe to pass
+    # to the worker. On reject, the worker never sees this turn.
+    from server import guard
+
+    approved, reason = await guard.check_user_input(msg.content)
+    if not approved:
+        await cl.Message(
+            author="Guard",
+            content=f"**Blocked by checkpoint A.**\n\n{reason}",
+        ).send()
+        return
+
     text = msg.content.lower().strip()
 
     # Demo hook for P2.6: `run: <cmd>` runs the command through the real
@@ -446,9 +459,13 @@ async def run_demo_command(user_content: str) -> None:
     This is the P2.6 demo: the interception pipeline is real — the
     subprocess is spawned for real, stdout/stderr stream live into the
     `cl.Step`, and the final verdict / budget update is applied. The
-    stub guard in `intercept._stub_guard` auto-approves every write,
-    so you can safely test the full flow without real GitHub writes by
-    sticking to safe read-only commands like `echo`, `date`, `ls`, `sleep`.
+    guard in `server/guard.py` screens writes via checkpoint B.
+
+    In this demo the user types the command directly, so `user_intent`
+    always matches the command — the guard will always approve. Real
+    guard rejections happen when the Foreman worker (KKallas/Imp#11)
+    proposes a command that diverges from the user's stated intent (e.g.
+    a malicious issue body tricked it into closing unrelated issues).
     """
     import shlex
 
