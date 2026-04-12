@@ -32,7 +32,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from server import budgets, intercept  # noqa: E402
+from server import budgets, guard, intercept  # noqa: E402
+
+
+# ---------- fake guard backend (so intercept tests run without the SDK) ----------
+
+
+async def _fake_guard_backend(system_prompt: str, user_prompt: str) -> str:
+    """Always-approve backend for intercept tests.
+
+    This replaces the real Claude call so that the existing intercept
+    tests keep exercising budget, classification, pause-flag, etc.
+    without needing the claude-agent-sdk or a live API key.
+    """
+    return '{"verdict": "approve", "reason": "test backend — auto-approve"}'
+
+
+guard.set_backend(_fake_guard_backend)
 
 # ---------- helpers ----------
 
