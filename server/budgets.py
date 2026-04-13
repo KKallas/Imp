@@ -1,21 +1,24 @@
-"""Budget tracking for Imp — minimal stub.
+"""Budget tracking for Imp — three independent counters in `.imp/state.json`.
 
-The full acceptance criteria for this module live in KKallas/Imp#8. This
-file implements just enough to give server/intercept.py something to call:
-atomic counter reads/writes backed by `.imp/state.json`, default limits,
-and helpers the interception layer needs (exhausted / remaining / floor).
+Imp tracks three budgets (see v0.1.md §Budgets):
 
-What's still missing vs. the full issue:
-  - Sophisticated "budget exhaustion while a subprocess is running" logic
-    (documented in v0.1.md but not yet enforced beyond the "reject next
-    action if exhausted" path here)
-  - 99-tools/_state.py shim (that's KKallas/Imp#20)
-  - Chat tools for set_token_budget / reset_budgets (those go in
-    foreman_agent.py / setup_agent.py later)
-  - Token-usage integration with the claude-agent-sdk callback
+  - **tokens**  — Claude API tokens (in + out) across every agent and
+                  pipeline invocation. Default 200,000. Cost control.
+  - **edits**   — Approved checkpoint-B writes to GitHub. Default 50.
+                  Mutation rate-limiting.
+  - **tasks**   — Pipeline-script invocations (moderate_issues.py,
+                  solve_issues.py, fix_prs.py, run_all.sh). Default 10.
+                  Coarse "how much work" knob.
 
-This module intentionally has zero dependencies on chainlit so it can be
-unit-tested in isolation.
+When any budget hits zero, `server/intercept.py` rejects the **next** write
+action at checkpoint B. **In-flight subprocesses are never killed by a budget
+tick** — they finish on their own cap; the budget exhausts "into" the task,
+not "through" it.
+
+This module has zero dependencies on chainlit so it can be unit-tested in
+isolation. The legacy `99-tools/_state.py` is a thin shim over these
+functions so the CLI mode (`./99-tools/run_all.sh`) reads and writes the
+same counters as the chat mode.
 """
 
 from __future__ import annotations
@@ -23,9 +26,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_FILE = ROOT / ".imp" / "state.json"
+
+COUNTERS = ("tokens", "edits", "tasks")
 
 DEFAULT_LIMITS = {"tokens": 200_000, "edits": 50, "tasks": 10}
 
@@ -59,12 +65,30 @@ class BudgetState:
     def exhausted(self, counter: str) -> bool:
         return self.remaining(counter) <= 0
 
+    def any_exhausted(self) -> bool:
+        return any(self.exhausted(c) for c in COUNTERS)
+
     def to_dict(self) -> dict:
         return {
-            "tokens": {"used": self.tokens_used, "limit": self.tokens_limit},
-            "edits": {"used": self.edits_used, "limit": self.edits_limit},
-            "tasks": {"used": self.tasks_used, "limit": self.tasks_limit},
+            "tokens": {
+                "used": self.tokens_used,
+                "limit": self.tokens_limit,
+                "remaining": self.remaining("tokens"),
+            },
+            "edits": {
+                "used": self.edits_used,
+                "limit": self.edits_limit,
+                "remaining": self.remaining("edits"),
+            },
+            "tasks": {
+                "used": self.tasks_used,
+                "limit": self.tasks_limit,
+                "remaining": self.remaining("tasks"),
+            },
         }
+
+
+# ---------- low-level file I/O ----------
 
 
 def _load_state() -> dict:
@@ -81,7 +105,20 @@ def _save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _validate_counter(counter: str) -> None:
+    if counter not in COUNTERS:
+        raise ValueError(f"unknown counter {counter!r}; expected one of {COUNTERS}")
+
+
+# ---------- read ----------
+
+
 def get_budgets() -> BudgetState:
+    """Return the three counters + limits as a `BudgetState`.
+
+    `BudgetState.to_dict()` gives the `{tokens: {used, limit, remaining}, ...}`
+    shape used by chat tools and the sidebar.
+    """
     state = _load_state()
     counters = state.get("counters", {})
     limits = state.get("limits", DEFAULT_LIMITS)
@@ -95,16 +132,38 @@ def get_budgets() -> BudgetState:
     )
 
 
+# ---------- limit setters (chat tools) ----------
+
+
 def set_limit(counter: str, value: int) -> None:
-    assert counter in ("tokens", "edits", "tasks"), counter
-    assert value >= 0, value
+    _validate_counter(counter)
+    if value < 0:
+        raise ValueError(f"limit must be >= 0, got {value}")
     state = _load_state()
-    state.setdefault("limits", dict(DEFAULT_LIMITS))[counter] = value
+    state.setdefault("limits", dict(DEFAULT_LIMITS))[counter] = int(value)
     _save_state(state)
 
 
+def set_token_budget(n: int) -> None:
+    """Chat tool: set the token budget limit."""
+    set_limit("tokens", n)
+
+
+def set_edit_budget(n: int) -> None:
+    """Chat tool: set the edit budget limit."""
+    set_limit("edits", n)
+
+
+def set_task_budget(n: int) -> None:
+    """Chat tool: set the task budget limit."""
+    set_limit("tasks", n)
+
+
+# ---------- counter resets (chat tools) ----------
+
+
 def reset_counter(counter: str) -> None:
-    assert counter in ("tokens", "edits", "tasks"), counter
+    _validate_counter(counter)
     state = _load_state()
     state.setdefault("counters", {})[counter] = 0
     _save_state(state)
@@ -112,11 +171,34 @@ def reset_counter(counter: str) -> None:
 
 def reset_all_counters() -> None:
     state = _load_state()
-    state["counters"] = {"tokens": 0, "edits": 0, "tasks": 0}
+    state["counters"] = {c: 0 for c in COUNTERS}
     _save_state(state)
 
 
+def reset_budgets(which: Optional[Iterable[str]] = None) -> None:
+    """Chat tool: reset one or more counters.
+
+    `which=None` resets all three. `which=["tokens"]` resets just tokens.
+    """
+    if which is None:
+        reset_all_counters()
+        return
+    targets = list(which)
+    for counter in targets:
+        _validate_counter(counter)
+    for counter in targets:
+        reset_counter(counter)
+
+
+# ---------- counter increments (accounting) ----------
+
+
 def add_tokens(input_tokens: int, output_tokens: int) -> None:
+    """Fed by the Claude SDK token-usage callback and the legacy shim."""
+    if input_tokens < 0 or output_tokens < 0:
+        raise ValueError(
+            f"token deltas must be >= 0, got in={input_tokens} out={output_tokens}"
+        )
     state = _load_state()
     counters = state.setdefault("counters", {})
     counters["tokens"] = counters.get("tokens", 0) + input_tokens + output_tokens
@@ -124,6 +206,7 @@ def add_tokens(input_tokens: int, output_tokens: int) -> None:
 
 
 def increment_edits(n: int = 1) -> None:
+    """Called by intercept.py after a successful checkpoint-B write."""
     state = _load_state()
     counters = state.setdefault("counters", {})
     counters["edits"] = counters.get("edits", 0) + n
@@ -131,7 +214,23 @@ def increment_edits(n: int = 1) -> None:
 
 
 def increment_tasks(n: int = 1) -> None:
+    """Called by intercept.py after a successful pipeline-script run."""
     state = _load_state()
     counters = state.setdefault("counters", {})
     counters["tasks"] = counters.get("tasks", 0) + n
     _save_state(state)
+
+
+# ---------- per-invocation cap for pipeline scripts ----------
+
+
+def per_invocation_token_cap(cap_default: int = PER_INVOCATION_CAP_DEFAULT) -> int:
+    """Return the `--max-tokens N` value the worker should pass to a new
+    pipeline script. `N = min(remaining_tokens, cap_default)`, so a single
+    run can never swallow the whole remaining budget.
+
+    Callers should check `remaining >= PER_INVOCATION_CAP_FLOOR` before
+    starting a run; if not, intercept.py rejects the action outright.
+    """
+    remaining = get_budgets().remaining("tokens")
+    return max(0, min(remaining, cap_default))

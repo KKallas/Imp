@@ -361,6 +361,14 @@ async def execute_command(
     # Budget check — only for writes / pipeline runs
     if action.classified_as == "write":
         b = budgets.get_budgets()
+        if b.exhausted("tokens"):
+            action.verdict = "reject"
+            action.verdict_reason = (
+                f"token budget exhausted ({b.tokens_used}/{b.tokens_limit}). "
+                f"Raise the cap or reset the counter to continue."
+            )
+            action.finished_at = datetime.now()
+            return (1, action.verdict_reason, action)
         if b.exhausted("edits"):
             action.verdict = "reject"
             action.verdict_reason = (
