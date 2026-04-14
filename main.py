@@ -47,6 +47,9 @@ from pathlib import Path
 import chainlit as cl
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from chainlit.input_widget import NumberInput, Select, Switch
+
+from server import budgets
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
@@ -136,6 +139,258 @@ def is_setup_complete() -> bool:
     return load_config().get("setup_complete", False)
 
 
+# ---------- admin budget panel + live status bar ----------
+#
+# The Budgets panel is the **only** way to change the three counters' limits
+# or zero them out. Foreman never gets `set_*_budget` / `reset_budgets` in
+# its tool list — a budget the agent can lift isn't a budget. The settings
+# below render in Chainlit's gear-icon panel; the live bar is an updateable
+# message pinned at the top of the chat that follows every intercept run.
+
+
+def _progress_bar(used: int, limit: int, width: int = 20) -> str:
+    if limit <= 0:
+        return "░" * width
+    pct = min(1.0, max(0.0, used / limit))
+    filled = int(round(pct * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _render_budget_status() -> str:
+    """Markdown block with three progress bars — token / edit / task."""
+    b = budgets.get_budgets()
+    rows = []
+    for label, used, limit in (
+        ("Tokens", b.tokens_used, b.tokens_limit),
+        ("Edits ", b.edits_used, b.edits_limit),
+        ("Tasks ", b.tasks_used, b.tasks_limit),
+    ):
+        bar = _progress_bar(used, limit)
+        pct = (used / limit * 100) if limit > 0 else 0
+        rows.append(
+            f"`{label} {bar} {used:>7,} / {limit:<7,} ({pct:5.1f}%)`"
+        )
+    return "**Budgets**\n\n" + "\n".join(rows)
+
+
+def _is_admin() -> bool:
+    """True if the current Chainlit session is allowed to change budgets.
+
+    Imp is a single-role app: only the admin can log in at all (argon2
+    hash in `.imp/config.json`). So "logged in" == "admin". We don't
+    gate on `user.metadata["role"]` because Chainlit 2.x doesn't reliably
+    surface the auth-callback metadata in `on_chat_start` / `on_settings_update`
+    when the app has no persistence layer configured — the gate silently
+    bailed, hid the gear icon, and the bar never rendered regardless of
+    the toggle. Multi-role gating lands when the app grows more than one
+    user.
+    """
+    return cl.user_session.get("user") is not None
+
+
+async def register_budget_settings() -> None:
+    """Render the admin Budgets panel behind Chainlit's gear icon.
+
+    Six controls: three NumberInputs (limits) + three Switches (reset on
+    save) + one Switch (show the live bar in chat). Initial values come
+    from the on-disk state. Settings ARE the input shape; saving fires
+    `@cl.on_settings_update` below.
+    """
+    import sys
+
+    user = cl.user_session.get("user")
+    print(f"[budget-settings] register called — user={user!r}", file=sys.stderr)
+    if not _is_admin():
+        print("[budget-settings] not admin — gear icon hidden", file=sys.stderr)
+        return
+    b = budgets.get_budgets()
+    cfg = load_config()
+    show_bar = bool(cfg.get("show_budget_bar", False))
+    settings = await cl.ChatSettings(
+        [
+            NumberInput(
+                id="token_limit",
+                label="Token budget — limit",
+                initial=b.tokens_limit,
+                min=0,
+                step=1000,
+                tooltip="Claude API tokens (in + out) across every agent. Hard rejection at zero.",
+            ),
+            NumberInput(
+                id="edit_limit",
+                label="Edit budget — limit",
+                initial=b.edits_limit,
+                min=0,
+                step=1,
+                tooltip="Approved checkpoint-B writes to GitHub.",
+            ),
+            NumberInput(
+                id="task_limit",
+                label="Task budget — limit",
+                initial=b.tasks_limit,
+                min=0,
+                step=1,
+                tooltip="Pipeline-script invocations (moderate / solve / fix).",
+            ),
+            # Chainlit ChatSettings has no button / link widget, so the
+            # reset action lives on a dropdown. Pick a counter (or "All"),
+            # hit Confirm, it fires. Defaults back to "(none)" on next render.
+            Select(
+                id="reset_counter",
+                label="Reset counter (on Confirm)",
+                values=["(none)", "Tokens", "Edits", "Tasks", "All"],
+                initial_value="(none)",
+                tooltip="Pick a counter to zero out. The limit is not touched.",
+            ),
+            Switch(
+                id="show_budget_bar",
+                label="Show live budget bar in chat",
+                initial=show_bar,
+                tooltip="Auto-enables when you change any limit.",
+            ),
+        ]
+    ).send()
+    cl.user_session.set("settings", settings)
+
+
+async def refresh_budget_bar() -> None:
+    """Keep the live budget bar as the **last message** in the chat.
+
+    Chainlit has no fixed status slot — a regular `cl.Message.update()`
+    would refresh the content in-place but leave the bar wherever it
+    was first drawn, scrolling out of view as new messages arrive. So
+    on every turn we remove the old bar (if any) and send a fresh one
+    at the current end of the transcript. The bar stays pinned just
+    above the input box where the admin actually looks.
+
+    Safe to call from `on_chat_start`, at the end of `@cl.on_message`
+    (in a `finally`), after `run_demo_command`, and after
+    `on_settings_update`. No-op when the admin has turned the bar off.
+    """
+    import sys
+
+    if not _is_admin():
+        print("[budget-bar] skipped: no user in session", file=sys.stderr)
+        return
+    cfg = load_config()
+    show = cfg.get("show_budget_bar", False)
+    print(
+        f"[budget-bar] refresh called — show_budget_bar={show}",
+        file=sys.stderr,
+    )
+    if not show:
+        # Admin turned it off. If a bar was previously rendered, tidy it up.
+        old = cl.user_session.get("budget_status_msg")
+        if old is not None:
+            try:
+                await old.remove()
+            except Exception as e:
+                print(f"[budget-bar] remove failed: {e}", file=sys.stderr)
+            cl.user_session.set("budget_status_msg", None)
+        return
+
+    old = cl.user_session.get("budget_status_msg")
+    if old is not None:
+        try:
+            await old.remove()
+        except Exception as e:
+            print(f"[budget-bar] remove (replace) failed: {e}", file=sys.stderr)
+    try:
+        msg = cl.Message(author="Budgets", content=_render_budget_status())
+        await msg.send()
+        cl.user_session.set("budget_status_msg", msg)
+        print("[budget-bar] sent new bar", file=sys.stderr)
+    except Exception as e:
+        print(f"[budget-bar] send failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
+@cl.on_settings_update
+async def on_settings_update(settings: dict) -> None:
+    """Apply Budgets-panel changes. Admin-only.
+
+    The agent never reaches this code path — the panel is the human's
+    surface. We diff against the current limits to decide whether to
+    auto-flip the live-bar toggle.
+    """
+    import sys
+
+    print(f"[budget-settings] update fired: {settings}", file=sys.stderr)
+    if not _is_admin():
+        print("[budget-settings] not admin — bailing", file=sys.stderr)
+        return
+
+    before = budgets.get_budgets()
+
+    # Apply limit changes (only when actually different — avoids spurious
+    # state writes that look like activity)
+    new_token = int(settings.get("token_limit", before.tokens_limit))
+    new_edit = int(settings.get("edit_limit", before.edits_limit))
+    new_task = int(settings.get("task_limit", before.tasks_limit))
+    limit_changes: list[str] = []
+    if new_token != before.tokens_limit:
+        budgets.set_token_budget(new_token)
+        limit_changes.append(f"tokens={new_token:,}")
+    if new_edit != before.edits_limit:
+        budgets.set_edit_budget(new_edit)
+        limit_changes.append(f"edits={new_edit}")
+    if new_task != before.tasks_limit:
+        budgets.set_task_budget(new_task)
+        limit_changes.append(f"tasks={new_task}")
+
+    # Reset dropdown: "(none)" / "Tokens" / "Edits" / "Tasks" / "All".
+    reset_choice = str(settings.get("reset_counter", "(none)"))
+    reset_label: str | None = None
+    if reset_choice == "Tokens":
+        budgets.reset_counter("tokens")
+        reset_label = "tokens"
+    elif reset_choice == "Edits":
+        budgets.reset_counter("edits")
+        reset_label = "edits"
+    elif reset_choice == "Tasks":
+        budgets.reset_counter("tasks")
+        reset_label = "tasks"
+    elif reset_choice == "All":
+        budgets.reset_all_counters()
+        reset_label = "all"
+
+    # Auto-flip the live bar on if the admin set a limit. Rationale:
+    # the only reason to tighten a budget is because you want to *watch*
+    # it — opting in to the constraint should opt you in to the readout.
+    show_bar = bool(settings.get("show_budget_bar", False))
+    auto_enabled = False
+    if limit_changes and not show_bar:
+        show_bar = True
+        auto_enabled = True
+
+    cfg = load_config()
+    cfg["show_budget_bar"] = show_bar
+    save_config(cfg)
+
+    # Confirmation message — terse, not a popup
+    bits: list[str] = []
+    if limit_changes:
+        bits.append("limits: " + ", ".join(limit_changes))
+    if reset_label:
+        bits.append(f"reset: {reset_label}")
+    if auto_enabled:
+        bits.append("live bar enabled (auto)")
+    if not bits:
+        bits.append("no changes")
+    await cl.Message(
+        author="Budgets",
+        content="Confirmed — " + " · ".join(bits),
+    ).send()
+
+    # Re-render the settings panel so the reset dropdown snaps back to
+    # "(none)" — it's a one-shot command, not a stored preference.
+    if reset_label:
+        await register_budget_settings()
+
+    # Send / refresh the live bar to reflect the new state. Always ends
+    # up as the most recent message so the admin can see it.
+    await refresh_budget_bar()
+
+
 # ---------- password verify ----------
 
 
@@ -181,6 +436,8 @@ async def on_start() -> None:
         await run_setup_agent()
     else:
         await greet_foreman()
+    await register_budget_settings()
+    await refresh_budget_bar()
 
 
 # ---------- setup agent ----------
@@ -354,6 +611,15 @@ async def greet_foreman() -> None:
 
 @cl.on_message
 async def on_message(msg: cl.Message) -> None:
+    # Every exit path ends with a budget-bar refresh so the bar is always
+    # the last message in the transcript (pinned right above the input).
+    try:
+        await _on_message_body(msg)
+    finally:
+        await refresh_budget_bar()
+
+
+async def _on_message_body(msg: cl.Message) -> None:
     if not is_setup_complete():
         await run_setup_agent()
         return
@@ -502,6 +768,9 @@ async def run_demo_command(user_content: str) -> None:
             kind="demo",
             step=step,
         )
+
+    # Refresh happens at the end of on_message via the try/finally — no
+    # extra call needed here.
 
     # Collapsed-by-default step with just the verdict table. No elements
     # attached — we use a separate action button below the step so the
@@ -863,16 +1132,20 @@ async def fake_proposed_action(user_text: str) -> None:
 
 
 async def fake_budgets() -> None:
+    """Real-data budget status via `server.budgets`. Setters live in the
+    Budgets panel (gear icon) — Foreman doesn't get tools to change them.
+    """
+    b = budgets.get_budgets()
     await cl.Message(
         author="Foreman",
         content=(
             "**Budget status**\n\n"
             "| Counter | Used | Limit | Remaining |\n"
             "|---|---:|---:|---:|\n"
-            "| Tokens | 14,213 | 200,000 | 185,787 |\n"
-            "| Edits  | 3      | 50      | 47      |\n"
-            "| Tasks  | 1      | 10      | 9       |\n\n"
-            "Say *set token budget to N*, *reset edits*, etc., to change them."
+            f"| Tokens | {b.tokens_used:,} | {b.tokens_limit:,} | {b.remaining('tokens'):,} |\n"
+            f"| Edits  | {b.edits_used} | {b.edits_limit} | {b.remaining('edits')} |\n"
+            f"| Tasks  | {b.tasks_used} | {b.tasks_limit} | {b.remaining('tasks')} |\n\n"
+            "_Open the **gear icon** (top-right) to change limits or reset counters._"
         ),
     ).send()
 
