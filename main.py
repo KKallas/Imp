@@ -234,10 +234,10 @@ async def register_budget_settings() -> None:
             ),
             # Chainlit ChatSettings has no button / link widget, so the
             # reset action lives on a dropdown. Pick a counter (or "All"),
-            # hit Save, it fires. Defaults back to "(none)" on next render.
+            # hit Confirm, it fires. Defaults back to "(none)" on next render.
             Select(
                 id="reset_counter",
-                label="Reset counter (on Save)",
+                label="Reset counter (on Confirm)",
                 values=["(none)", "Tokens", "Edits", "Tasks", "All"],
                 initial_value="(none)",
                 tooltip="Pick a counter to zero out. The limit is not touched.",
@@ -378,7 +378,7 @@ async def on_settings_update(settings: dict) -> None:
         bits.append("no changes")
     await cl.Message(
         author="Budgets",
-        content="Saved — " + " · ".join(bits),
+        content="Confirmed — " + " · ".join(bits),
     ).send()
 
     # Re-render the settings panel so the reset dropdown snaps back to
