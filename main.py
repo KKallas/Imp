@@ -249,35 +249,44 @@ async def register_budget_settings() -> None:
     cl.user_session.set("settings", settings)
 
 
-async def maybe_send_budget_status() -> None:
-    """Send the live budget message if the user has it enabled.
+async def refresh_budget_bar() -> None:
+    """Keep the live budget bar as the **last message** in the chat.
 
-    Idempotent — safe to call from `on_chat_start` and from
-    `on_settings_update`. Stores the message ref in the session so
-    `refresh_budget_status` can update it in place after each intercept run.
+    Chainlit has no fixed status slot — a regular `cl.Message.update()`
+    would refresh the content in-place but leave the bar wherever it
+    was first drawn, scrolling out of view as new messages arrive. So
+    on every turn we remove the old bar (if any) and send a fresh one
+    at the current end of the transcript. The bar stays pinned just
+    above the input box where the admin actually looks.
+
+    Safe to call from `on_chat_start`, at the end of `@cl.on_message`
+    (in a `finally`), after `run_demo_command`, and after
+    `on_settings_update`. No-op when the admin has turned the bar off.
     """
     if not _is_admin():
         return
     cfg = load_config()
     if not cfg.get("show_budget_bar", False):
+        # Admin turned it off. If a bar was previously rendered, tidy it up.
+        old = cl.user_session.get("budget_status_msg")
+        if old is not None:
+            try:
+                await old.remove()
+            except Exception:
+                pass
+            cl.user_session.set("budget_status_msg", None)
         return
-    if cl.user_session.get("budget_status_msg") is not None:
-        return
+
+    old = cl.user_session.get("budget_status_msg")
+    if old is not None:
+        try:
+            await old.remove()
+        except Exception:
+            # If the message is already gone (reconnect, etc.) keep going
+            pass
     msg = cl.Message(author="Budgets", content=_render_budget_status())
     await msg.send()
     cl.user_session.set("budget_status_msg", msg)
-
-
-async def refresh_budget_status() -> None:
-    """Re-render the live bar after an action that may have moved counters.
-
-    No-op when the bar isn't being shown (no message ref in session).
-    """
-    msg = cl.user_session.get("budget_status_msg")
-    if msg is None:
-        return
-    msg.content = _render_budget_status()
-    await msg.update()
 
 
 @cl.on_settings_update
@@ -345,9 +354,9 @@ async def on_settings_update(settings: dict) -> None:
         content="Saved — " + " · ".join(bits),
     ).send()
 
-    # Send / refresh the live bar to reflect the new state
-    await maybe_send_budget_status()
-    await refresh_budget_status()
+    # Send / refresh the live bar to reflect the new state. Always ends
+    # up as the most recent message so the admin can see it.
+    await refresh_budget_bar()
 
 
 # ---------- password verify ----------
@@ -396,7 +405,7 @@ async def on_start() -> None:
     else:
         await greet_foreman()
     await register_budget_settings()
-    await maybe_send_budget_status()
+    await refresh_budget_bar()
 
 
 # ---------- setup agent ----------
@@ -570,6 +579,15 @@ async def greet_foreman() -> None:
 
 @cl.on_message
 async def on_message(msg: cl.Message) -> None:
+    # Every exit path ends with a budget-bar refresh so the bar is always
+    # the last message in the transcript (pinned right above the input).
+    try:
+        await _on_message_body(msg)
+    finally:
+        await refresh_budget_bar()
+
+
+async def _on_message_body(msg: cl.Message) -> None:
     if not is_setup_complete():
         await run_setup_agent()
         return
@@ -719,9 +737,8 @@ async def run_demo_command(user_content: str) -> None:
             step=step,
         )
 
-    # Refresh the live budget bar (no-op if the admin hasn't enabled it).
-    # Counters move on every successful write/pipeline run.
-    await refresh_budget_status()
+    # Refresh happens at the end of on_message via the try/finally — no
+    # extra call needed here.
 
     # Collapsed-by-default step with just the verdict table. No elements
     # attached — we use a separate action button below the step so the
