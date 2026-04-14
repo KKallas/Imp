@@ -257,34 +257,48 @@ async def test_dispatch_execute_branch() -> None:
     ask = AskScript([])
     backend = FakeBackend(
         [
+            # Round 1: classifier picks execute
             (
                 '{"type": "execute", "argv": ["echo", "hello"], "rationale": "echoing"}',
                 150,
                 75,
-            )
+            ),
+            # Round 2 (P2.9b): synthesis interprets the output in prose
+            (
+                "The `echo hello` command printed 'hello' and exited successfully.",
+                100,
+                40,
+            ),
         ]
     )
     dispatcher.set_backend(backend)
 
     await dispatcher.dispatch("say hello", say=say, ask=ask)
 
-    # Backend was called once
-    assert len(backend.calls) == 1
-    # Two say() calls: the "Running: ..." narration, and the summary
-    # (output + exit code) after the subprocess exits.
-    assert len(say.messages) == 2, say.messages
+    # Both backend calls fired: classifier + synthesis
+    assert len(backend.calls) == 2, backend.calls
+    # Three say() calls now: narration, summary (output + exit code), synthesis
+    assert len(say.messages) == 3, say.messages
     assert "Running:" in say.messages[0] and "echo hello" in say.messages[0]
     assert "hello" in say.messages[1]  # the echo output
     assert "Exit code: `0`" in say.messages[1]
+    assert "printed 'hello'" in say.messages[2]
+    # The synthesis call must have used the FOLLOWUP_SYSTEM_PROMPT
+    assert backend.calls[1][0] == dispatcher.FOLLOWUP_SYSTEM_PROMPT
+    # And its user prompt must include the original question + output
+    synth_user = backend.calls[1][1]
+    assert "say hello" in synth_user
+    assert "hello" in synth_user
+    assert "Exit code: 0" in synth_user
     # Intercept actually ran the echo
     assert len(intercept.action_log) == 1
     a = intercept.action_log[0]
     assert a.command == ["echo", "hello"]
     assert a.verdict == "approve"
     assert a.returncode == 0
-    # Token counts fed into budgets
+    # Token counts from BOTH calls feed into budgets (225 + 140 = 365)
     b = budgets.get_budgets()
-    assert b.tokens_used == 225, b.tokens_used
+    assert b.tokens_used == 365, b.tokens_used
     print("test_dispatch_execute_branch: OK")
 
 
@@ -314,11 +328,23 @@ async def test_dispatch_clarify_then_execute() -> None:
     ask = AskScript(["42"])  # admin answers "42"
     backend = FakeBackend(
         [
+            # Round 1: classifier asks for clarification
             ('{"type": "clarify", "question": "Which issue number?"}', 100, 20),
+            # Round 2: with the answer, classifier picks execute
             (
                 '{"type": "execute", "argv": ["gh", "issue", "view", "42"], '
                 '"rationale": "view issue 42"}',
                 150,
+                30,
+            ),
+            # Round 3 (P2.9b): synthesis — note gh will fail in the test
+            # env so `output` may be empty. The synthesis is skipped when
+            # output is empty, so we only include this response in case
+            # gh is actually authenticated. If unused, FakeBackend will
+            # complain on shutdown — use a short-circuit below.
+            (
+                "Issue 42 could not be viewed — gh returned an error.",
+                80,
                 30,
             ),
         ]
@@ -327,8 +353,9 @@ async def test_dispatch_clarify_then_execute() -> None:
 
     await dispatcher.dispatch("view an issue", say=say, ask=ask)
 
-    # Both rounds fired
-    assert len(backend.calls) == 2
+    # At least 2 backend calls (clarifier + executor). A third only fires
+    # if gh produced output to synthesize.
+    assert len(backend.calls) >= 2
     assert ask.questions == ["Which issue number?"]
     # The second backend call must contain the clarification history
     second_user_prompt = backend.calls[1][1]
@@ -340,11 +367,106 @@ async def test_dispatch_clarify_then_execute() -> None:
     a = intercept.action_log[0]
     assert a.command == ["gh", "issue", "view", "42"]
     assert a.classified_as == "read"
-    # Token accounting sums both calls
-    assert budgets.get_budgets().tokens_used == 300
     # Execute branch emits narration + summary
     assert any("Running:" in m for m in say.messages), say.messages
     print("test_dispatch_clarify_then_execute: OK")
+
+
+async def test_dispatch_synthesis_skipped_on_reject() -> None:
+    """Budget/guard rejection → no output → no synthesis call."""
+    _reset()
+    # Zero out edits so intercept rejects any write
+    budgets.set_limit("edits", 0)
+    say = SayRecorder()
+    ask = AskScript([])
+    backend = FakeBackend(
+        [
+            (
+                '{"type": "execute", "argv": ["gh", "issue", "edit", "42", '
+                '"--add-label", "foo"], "rationale": "add label"}',
+                120,
+                40,
+            ),
+            # If synthesis fires, it would consume this — but it shouldn't.
+            ("UNEXPECTED SYNTHESIS", 10, 10),
+        ]
+    )
+    dispatcher.set_backend(backend)
+
+    try:
+        await dispatcher.dispatch("add label foo to issue 42", say=say, ask=ask)
+    finally:
+        budgets.set_limit("edits", budgets.DEFAULT_LIMITS["edits"])
+
+    # Only the classifier call should have fired
+    assert len(backend.calls) == 1, backend.calls
+    # Summary shows rejection; no synthesis message follows
+    assert any("Rejected" in m for m in say.messages), say.messages
+    assert not any("UNEXPECTED SYNTHESIS" in m for m in say.messages)
+    print("test_dispatch_synthesis_skipped_on_reject: OK")
+
+
+async def test_dispatch_synthesis_skipped_on_empty_output() -> None:
+    """A command that exits 0 with no stdout/stderr doesn't need synthesis."""
+    _reset()
+    say = SayRecorder()
+    ask = AskScript([])
+    backend = FakeBackend(
+        [
+            # `true` produces no output. Demo-safe list doesn't include
+            # it, but `date` with stdout suppressed is awkward — use `:`
+            # via echo with empty arg. Actually the cleanest: `echo`
+            # with no args prints a newline only. To get truly empty
+            # output, use `sleep 0`.
+            (
+                '{"type": "execute", "argv": ["sleep", "0"], "rationale": "no-op"}',
+                100,
+                30,
+            ),
+            # If synthesis fires this is consumed; it shouldn't.
+            ("UNEXPECTED SYNTHESIS", 10, 10),
+        ]
+    )
+    dispatcher.set_backend(backend)
+
+    await dispatcher.dispatch("do nothing", say=say, ask=ask)
+
+    # `sleep 0` is in DEMO_SAFE_COMMANDS → classified as read → no guard,
+    # no budget. It produces no output, exit 0. Synthesis must skip.
+    assert len(backend.calls) == 1, backend.calls
+    assert not any("UNEXPECTED SYNTHESIS" in m for m in say.messages)
+    print("test_dispatch_synthesis_skipped_on_empty_output: OK")
+
+
+async def test_dispatch_synthesis_failure_is_soft() -> None:
+    """If the synthesis backend call raises, the admin still gets the raw output."""
+    _reset()
+    say = SayRecorder()
+    ask = AskScript([])
+
+    call_count = {"n": 0}
+
+    async def flaky_backend(system, user):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return (
+                '{"type": "execute", "argv": ["echo", "hi"], "rationale": "say hi"}',
+                50,
+                25,
+            )
+        raise RuntimeError("synthesis backend is having a bad day")
+
+    dispatcher.set_backend(flaky_backend)
+
+    await dispatcher.dispatch("say hi", say=say, ask=ask)
+
+    # Narration + summary are still posted, even though synthesis threw
+    assert any("Running:" in m for m in say.messages), say.messages
+    assert any("Exit code: `0`" in m for m in say.messages), say.messages
+    # The action ran successfully despite the failed synthesis
+    assert len(intercept.action_log) == 1
+    assert intercept.action_log[0].returncode == 0
+    print("test_dispatch_synthesis_failure_is_soft: OK")
 
 
 async def test_dispatch_explicit_shortcut_skips_backend() -> None:
@@ -471,6 +593,9 @@ async def amain() -> None:
     await test_dispatch_execute_branch()
     await test_dispatch_answer_branch()
     await test_dispatch_clarify_then_execute()
+    await test_dispatch_synthesis_skipped_on_reject()
+    await test_dispatch_synthesis_skipped_on_empty_output()
+    await test_dispatch_synthesis_failure_is_soft()
     await test_dispatch_explicit_shortcut_skips_backend()
     await test_dispatch_clarify_loop_bounded()
     await test_dispatch_ask_timeout_aborts()

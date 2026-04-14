@@ -197,6 +197,32 @@ curl, etc.) — the classifier will refuse them anyway.
 """
 
 
+# Second system prompt — used for the follow-up LLM call after an
+# `execute` verdict runs. The raw output is already in the chat; this
+# turn's job is to close the loop on the admin's original question.
+# Plain prose only — the caller does NOT parse this as JSON.
+FOLLOWUP_SYSTEM_PROMPT = """\
+You are Foreman. You just ran a shell command on the admin's behalf to \
+answer their question. The raw command output is already shown to the \
+admin in a code block, and they saw the exit code.
+
+Your job now is to interpret that output and give them a concise, \
+useful **answer** to their original question. Don't repeat the raw \
+output — they already see it. Count things if they asked for a count. \
+Summarize if they asked for a summary. If the exit code is non-zero, \
+explain briefly what went wrong.
+
+Respond with plain prose ONLY — no JSON, no "execute / clarify / \
+answer" format, no code fences around your reply. Keep it under 200 \
+words.
+"""
+
+# Cap on how much command output we feed back into the synthesis prompt.
+# Large outputs are still on disk at `.imp/output/<action_id>.log`; we
+# just don't want to blow out the follow-up prompt.
+MAX_FOLLOWUP_OUTPUT_CHARS = 6000
+
+
 def _build_user_prompt(
     user_text: str,
     history: list[tuple[str, str]],
@@ -374,6 +400,73 @@ SayFn = Callable[[str], Awaitable[None]]
 AskFn = Callable[[str], Awaitable[Optional[str]]]
 
 
+async def _synthesize_answer(
+    *,
+    user_text: str,
+    argv: list[str],
+    output: str,
+    rc: int,
+    backend: BackendCallable,
+    say: SayFn,
+) -> None:
+    """One extra LLM call that interprets command output in plain prose.
+
+    Without this, the dispatcher runs a command and shows raw output
+    but never actually **answers** the admin's question — see
+    KKallas/Imp#36. This round closes the loop.
+
+    Fail-soft: if the follow-up backend call errors, we skip silently
+    (the admin still has the raw output from the previous summary).
+    Token usage is charged to `budgets.add_tokens` so the counter
+    stays honest about the second call.
+    """
+    import sys
+
+    trimmed_output = output.rstrip()
+    if len(trimmed_output) > MAX_FOLLOWUP_OUTPUT_CHARS:
+        trimmed_output = (
+            trimmed_output[:MAX_FOLLOWUP_OUTPUT_CHARS]
+            + "\n... [truncated for synthesis]"
+        )
+
+    followup_prompt = (
+        "<<<ADMIN ORIGINAL QUESTION>>>\n"
+        f"{user_text}\n"
+        "<<<END ADMIN QUESTION>>>\n\n"
+        "<<<COMMAND YOU RAN>>>\n"
+        f"{' '.join(argv)}\n"
+        "<<<END COMMAND>>>\n\n"
+        "<<<COMMAND OUTPUT>>>\n"
+        f"{trimmed_output or '(no output)'}\n"
+        "<<<END COMMAND OUTPUT>>>\n\n"
+        f"Exit code: {rc}"
+    )
+
+    try:
+        raw, in_tok, out_tok = await backend(
+            FOLLOWUP_SYSTEM_PROMPT, followup_prompt
+        )
+    except Exception as exc:  # noqa: BLE001 — fail soft, don't mask raw output
+        print(
+            f"[dispatcher] synthesis backend raised: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    if in_tok > 0 or out_tok > 0:
+        budgets.add_tokens(max(0, in_tok), max(0, out_tok))
+
+    print(
+        f"[dispatcher] synthesis returned: in={in_tok} out={out_tok} "
+        f"text={raw[:300]!r}{' ...[truncated]' if len(raw) > 300 else ''}",
+        file=sys.stderr,
+    )
+
+    reply = raw.strip()
+    if reply:
+        await say(reply)
+
+
 async def dispatch(
     user_text: str,
     *,
@@ -504,6 +597,20 @@ async def dispatch(
                     summary_lines.append(f"```\n{trimmed}\n```")
                 summary_lines.append(f"Exit code: `{rc}`")
             await say("\n\n".join(summary_lines))
+
+            # P2.9b (KKallas/Imp#36): follow-up turn that interprets the
+            # output for the admin. Skip when we rejected (no output to
+            # interpret) or when the command produced nothing (the
+            # "Exit code: 0" summary is already a sufficient answer).
+            if action.verdict != "reject" and output and output.strip():
+                await _synthesize_answer(
+                    user_text=user_text,
+                    argv=argv_list,
+                    output=output,
+                    rc=rc,
+                    backend=backend,
+                    say=say,
+                )
             return
 
         if verdict.type == "answer":
