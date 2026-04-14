@@ -1,0 +1,39 @@
+{
+  "fields": [
+    {
+      "name": "duration_days",
+      "type": "NUMBER",
+      "description": "Integer days estimate for an issue's duration"
+    },
+    {
+      "name": "start_date",
+      "type": "DATE",
+      "description": "ISO YYYY-MM-DD"
+    },
+    {
+      "name": "end_date",
+      "type": "DATE",
+      "description": "ISO YYYY-MM-DD"
+    },
+    {
+      "name": "confidence",
+      "type": "SINGLE_SELECT",
+      "options": ["high", "medium", "low"]
+    },
+    {
+      "name": "source",
+      "type": "SINGLE_SELECT",
+      "options": ["github", "heuristic", "llm"]
+    },
+    {
+      "name": "assignee_verified",
+      "type": "SINGLE_SELECT",
+      "options": ["yes", "no"]
+    },
+    {
+      "name": "depends_on",
+      "type": "TEXT",
+      "description": "Comma-separated issue refs, e.g. '#12, #15'"
+    }
+  ]
+}
