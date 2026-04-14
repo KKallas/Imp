@@ -283,28 +283,109 @@ async def test_do_list_projects_empty() -> None:
     print("test_do_list_projects_empty: OK")
 
 
-async def test_do_create_imp_project_flags_blocker_on_stub_exit() -> None:
+async def test_do_create_imp_project_success_parses_result_json() -> None:
+    """rc=0 → `created: True` plus the parsed JSON result from the script."""
     _reset_config()
-    fake = FakeSubprocess(
-        [(1, "pipeline/project_bootstrap.py is a stub — real implementation lands with KKallas/Imp#10.")]
+    script_output = json.dumps(
+        {
+            "project_number": 7,
+            "project_owner": "KKallas",
+            "project_status": "created",
+            "created_fields": ["duration_days", "start_date"],
+            "skipped_fields": [],
+            "deleted_fields": [],
+            "conflicts_ignored": [],
+            "on_conflict": "stop",
+        }
     )
-    setup_agent._run_subprocess = fake
-    res = await setup_agent.do_create_imp_project(owner="KKallas")
-    assert res["created"] is False
-    assert res["blocked_on_issue"] == "KKallas/Imp#10"
-    assert "stub" in res["output"].lower()
-    print("test_do_create_imp_project_flags_blocker_on_stub_exit: OK")
-
-
-async def test_do_create_imp_project_success_clears_blocker() -> None:
-    _reset_config()
-    # Simulating what a real P3.10 implementation would return
-    fake = FakeSubprocess([(0, "Project #7 created successfully")])
+    fake = FakeSubprocess([(0, script_output)])
     setup_agent._run_subprocess = fake
     res = await setup_agent.do_create_imp_project(owner="KKallas")
     assert res["created"] is True
-    assert res["blocked_on_issue"] is None
-    print("test_do_create_imp_project_success_clears_blocker: OK")
+    assert res["exit_code"] == 0
+    assert res["result"]["project_number"] == 7
+    assert res["result"]["project_status"] == "created"
+    # Verify --on-conflict stop was passed (the default)
+    assert "--on-conflict" in fake.calls[0]
+    idx = fake.calls[0].index("--on-conflict")
+    assert fake.calls[0][idx + 1] == "stop"
+    print("test_do_create_imp_project_success_parses_result_json: OK")
+
+
+async def test_do_create_imp_project_surfaces_conflicts_on_rc2() -> None:
+    """rc=2 → parse the conflict report and hand it to the LLM."""
+    _reset_config()
+    conflict_report = json.dumps(
+        {
+            "status": "conflicts_detected",
+            "project_number": 5,
+            "project_owner": "KKallas",
+            "project_status": "existing",
+            "conflicts": [
+                {
+                    "name": "duration_days",
+                    "reason": "wrong_type",
+                    "expected_type": "NUMBER",
+                    "actual_type": "TEXT",
+                    "field_id": "PVTF_abc",
+                }
+            ],
+            "next_steps": "Re-run with --on-conflict delete or fix manually.",
+        }
+    )
+    fake = FakeSubprocess([(2, conflict_report)])
+    setup_agent._run_subprocess = fake
+    res = await setup_agent.do_create_imp_project(owner="KKallas")
+    assert res["created"] is False
+    assert res["exit_code"] == 2
+    assert res["project_number"] == 5
+    assert len(res["conflicts"]) == 1
+    assert res["conflicts"][0]["name"] == "duration_days"
+    # The LLM needs steering on what to do — the tool includes a clear
+    # instruction about asking the admin.
+    assert "admin" in res["instruction_for_agent"].lower()
+    assert "delete" in res["instruction_for_agent"].lower()
+    print("test_do_create_imp_project_surfaces_conflicts_on_rc2: OK")
+
+
+async def test_do_create_imp_project_delete_mode_forwards_flag() -> None:
+    """When admin chooses overwrite, the tool passes on_conflict=delete."""
+    _reset_config()
+    script_output = json.dumps(
+        {
+            "project_number": 5,
+            "project_owner": "KKallas",
+            "project_status": "existing",
+            "created_fields": ["duration_days"],
+            "skipped_fields": [],
+            "deleted_fields": ["duration_days"],
+            "conflicts_ignored": [],
+            "on_conflict": "delete",
+        }
+    )
+    fake = FakeSubprocess([(0, script_output)])
+    setup_agent._run_subprocess = fake
+    res = await setup_agent.do_create_imp_project(
+        owner="KKallas", on_conflict="delete"
+    )
+    assert res["created"] is True
+    assert res["result"]["deleted_fields"] == ["duration_days"]
+    # Verify --on-conflict delete was passed through to the subprocess
+    idx = fake.calls[0].index("--on-conflict")
+    assert fake.calls[0][idx + 1] == "delete"
+    print("test_do_create_imp_project_delete_mode_forwards_flag: OK")
+
+
+async def test_do_create_imp_project_surfaces_gh_error_on_rc1() -> None:
+    """rc=1 → gh error. Surface the message so the LLM can help the admin."""
+    _reset_config()
+    fake = FakeSubprocess([(1, "gh: token lacks 'project' scope")])
+    setup_agent._run_subprocess = fake
+    res = await setup_agent.do_create_imp_project(owner="KKallas")
+    assert res["created"] is False
+    assert res["exit_code"] == 1
+    assert "scope" in res["error"].lower()
+    print("test_do_create_imp_project_surfaces_gh_error_on_rc1: OK")
 
 
 async def test_do_detect_repo_from_git_returns_dict_shape() -> None:
@@ -341,8 +422,10 @@ async def amain() -> None:
         test_do_set_repo_refuses_when_gh_rejects,
         test_do_list_projects_parses_projects_object,
         test_do_list_projects_empty,
-        test_do_create_imp_project_flags_blocker_on_stub_exit,
-        test_do_create_imp_project_success_clears_blocker,
+        test_do_create_imp_project_success_parses_result_json,
+        test_do_create_imp_project_surfaces_conflicts_on_rc2,
+        test_do_create_imp_project_delete_mode_forwards_flag,
+        test_do_create_imp_project_surfaces_gh_error_on_rc1,
         test_do_detect_repo_from_git_returns_dict_shape,
     ]
     for t in tests:

@@ -258,21 +258,84 @@ async def do_list_projects(owner: str, limit: int = 20) -> dict[str, Any]:
     return {"projects": projects, "count": len(projects)}
 
 
-async def do_create_imp_project(owner: str, title: str = "Imp") -> dict[str, Any]:
-    """Create the Imp Projects-v2 board via pipeline/project_bootstrap.py.
+async def do_create_imp_project(
+    owner: str,
+    title: str = "Imp",
+    on_conflict: str = "stop",
+) -> dict[str, Any]:
+    """Create (or verify) the Imp Projects-v2 board via project_bootstrap.py.
 
-    That script is a stub until KKallas/Imp#10 lands. Surfacing its
-    error here keeps the Setup Agent honest — the LLM sees "not
-    implemented" and can tell the admin to skip this step for now.
+    `on_conflict` controls what happens if the script detects fields
+    with the correct name but wrong type / options:
+      - "stop"  (default) — script exits rc=2 with a conflict report.
+        The LLM surfaces it to the admin and asks whether to delete +
+        overwrite or stop and fix manually.
+      - "delete" — script removes the conflicting fields and recreates
+        them from the template. Destructive: any values already stored
+        on items under those fields are lost. The admin must pick this
+        knowingly.
+      - "skip" — accept the existing fields as-is. May cause runtime
+        errors later when the pipeline tries to write incompatible
+        values; surfaced in the return dict so the LLM can warn.
+
+    Exit-code contract (from pipeline/project_bootstrap.py):
+      0 → success (created / updated / idempotent no-op)
+      1 → gh error (auth scope, network, malformed response, etc.)
+      2 → conflicts detected in "stop" mode; stdout is a JSON report
     """
     rc, out = await _run_subprocess(
-        [sys.executable, "pipeline/project_bootstrap.py", "--owner", owner, "--title", title]
+        [
+            sys.executable,
+            "pipeline/project_bootstrap.py",
+            "--owner",
+            owner,
+            "--title",
+            title,
+            "--on-conflict",
+            on_conflict,
+        ]
     )
+
+    # rc=2: parse the conflict report so the LLM can render it.
+    if rc == 2:
+        try:
+            report = json.loads(out or "{}")
+        except json.JSONDecodeError:
+            report = {"status": "conflicts_detected_unparseable", "raw": out}
+        return {
+            "exit_code": rc,
+            "created": False,
+            "conflicts": report.get("conflicts", []),
+            "next_steps": report.get("next_steps"),
+            "project_number": report.get("project_number"),
+            "instruction_for_agent": (
+                "Tell the admin there are field conflicts on the Imp board. "
+                "List each conflict's name and reason concisely. Ask them to "
+                "choose: (1) DELETE — overwrite the conflicting fields "
+                "(destructive, any values already stored in those fields "
+                "will be lost), or (2) STOP — they fix manually in the "
+                "GitHub UI and you re-run this tool. If they pick DELETE, "
+                "call create_imp_project again with on_conflict=\"delete\"."
+            ),
+        }
+
+    # rc=0: success (or idempotent no-op). Parse the structured result.
+    if rc == 0:
+        try:
+            result = json.loads(out or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": out}
+        return {
+            "exit_code": 0,
+            "created": True,
+            "result": result,
+        }
+
+    # rc=1 (or anything else): gh error. Surface gh's message.
     return {
         "exit_code": rc,
-        "output": out,
-        "created": rc == 0,
-        "blocked_on_issue": "KKallas/Imp#10" if rc != 0 else None,
+        "created": False,
+        "error": out,
     }
 
 
@@ -411,14 +474,20 @@ def _build_mcp_server() -> Any:
 
     @tool(
         "create_imp_project",
-        "Provision an Imp Projects-v2 board. Calls pipeline/project_bootstrap.py — "
-        "currently a stub pending KKallas/Imp#10.",
-        {"owner": str, "title": str},
+        "Provision (or verify) the Imp Projects-v2 board and its seven custom "
+        "fields. Idempotent. If the board already exists with a field whose "
+        "type or options differ from the template, the tool returns a "
+        "`conflicts` list by default — ASK the admin whether to DELETE "
+        "(overwrite, destructive) or STOP (they fix manually). On a DELETE "
+        "choice, call this tool again with on_conflict=\"delete\". "
+        "Valid on_conflict values: stop (default), delete, skip.",
+        {"owner": str, "title": str, "on_conflict": str},
     )
     async def create_project_tool(args: dict[str, Any]) -> dict[str, Any]:
         res = await do_create_imp_project(
             owner=str(args["owner"]),
             title=str(args.get("title", "Imp")),
+            on_conflict=str(args.get("on_conflict", "stop")),
         )
         return {"content": [{"type": "text", "text": json.dumps(res)}]}
 
@@ -495,9 +564,17 @@ guidance and surface it.
 admin before calling `set_repo`.
    - Otherwise, offer to list repos with `list_repos` and ask the admin to \
 choose one, then call `set_repo`.
-4. (Optional, currently blocked) Provision an Imp Projects-v2 board with \
-`create_imp_project`. If the tool reports `blocked_on_issue`, tell the admin \
-this step is deferred until that issue merges and move on.
+4. Provision or verify the Imp Projects-v2 board with `create_imp_project`. \
+Idempotent — safe to run whether the board exists or not.
+   - If the tool returns a `conflicts` list (same-named fields with the wrong \
+type or different single-select options), describe each conflict plainly, \
+then ASK the admin two choices: (a) DELETE and overwrite the conflicting \
+fields — explain this is destructive and any existing values under those \
+fields will be lost, or (b) STOP so they can fix the fields manually in the \
+GitHub UI. If they pick DELETE, call `create_imp_project` again with \
+`on_conflict="delete"`.
+   - If it returns `error`, read gh's message and help the admin fix the \
+underlying problem (usually `gh auth refresh -s project`).
 5. (Optional) Configure the autonomous loop with `configure_loop` if the \
 admin wants it on.
 6. Call `mark_setup_complete` once the repo is set — this flips the flag so \
