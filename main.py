@@ -658,32 +658,9 @@ async def _on_message_body(msg: cl.Message) -> None:
         await show_log_command(msg.content)
         return
 
-    if any(k in text for k in ("gantt", "chart", "timeline")):
-        await fake_chart_response()
-    elif any(k in text for k in ("moderate", "solve", "fix")):
-        await fake_proposed_action(msg.content)
-    elif "budget" in text:
-        await fake_budgets()
-    elif "resume" in text:
-        await cl.Message(
-            author="Foreman",
-            content="▶ Autonomous loop **resumed**. Next tick in 47 minutes.",
-        ).send()
-    elif "pause" in text:
-        await cl.Message(
-            author="Foreman",
-            content=(
-                "⏸ Autonomous loop **paused**. I'll only act when you ask me "
-                "directly. Say *resume* to start it again."
-            ),
-        ).send()
-    elif "scope" in text:
-        await fake_scope(text)
-    elif "reset" in text and "setup" in text:
-        # Clear everything EXCEPT the admin password hash. "reset setup"
-        # re-runs the Setup Agent (repo, project board, loop config) but
-        # keeps the admin authenticated. To wipe the password too, the
-        # admin edits .imp/config.json on disk or deletes it outright.
+    # `reset setup` is a config-mutation with no argv equivalent, so it
+    # stays as a local shortcut instead of going through the dispatcher.
+    if "reset" in text and "setup" in text:
         cfg = load_config()
         preserved = {}
         if cfg.get("admin_password_hash"):
@@ -697,23 +674,47 @@ async def _on_message_body(msg: cl.Message) -> None:
                 "`.imp/config.json` from disk."
             ),
         ).send()
-    else:
-        await cl.Message(
-            author="Foreman",
-            content=(
-                "I'm a stub spike, so my responses are limited. Try one of:\n"
-                "- *gantt*\n"
-                "- *moderate issue 42*\n"
-                "- *budget*\n"
-                "- *pause* / *resume*\n"
-                "- *scope to 42, 43*\n"
-                "- *reset setup* (re-runs the Setup Agent on next refresh)\n"
-                "- *run: echo hello* (exercises server/intercept.py "
-                "end-to-end, real pipeline)\n"
-                "- *logs* (list recent log files)\n"
-                "- *log act_xxxx* (view the contents of a specific log file)"
-            ),
-        ).send()
+        return
+
+    # ---- Hand off to the real dispatcher ----
+    # P2.9 replaces the keyword-matcher below this line with an LLM-driven
+    # dispatcher that routes to intercept.execute_command, asks clarifying
+    # questions, or answers directly. Explicit-mode shortcuts (run:, keyword
+    # argv) are handled inside `dispatcher._parse_explicit` and also above
+    # via `run_demo_command` / `show_log_command`, which keep their richer
+    # UX (verdict table, log sidebar).
+    from server import dispatcher
+
+    await dispatcher.dispatch(
+        msg.content,
+        say=_foreman_say,
+        ask=_foreman_ask,
+    )
+
+
+async def _foreman_say(text: str) -> None:
+    """Post a `Foreman`-authored reply to the admin."""
+    await cl.Message(author="Foreman", content=text).send()
+
+
+async def _foreman_ask(question: str) -> str | None:
+    """Ask the admin a single clarifying question. Returns the answer,
+    or None if the admin timed out / dismissed.
+
+    Chainlit's `cl.AskUserMessage.send()` returns either None or a dict
+    whose `output` key holds the reply text. Normalise both to the
+    dispatcher's `Optional[str]` contract.
+    """
+    resp = await cl.AskUserMessage(
+        author="Foreman",
+        content=question,
+        timeout=120,
+    ).send()
+    if not resp:
+        return None
+    answer = (resp.get("output") if isinstance(resp, dict) else None) or ""
+    answer = answer.strip()
+    return answer or None
 
 
 # ---------- real intercept demo (P2.6) ----------
