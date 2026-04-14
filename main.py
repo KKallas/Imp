@@ -42,6 +42,7 @@ import asyncio
 import json
 import re
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import chainlit as cl
@@ -734,6 +735,7 @@ async def _on_message_body(msg: cl.Message) -> None:
         msg.content,
         say=_foreman_say,
         ask=_foreman_ask,
+        thinking=_foreman_thinking,
     )
 
 
@@ -760,6 +762,21 @@ async def _foreman_ask(question: str) -> str | None:
     answer = (resp.get("output") if isinstance(resp, dict) else None) or ""
     answer = answer.strip()
     return answer or None
+
+
+@asynccontextmanager
+async def _foreman_thinking(label: str):
+    """Bracket a slow LLM call with a visible `cl.Step` spinner.
+
+    Dispatcher's `_synthesize_answer` enters this around the follow-up
+    backend call so the user sees "Interpreting the output…" with a
+    live spinner instead of an awkward silent pause between the command
+    output and the prose synthesis. The step auto-closes (spinner goes
+    away) as soon as the synthesis message lands, regardless of success
+    or failure.
+    """
+    async with cl.Step(name=label, type="run") as step:
+        yield step
 
 
 # ---------- real intercept demo (P2.6) ----------

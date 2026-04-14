@@ -438,6 +438,123 @@ async def test_dispatch_synthesis_skipped_on_empty_output() -> None:
     print("test_dispatch_synthesis_skipped_on_empty_output: OK")
 
 
+async def test_dispatch_thinking_brackets_synthesis_call() -> None:
+    """When `thinking` is provided, it must be entered BEFORE the synthesis
+    backend call and exited AFTER — so the UI spinner actually covers the
+    slow part. Empty-output and rejected paths skip synthesis entirely,
+    so `thinking` must NOT be entered in those cases either."""
+    _reset()
+
+    events: list[tuple[str, str | None]] = []
+
+    class ThinkingRecorder:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        async def __aenter__(self):
+            events.append(("enter", self.label))
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            events.append(("exit", self.label))
+            return False
+
+    def thinking_factory(label: str) -> ThinkingRecorder:
+        return ThinkingRecorder(label)
+
+    say = SayRecorder()
+    ask = AskScript([])
+
+    async def tracking_backend(system: str, user: str) -> dispatcher.BackendResult:
+        events.append(("backend", system[:30]))
+        if system.startswith("You are Foreman, the chat agent"):
+            # First call — classifier picks execute
+            return (
+                '{"type": "execute", "argv": ["echo", "tracked"], "rationale": "trace"}',
+                40,
+                20,
+            )
+        # Second call — synthesis
+        return ("I counted 'tracked' in the output.", 30, 15)
+
+    dispatcher.set_backend(tracking_backend)
+
+    await dispatcher.dispatch(
+        "trace the flow",
+        say=say,
+        ask=ask,
+        thinking=thinking_factory,
+    )
+
+    # Synthesis message landed
+    assert any("counted 'tracked'" in m for m in say.messages), say.messages
+
+    # Event order must be:
+    #   backend (classifier) → backend (synthesis) wrapped by enter/exit
+    # i.e. the thinking block brackets ONLY the synthesis call.
+    backend_events = [e for e in events if e[0] == "backend"]
+    thinking_events = [e for e in events if e[0] in ("enter", "exit")]
+
+    assert len(backend_events) == 2, backend_events
+    assert len(thinking_events) == 2, thinking_events
+    assert thinking_events[0][0] == "enter"
+    assert thinking_events[1][0] == "exit"
+    assert "Interpreting" in thinking_events[0][1] or "output" in thinking_events[0][1].lower()
+
+    # Strict ordering: classifier backend call comes first, then enter,
+    # then synthesis backend, then exit.
+    ordered_kinds = [e[0] for e in events]
+    assert ordered_kinds == ["backend", "enter", "backend", "exit"], ordered_kinds
+
+    print("test_dispatch_thinking_brackets_synthesis_call: OK")
+
+
+async def test_dispatch_thinking_not_entered_when_synthesis_skipped() -> None:
+    """No synthesis → no thinking enter/exit. Covers the reject path."""
+    _reset()
+    budgets.set_limit("edits", 0)
+
+    entered = []
+
+    class Recorder:
+        def __init__(self, label: str):
+            self.label = label
+
+        async def __aenter__(self):
+            entered.append(self.label)
+
+        async def __aexit__(self, *a):
+            return False
+
+    say = SayRecorder()
+    ask = AskScript([])
+    backend = FakeBackend(
+        [
+            (
+                '{"type": "execute", "argv": ["gh", "issue", "edit", "42", '
+                '"--add-label", "x"], "rationale": "add label"}',
+                50,
+                20,
+            )
+        ]
+    )
+    dispatcher.set_backend(backend)
+
+    try:
+        await dispatcher.dispatch(
+            "add label x to issue 42",
+            say=say,
+            ask=ask,
+            thinking=lambda label: Recorder(label),
+        )
+    finally:
+        budgets.set_limit("edits", budgets.DEFAULT_LIMITS["edits"])
+
+    # Rejected → no synthesis → thinking factory never called
+    assert entered == [], entered
+    print("test_dispatch_thinking_not_entered_when_synthesis_skipped: OK")
+
+
 async def test_dispatch_synthesis_failure_is_soft() -> None:
     """If the synthesis backend call raises, the admin still gets the raw output."""
     _reset()
@@ -595,6 +712,8 @@ async def amain() -> None:
     await test_dispatch_clarify_then_execute()
     await test_dispatch_synthesis_skipped_on_reject()
     await test_dispatch_synthesis_skipped_on_empty_output()
+    await test_dispatch_thinking_brackets_synthesis_call()
+    await test_dispatch_thinking_not_entered_when_synthesis_skipped()
     await test_dispatch_synthesis_failure_is_soft()
     await test_dispatch_explicit_shortcut_skips_backend()
     await test_dispatch_clarify_loop_bounded()
