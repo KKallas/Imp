@@ -270,8 +270,12 @@ async def test_dispatch_execute_branch() -> None:
 
     # Backend was called once
     assert len(backend.calls) == 1
-    # No chat message — intercept produces the output, dispatcher stays quiet
-    assert say.messages == [], say.messages
+    # Two say() calls: the "Running: ..." narration, and the summary
+    # (output + exit code) after the subprocess exits.
+    assert len(say.messages) == 2, say.messages
+    assert "Running:" in say.messages[0] and "echo hello" in say.messages[0]
+    assert "hello" in say.messages[1]  # the echo output
+    assert "Exit code: `0`" in say.messages[1]
     # Intercept actually ran the echo
     assert len(intercept.action_log) == 1
     a = intercept.action_log[0]
@@ -338,6 +342,8 @@ async def test_dispatch_clarify_then_execute() -> None:
     assert a.classified_as == "read"
     # Token accounting sums both calls
     assert budgets.get_budgets().tokens_used == 300
+    # Execute branch emits narration + summary
+    assert any("Running:" in m for m in say.messages), say.messages
     print("test_dispatch_clarify_then_execute: OK")
 
 
@@ -357,6 +363,10 @@ async def test_dispatch_explicit_shortcut_skips_backend() -> None:
     assert intercept.action_log[0].command == ["echo", "explicit"]
     # No tokens burned because no LLM call
     assert budgets.get_budgets().tokens_used == 0
+    # Narration + summary after execution, even on explicit path.
+    assert len(say.messages) == 2, say.messages
+    assert "Running:" in say.messages[0] and "explicit" in say.messages[0].lower()
+    assert "Exit code: `0`" in say.messages[1]
     print("test_dispatch_explicit_shortcut_skips_backend: OK")
 
 

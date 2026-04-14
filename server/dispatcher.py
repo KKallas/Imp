@@ -399,13 +399,27 @@ async def dispatch(
     argv = _parse_explicit(user_text)
     if argv is not None:
         print(f"[dispatcher] explicit-mode argv={argv!r}", file=sys.stderr)
-        await intercept.execute_command(
+        await say(f"**Running:** `{' '.join(argv)}` _(explicit)_")
+        rc, output, action = await intercept.execute_command(
             argv,
             user_intent=user_text,
             rationale="explicit-mode dispatch (no LLM)",
             kind="explicit",
             step=step,
         )
+        summary_lines: list[str] = []
+        if action.verdict == "reject":
+            summary_lines.append(
+                f"**Rejected:** {action.verdict_reason or '(no reason given)'}"
+            )
+        else:
+            if output and output.strip():
+                trimmed = output.rstrip()
+                if len(trimmed) > 4000:
+                    trimmed = trimmed[:4000] + "\n... [truncated — see log]"
+                summary_lines.append(f"```\n{trimmed}\n```")
+            summary_lines.append(f"Exit code: `{rc}`")
+        await say("\n\n".join(summary_lines))
         return
 
     # 2. LLM loop (bounded)
@@ -455,13 +469,41 @@ async def dispatch(
                 f"[dispatcher] → execute argv={verdict.argv!r}",
                 file=sys.stderr,
             )
-            await intercept.execute_command(
-                verdict.argv or [],
+            argv_list = verdict.argv or []
+            rationale = verdict.rationale or "dispatcher proposal"
+            # Narrate before running so the admin has immediate feedback
+            # instead of a dead pause while the subprocess spins up.
+            narration = f"**Running:** `{' '.join(argv_list)}`"
+            if rationale and rationale != "(no rationale)":
+                narration += f"\n\n_{rationale}_"
+            await say(narration)
+
+            rc, output, action = await intercept.execute_command(
+                argv_list,
                 user_intent=user_text,
-                rationale=verdict.rationale or "dispatcher proposal",
+                rationale=rationale,
                 kind="dispatched",
                 step=step,
             )
+
+            # Summary of what happened. Split rejection (guard / budget)
+            # from execution result so the admin sees the difference.
+            summary_lines: list[str] = []
+            if action.verdict == "reject":
+                summary_lines.append(
+                    f"**Rejected:** {action.verdict_reason or '(no reason given)'}"
+                )
+            else:
+                if output and output.strip():
+                    # Cap the rendered output so a megabyte of log lines
+                    # doesn't swamp the chat. The full output is still on
+                    # disk at `.imp/output/<action_id>.log`.
+                    trimmed = output.rstrip()
+                    if len(trimmed) > 4000:
+                        trimmed = trimmed[:4000] + "\n... [truncated — see log]"
+                    summary_lines.append(f"```\n{trimmed}\n```")
+                summary_lines.append(f"Exit code: `{rc}`")
+            await say("\n\n".join(summary_lines))
             return
 
         if verdict.type == "answer":
