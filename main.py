@@ -433,11 +433,56 @@ def auth(username: str, password: str) -> cl.User | None:
 @cl.on_chat_start
 async def on_start() -> None:
     if not is_setup_complete():
-        await run_setup_agent()
+        # P3.9: LLM-driven Setup Agent replaces the hardcoded wizard.
+        # The old `run_setup_agent` is kept below as a reference / fallback
+        # in case the SDK is unavailable, but the live path is the new one.
+        from server import setup_agent
+
+        try:
+            await setup_agent.run_setup(
+                say=_foreman_say_as("Setup Agent"),
+                ask=_foreman_ask_as("Setup Agent"),
+            )
+        except Exception as exc:  # noqa: BLE001 — fall back cleanly if SDK is broken
+            await cl.Message(
+                author="Setup Agent",
+                content=(
+                    f"The LLM-driven setup agent failed to start ({exc}). "
+                    f"Falling back to the hardcoded wizard."
+                ),
+            ).send()
+            await run_setup_agent()
     else:
         await greet_foreman()
     await register_budget_settings()
     await refresh_budget_bar()
+
+
+def _foreman_say_as(author: str):
+    """Build a `say` coroutine whose messages are attributed to `author`."""
+
+    async def _say(text: str) -> None:
+        await cl.Message(author=author, content=text).send()
+
+    return _say
+
+
+def _foreman_ask_as(author: str):
+    """Build an `ask` coroutine that labels AskUserMessage with `author`."""
+
+    async def _ask(question: str) -> str | None:
+        resp = await cl.AskUserMessage(
+            author=author,
+            content=question,
+            timeout=600,
+        ).send()
+        if not resp:
+            return None
+        answer = (resp.get("output") if isinstance(resp, dict) else None) or ""
+        answer = answer.strip()
+        return answer or None
+
+    return _ask
 
 
 # ---------- setup agent ----------
