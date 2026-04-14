@@ -398,6 +398,22 @@ def _parse_explicit(text: str) -> Optional[list[str]]:
 
 SayFn = Callable[[str], Awaitable[None]]
 AskFn = Callable[[str], Awaitable[Optional[str]]]
+# `thinking(label)` returns an async context manager the caller enters
+# around slow LLM calls. The UI layer shows a spinner / "thinking…"
+# indicator while open. Main.py wires this to `cl.Step(type="run")`;
+# tests pass a recording stub. Optional — if None, no indicator fires.
+ThinkingFn = Callable[[str], Any]
+
+
+class _NullAsyncContext:
+    """Degenerate async context manager used when no `thinking` is
+    provided — keeps the `async with` call site clean."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
 
 
 async def _synthesize_answer(
@@ -408,6 +424,7 @@ async def _synthesize_answer(
     rc: int,
     backend: BackendCallable,
     say: SayFn,
+    thinking: Optional[ThinkingFn] = None,
 ) -> None:
     """One extra LLM call that interprets command output in plain prose.
 
@@ -442,10 +459,18 @@ async def _synthesize_answer(
         f"Exit code: {rc}"
     )
 
+    # Show a "thinking…" spinner around the synthesis call so the gap
+    # between the code-fenced output and the prose answer doesn't feel
+    # like the agent has stalled. The context manager auto-closes on
+    # exit (success, failure, or exception) so the spinner always
+    # clears exactly once.
+    ctx_factory = thinking if thinking is not None else (lambda _label: _NullAsyncContext())
+
     try:
-        raw, in_tok, out_tok = await backend(
-            FOLLOWUP_SYSTEM_PROMPT, followup_prompt
-        )
+        async with ctx_factory("Interpreting the output…"):
+            raw, in_tok, out_tok = await backend(
+                FOLLOWUP_SYSTEM_PROMPT, followup_prompt
+            )
     except Exception as exc:  # noqa: BLE001 — fail soft, don't mask raw output
         print(
             f"[dispatcher] synthesis backend raised: {type(exc).__name__}: {exc}",
@@ -473,6 +498,7 @@ async def dispatch(
     say: SayFn,
     ask: AskFn,
     step: Optional[Any] = None,
+    thinking: Optional[ThinkingFn] = None,
 ) -> None:
     """Route `user_text` to execute / clarify / answer.
 
@@ -480,7 +506,9 @@ async def dispatch(
     prompts the admin and returns the answer (or None on timeout).
     `step` is forwarded to `intercept.execute_command` when the
     dispatcher picks "execute" — a live `cl.Step` the caller already
-    opened to stream subprocess output into.
+    opened to stream subprocess output into. `thinking(label)` returns
+    an async context manager that bookends slow LLM synthesis calls
+    so the UI can render a spinner; pass `None` to disable.
     """
     import sys
 
@@ -610,6 +638,7 @@ async def dispatch(
                     rc=rc,
                     backend=backend,
                     say=say,
+                    thinking=thinking,
                 )
             return
 
