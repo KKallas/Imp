@@ -232,6 +232,28 @@ async def register_budget_settings() -> None:
                 step=1,
                 tooltip="Pipeline-script invocations (moderate / solve / fix).",
             ),
+            # Chainlit ChatSettings can't host true buttons — only these
+            # input widgets. Each "reset X" toggle auto-reverts after save.
+            # Click one (or several), hit Save, the corresponding counter
+            # is zeroed and the toggles flip back to off on re-render.
+            Switch(
+                id="reset_tokens",
+                label="Reset tokens counter (on save)",
+                initial=False,
+                tooltip="Click, then Save. Zeroes tokens-used. Limit unchanged.",
+            ),
+            Switch(
+                id="reset_edits",
+                label="Reset edits counter (on save)",
+                initial=False,
+                tooltip="Click, then Save. Zeroes edits-used. Limit unchanged.",
+            ),
+            Switch(
+                id="reset_tasks",
+                label="Reset tasks counter (on save)",
+                initial=False,
+                tooltip="Click, then Save. Zeroes tasks-used. Limit unchanged.",
+            ),
             Switch(
                 id="show_budget_bar",
                 label="Show live budget bar in chat",
@@ -286,66 +308,12 @@ async def refresh_budget_bar() -> None:
         except Exception as e:
             print(f"[budget-bar] remove (replace) failed: {e}", file=sys.stderr)
     try:
-        msg = cl.Message(
-            author="Budgets",
-            content=_render_budget_status(),
-            actions=_budget_reset_actions(),
-        )
+        msg = cl.Message(author="Budgets", content=_render_budget_status())
         await msg.send()
         cl.user_session.set("budget_status_msg", msg)
         print("[budget-bar] sent new bar", file=sys.stderr)
     except Exception as e:
         print(f"[budget-bar] send failed: {type(e).__name__}: {e}", file=sys.stderr)
-
-
-def _budget_reset_actions() -> list[cl.Action]:
-    """Three buttons, one per counter — reset just that counter to 0.
-
-    Using one action name (`budget_reset`) with a `counter` payload keeps
-    the dispatcher to a single callback instead of three near-duplicates.
-    """
-    return [
-        cl.Action(
-            name="budget_reset",
-            payload={"counter": "tokens"},
-            label="Reset tokens",
-            tooltip="Zero out the tokens-used counter. Limit unchanged.",
-        ),
-        cl.Action(
-            name="budget_reset",
-            payload={"counter": "edits"},
-            label="Reset edits",
-            tooltip="Zero out the edits-used counter. Limit unchanged.",
-        ),
-        cl.Action(
-            name="budget_reset",
-            payload={"counter": "tasks"},
-            label="Reset tasks",
-            tooltip="Zero out the tasks-used counter. Limit unchanged.",
-        ),
-    ]
-
-
-@cl.action_callback("budget_reset")
-async def on_budget_reset(action: cl.Action) -> None:
-    """Per-counter reset button handler. Admin-only (see `_is_admin`)."""
-    import sys
-
-    if not _is_admin():
-        return
-    counter = (action.payload or {}).get("counter")
-    if counter not in ("tokens", "edits", "tasks"):
-        print(
-            f"[budget-reset] bad payload: {action.payload!r}", file=sys.stderr
-        )
-        return
-    budgets.reset_counter(counter)
-    await cl.Message(
-        author="Budgets",
-        content=f"Reset `{counter}` counter to 0.",
-    ).send()
-    # Re-render so the bar moves to the bottom AND shows the new 0 value
-    await refresh_budget_bar()
 
 
 @cl.on_settings_update
@@ -381,10 +349,17 @@ async def on_settings_update(settings: dict) -> None:
         budgets.set_task_budget(new_task)
         limit_changes.append(f"tasks={new_task}")
 
-    # Resets are driven by per-counter action buttons on the live bar
-    # (see @cl.action_callback("budget_reset") below) — not by this panel.
-    # Putting "reset" into a save-form creates the trap of wiping counters
-    # by accident when you just wanted to adjust a limit.
+    # Per-counter resets — one Switch each. ChatSettings has no button
+    # widget, so these toggles act as momentary buttons: flip → Save →
+    # counter zeroed → we re-render the panel so the toggle flips back
+    # to off automatically. Each one is independent, so you can reset
+    # several in one Save.
+    resets: list[str] = []
+    for counter in ("tokens", "edits", "tasks"):
+        if settings.get(f"reset_{counter}"):
+            resets.append(counter)
+    if resets:
+        budgets.reset_budgets(which=resets)
 
     # Auto-flip the live bar on if the admin set a limit. Rationale:
     # the only reason to tighten a budget is because you want to *watch*
@@ -403,6 +378,8 @@ async def on_settings_update(settings: dict) -> None:
     bits: list[str] = []
     if limit_changes:
         bits.append("limits: " + ", ".join(limit_changes))
+    if resets:
+        bits.append("reset: " + ", ".join(resets))
     if auto_enabled:
         bits.append("live bar enabled (auto)")
     if not bits:
@@ -411,6 +388,12 @@ async def on_settings_update(settings: dict) -> None:
         author="Budgets",
         content="Saved — " + " · ".join(bits),
     ).send()
+
+    # Re-send the settings panel so the three reset toggles visually flip
+    # back to off after firing — they're one-shot "buttons," not stateful
+    # preferences.
+    if resets:
+        await register_budget_settings()
 
     # Send / refresh the live bar to reflect the new state. Always ends
     # up as the most recent message so the admin can see it.
