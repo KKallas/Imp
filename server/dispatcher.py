@@ -389,9 +389,16 @@ async def dispatch(
     dispatcher picks "execute" — a live `cl.Step` the caller already
     opened to stream subprocess output into.
     """
+    import sys
+
+    print(
+        f"[dispatcher] dispatch called: user_text={user_text!r}", file=sys.stderr
+    )
+
     # 1. Explicit-mode shortcut — no LLM
     argv = _parse_explicit(user_text)
     if argv is not None:
+        print(f"[dispatcher] explicit-mode argv={argv!r}", file=sys.stderr)
         await intercept.execute_command(
             argv,
             user_intent=user_text,
@@ -406,15 +413,29 @@ async def dispatch(
     history: list[tuple[str, str]] = []
     current_turn = user_text
 
-    for _ in range(MAX_CLARIFY_TURNS):
+    for turn_idx in range(MAX_CLARIFY_TURNS):
         user_prompt = _build_user_prompt(
             current_turn, history, _current_state_blurb()
+        )
+        print(
+            f"[dispatcher] calling backend (turn {turn_idx + 1}/{MAX_CLARIFY_TURNS})",
+            file=sys.stderr,
         )
         try:
             raw, in_tok, out_tok = await backend(SYSTEM_PROMPT, user_prompt)
         except Exception as exc:  # noqa: BLE001 — fail closed on backend error
+            print(
+                f"[dispatcher] backend raised: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
             await say(f"Dispatcher backend error: {exc}")
             return
+
+        print(
+            f"[dispatcher] backend returned: in={in_tok} out={out_tok} "
+            f"text={raw[:500]!r}{' ...[truncated]' if len(raw) > 500 else ''}",
+            file=sys.stderr,
+        )
 
         # Feed token usage into the shared budget counter. Only on
         # non-negative counts; a broken backend returning weird numbers
@@ -423,8 +444,17 @@ async def dispatch(
             budgets.add_tokens(max(0, in_tok), max(0, out_tok))
 
         verdict = _parse_verdict(raw)
+        print(
+            f"[dispatcher] parsed verdict.type={verdict.type} "
+            f"error={verdict.error!r}",
+            file=sys.stderr,
+        )
 
         if verdict.type == "execute":
+            print(
+                f"[dispatcher] → execute argv={verdict.argv!r}",
+                file=sys.stderr,
+            )
             await intercept.execute_command(
                 verdict.argv or [],
                 user_intent=user_text,
@@ -435,11 +465,16 @@ async def dispatch(
             return
 
         if verdict.type == "answer":
+            print(
+                f"[dispatcher] → answer text={(verdict.text or '')[:200]!r}",
+                file=sys.stderr,
+            )
             await say(verdict.text or "(empty answer)")
             return
 
         if verdict.type == "clarify":
             question = verdict.question or "Could you clarify?"
+            print(f"[dispatcher] → clarify q={question!r}", file=sys.stderr)
             answer = await ask(question)
             if answer is None:
                 await say("No response received — abandoning this turn.")
@@ -449,9 +484,13 @@ async def dispatch(
             continue
 
         # error
+        print(
+            f"[dispatcher] → error: {verdict.error}", file=sys.stderr
+        )
         await say(f"Dispatcher couldn't parse the model's reply: {verdict.error}")
         return
 
+    print("[dispatcher] clarify loop exhausted", file=sys.stderr)
     await say(
         "I asked for clarification several times without landing on a clear "
         "action. Try rephrasing the request more concretely."
