@@ -11,9 +11,17 @@ board, skip fields that already exist, and only create the gaps.
 1. Finds or creates a Projects-v2 board titled `<--title>` (default `Imp`)
    under `<--owner>` (user or org login).
 2. Reads the canonical field definitions from `templates/fields.json`.
-3. For each field that doesn't already exist on the board, creates it via
-   `gh project field-create` — preserving `--single-select-options` where
-   applicable.
+3. Checks each template field against the board:
+   - **missing** → create via `gh project field-create`
+   - **matches** (same name + same type + equivalent options) → skip
+   - **conflict** (same name, wrong type or different options) → behavior
+     controlled by `--on-conflict`:
+     - `stop` (default) — exit rc=2 with a structured JSON report of the
+       conflicts so the Setup Agent can ask the admin what to do
+     - `delete` — `gh project field-delete` the conflicting field, then
+       create it fresh from the template
+     - `skip` — log and proceed as-is (may cause runtime errors later
+       when pipeline scripts try to write incompatible values)
 4. Persists `project_number` and `project_owner` to `.imp/config.json`
    so the worker and pipeline scripts know which board to talk to.
 
@@ -29,10 +37,14 @@ scope error — re-run `gh auth refresh -s project` and try again.
  - 0: everything provisioned (or already present) and config written.
  - 1: gh CLI error or JSON parse failure (stderr has the specific gh
    output so the Setup Agent can surface it to the admin).
+ - 2: field conflicts detected in `stop` mode. Stdout is a JSON report
+   the Setup Agent parses; config is NOT written, since we bail before
+   anything irreversible happens.
 
 Called by `server.setup_agent.do_create_imp_project` — the tool parses
-this script's exit code to decide whether to report success or a
-blocker to the admin. Keep the exit-code contract stable.
+this script's exit code to decide whether to report success, a blocker,
+or surface conflict details to the admin for a delete-or-abort choice.
+Keep the exit-code contract stable.
 """
 
 from __future__ import annotations
@@ -181,6 +193,29 @@ def list_fields(owner: str, number: int) -> list[dict[str, Any]]:
     return [f for f in fields if isinstance(f, dict)]
 
 
+def delete_field(owner: str, field_id: str) -> None:
+    """Remove a project field by its GraphQL node ID.
+
+    Used only by the `on_conflict=delete` path — a type / option
+    mismatch on a same-named field means we need to start fresh, since
+    GitHub doesn't let you change a field's dataType in place.
+    """
+    rc, out = run_gh(
+        [
+            "gh",
+            "project",
+            "field-delete",
+            "--id",
+            field_id,
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(
+            f"gh project field-delete failed for id={field_id!r} "
+            f"(rc={rc}): {out.strip()}"
+        )
+
+
 def create_field(owner: str, number: int, field_def: dict[str, Any]) -> None:
     """Create a single custom field on the board.
 
@@ -215,10 +250,107 @@ def create_field(owner: str, number: int, field_def: dict[str, Any]) -> None:
         )
 
 
+# ---------- conflict detection ----------
+
+ON_CONFLICT_CHOICES = ("stop", "delete", "skip")
+
+
+def _existing_option_names(existing_field: dict[str, Any]) -> list[str]:
+    """Extract option names from a field-list entry, handling both the
+    `options: [...]` and `singleSelectOptions: [...]` shapes gh returns.
+
+    An option entry may itself be either a string or a dict with a
+    `name` key — we normalize to a plain list of strings.
+    """
+    raw_opts = (
+        existing_field.get("options")
+        or existing_field.get("singleSelectOptions")
+        or []
+    )
+    out: list[str] = []
+    for opt in raw_opts:
+        if isinstance(opt, str):
+            out.append(opt)
+        elif isinstance(opt, dict):
+            name = opt.get("name")
+            if isinstance(name, str):
+                out.append(name)
+    return out
+
+
+def detect_field_conflicts(
+    existing_fields: list[dict[str, Any]],
+    template: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compare existing fields against the template — return conflicts.
+
+    A conflict is a same-named field whose `dataType` doesn't match OR
+    (for SINGLE_SELECT) whose options differ from the template's set.
+    Fields that don't exist yet are NOT conflicts — they're just
+    missing and will be created by `bootstrap_project`.
+
+    Return shape (each entry is what the Setup Agent surfaces to the
+    admin):
+      {
+        "name": "confidence",
+        "reason": "wrong_type" | "wrong_options",
+        "expected_type": "SINGLE_SELECT",
+        "actual_type": "TEXT",
+        "expected_options": ["high", "medium", "low"],
+        "actual_options": [],
+        "field_id": "PVTF_..."   (so on_conflict=delete can target it)
+      }
+    """
+    by_name = {f.get("name"): f for f in existing_fields if isinstance(f.get("name"), str)}
+    conflicts: list[dict[str, Any]] = []
+
+    for tmpl in template:
+        name = tmpl["name"]
+        existing = by_name.get(name)
+        if existing is None:
+            continue  # missing is not a conflict
+
+        expected_type = tmpl["type"]
+        actual_type = existing.get("dataType") or existing.get("type")
+        if actual_type != expected_type:
+            conflicts.append(
+                {
+                    "name": name,
+                    "reason": "wrong_type",
+                    "expected_type": expected_type,
+                    "actual_type": actual_type,
+                    "field_id": existing.get("id"),
+                }
+            )
+            continue
+
+        if expected_type == "SINGLE_SELECT":
+            expected_opts = sorted(tmpl.get("options") or [])
+            actual_opts = sorted(_existing_option_names(existing))
+            if expected_opts != actual_opts:
+                conflicts.append(
+                    {
+                        "name": name,
+                        "reason": "wrong_options",
+                        "expected_type": expected_type,
+                        "actual_type": actual_type,
+                        "expected_options": list(tmpl.get("options") or []),
+                        "actual_options": _existing_option_names(existing),
+                        "field_id": existing.get("id"),
+                    }
+                )
+
+    return conflicts
+
+
 # ---------- orchestration ----------
 
 
-def bootstrap_project(owner: str, title: str) -> dict[str, Any]:
+def bootstrap_project(
+    owner: str,
+    title: str,
+    on_conflict: str = "stop",
+) -> dict[str, Any]:
     """Idempotently provision the board + fields for `owner`.
 
     Returns a summary dict the CLI entry point prints to stdout and the
@@ -239,12 +371,52 @@ def bootstrap_project(owner: str, title: str) -> dict[str, Any]:
             f"aborting before writing config"
         )
 
+    if on_conflict not in ON_CONFLICT_CHOICES:
+        raise ValueError(
+            f"on_conflict must be one of {ON_CONFLICT_CHOICES}, got {on_conflict!r}"
+        )
+
     existing_fields = list_fields(owner, number)
-    existing_names = {f.get("name") for f in existing_fields}
+    template = load_fields_template()
+
+    conflicts = detect_field_conflicts(existing_fields, template)
+
+    # `stop` (default): raise a structured conflict so the admin can
+    # decide between delete-and-recreate or manual fix. Config is NOT
+    # written — we bail before touching anything irreversible.
+    if conflicts and on_conflict == "stop":
+        raise ConflictError(
+            conflicts=conflicts,
+            project_number=number,
+            project_owner=owner,
+            project_status=project_status,
+        )
+
+    # `delete`: remove each conflicting field by ID, then fall through
+    # to the normal missing-field creation path. Existing options /
+    # values on items using these fields are lost — that's the choice
+    # the admin made.
+    deleted_fields: list[str] = []
+    if conflicts and on_conflict == "delete":
+        for conflict in conflicts:
+            field_id = conflict.get("field_id")
+            if not field_id:
+                raise RuntimeError(
+                    f"conflict for {conflict['name']!r} has no field_id — "
+                    "can't delete it"
+                )
+            delete_field(owner, field_id)
+            deleted_fields.append(conflict["name"])
+        # After deletion, refresh the existing-fields list so the
+        # create pass doesn't see the stale entries.
+        existing_fields = list_fields(owner, number)
+
+    # `skip`: conflicts are logged in the return dict but no write
+    # happens; the admin accepts the runtime-risk.
+    existing_names = {f.get("name") for f in existing_fields if isinstance(f.get("name"), str)}
 
     created_fields: list[str] = []
     skipped_fields: list[str] = []
-    template = load_fields_template()
     for field_def in template:
         if field_def["name"] in existing_names:
             skipped_fields.append(field_def["name"])
@@ -263,7 +435,52 @@ def bootstrap_project(owner: str, title: str) -> dict[str, Any]:
         "project_status": project_status,
         "created_fields": created_fields,
         "skipped_fields": skipped_fields,
+        "deleted_fields": deleted_fields,
+        "conflicts_ignored": conflicts if on_conflict == "skip" else [],
+        "on_conflict": on_conflict,
     }
+
+
+class ConflictError(Exception):
+    """Raised when `bootstrap_project(on_conflict="stop")` finds field
+    mismatches that need an admin decision. The CLI entry point catches
+    this and exits `rc=2` with a JSON report; the Setup Agent parses
+    that report and asks the admin what to do next.
+    """
+
+    def __init__(
+        self,
+        *,
+        conflicts: list[dict[str, Any]],
+        project_number: int,
+        project_owner: str,
+        project_status: str,
+    ) -> None:
+        super().__init__(
+            f"{len(conflicts)} field conflict(s) detected on project "
+            f"#{project_number}. Admin must choose: delete (overwrite) or "
+            f"stop (fix manually)."
+        )
+        self.conflicts = conflicts
+        self.project_number = project_number
+        self.project_owner = project_owner
+        self.project_status = project_status
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "status": "conflicts_detected",
+            "project_number": self.project_number,
+            "project_owner": self.project_owner,
+            "project_status": self.project_status,
+            "conflicts": self.conflicts,
+            "next_steps": (
+                "Re-run project_bootstrap.py with --on-conflict delete to "
+                "overwrite the conflicting fields (destructive — values on "
+                "existing items in those fields will be lost), or fix the "
+                "fields manually in the GitHub UI and re-run with the "
+                "default --on-conflict stop."
+            ),
+        }
 
 
 def main() -> int:
@@ -278,10 +495,30 @@ def main() -> int:
         default="Imp",
         help="Project title (default: Imp)",
     )
+    parser.add_argument(
+        "--on-conflict",
+        choices=ON_CONFLICT_CHOICES,
+        default="stop",
+        help=(
+            "What to do if a same-named field has the wrong type or different "
+            "single-select options: 'stop' (default, exit rc=2 with a report), "
+            "'delete' (remove + recreate — destructive), or 'skip' (accept "
+            "the existing field as-is, risks runtime errors later)."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        result = bootstrap_project(owner=args.owner, title=args.title)
+        result = bootstrap_project(
+            owner=args.owner,
+            title=args.title,
+            on_conflict=args.on_conflict,
+        )
+    except ConflictError as exc:
+        # rc=2: conflicts detected in stop mode — stdout is JSON the
+        # Setup Agent parses to surface the mismatch to the admin.
+        print(json.dumps(exc.report(), indent=2))
+        return 2
     except Exception as exc:  # noqa: BLE001 — propagate message to Setup Agent
         print(str(exc), file=sys.stderr)
         return 1

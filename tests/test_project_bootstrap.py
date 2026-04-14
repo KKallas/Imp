@@ -167,9 +167,25 @@ def test_bootstrap_reuses_existing_project_idempotent() -> None:
                 {"name": "duration_days", "dataType": "NUMBER"},
                 {"name": "start_date", "dataType": "DATE"},
                 {"name": "end_date", "dataType": "DATE"},
-                {"name": "confidence", "dataType": "SINGLE_SELECT"},
-                {"name": "source", "dataType": "SINGLE_SELECT"},
-                {"name": "assignee_verified", "dataType": "SINGLE_SELECT"},
+                {
+                    "name": "confidence",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "high"}, {"name": "medium"}, {"name": "low"}],
+                },
+                {
+                    "name": "source",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [
+                        {"name": "github"},
+                        {"name": "heuristic"},
+                        {"name": "llm"},
+                    ],
+                },
+                {
+                    "name": "assignee_verified",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "yes"}, {"name": "no"}],
+                },
                 {"name": "depends_on", "dataType": "TEXT"},
             ]
         }
@@ -216,9 +232,13 @@ def test_bootstrap_partial_existing_fields_creates_only_missing() -> None:
         {
             "fields": [
                 {"name": "Status"},
-                {"name": "duration_days"},
-                {"name": "start_date"},
-                {"name": "confidence"},
+                {"name": "duration_days", "dataType": "NUMBER"},
+                {"name": "start_date", "dataType": "DATE"},
+                {
+                    "name": "confidence",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "high"}, {"name": "medium"}, {"name": "low"}],
+                },
             ]
         }
     )
@@ -324,6 +344,282 @@ def test_list_fails_surface_gh_error() -> None:
     print("test_list_fails_surface_gh_error: OK")
 
 
+def test_detect_conflict_wrong_type() -> None:
+    """A same-named field with a different dataType is a conflict."""
+    _reset_config()
+    existing = [
+        {"id": "PVTF_a", "name": "duration_days", "dataType": "TEXT"},
+        {"id": "PVTF_b", "name": "start_date", "dataType": "DATE"},
+    ]
+    template = pb.load_fields_template()
+    conflicts = pb.detect_field_conflicts(existing, template)
+    by_name = {c["name"]: c for c in conflicts}
+    assert "duration_days" in by_name
+    assert by_name["duration_days"]["reason"] == "wrong_type"
+    assert by_name["duration_days"]["expected_type"] == "NUMBER"
+    assert by_name["duration_days"]["actual_type"] == "TEXT"
+    assert by_name["duration_days"]["field_id"] == "PVTF_a"
+    # start_date matches → no conflict
+    assert "start_date" not in by_name
+    print("test_detect_conflict_wrong_type: OK")
+
+
+def test_detect_conflict_wrong_options() -> None:
+    """A SINGLE_SELECT with a different option set is a conflict."""
+    _reset_config()
+    existing = [
+        {
+            "id": "PVTF_c",
+            "name": "confidence",
+            "dataType": "SINGLE_SELECT",
+            "options": [{"name": "high"}, {"name": "low"}],  # missing "medium"
+        },
+        {
+            "id": "PVTF_s",
+            "name": "source",
+            "dataType": "SINGLE_SELECT",
+            "options": [{"name": "github"}, {"name": "heuristic"}, {"name": "llm"}],
+        },
+    ]
+    template = pb.load_fields_template()
+    conflicts = pb.detect_field_conflicts(existing, template)
+    by_name = {c["name"]: c for c in conflicts}
+    assert "confidence" in by_name
+    assert by_name["confidence"]["reason"] == "wrong_options"
+    assert set(by_name["confidence"]["expected_options"]) == {"high", "medium", "low"}
+    assert set(by_name["confidence"]["actual_options"]) == {"high", "low"}
+    # source matches exactly → no conflict
+    assert "source" not in by_name
+    print("test_detect_conflict_wrong_options: OK")
+
+
+def test_detect_conflict_missing_field_is_not_conflict() -> None:
+    """A field that doesn't exist yet is missing, not a conflict."""
+    _reset_config()
+    template = pb.load_fields_template()
+    conflicts = pb.detect_field_conflicts([], template)
+    assert conflicts == []
+    print("test_detect_conflict_missing_field_is_not_conflict: OK")
+
+
+def test_bootstrap_on_conflict_stop_raises_and_keeps_config_clean() -> None:
+    """Default stop mode: raise ConflictError, don't write config, no field writes."""
+    _reset_config()
+    project_list = json.dumps({"projects": [{"number": 5, "title": "Imp"}]})
+    bad_fields = json.dumps(
+        {
+            "fields": [
+                {"id": "PVTF_a", "name": "duration_days", "dataType": "TEXT"},
+                {"id": "PVTF_b", "name": "confidence", "dataType": "TEXT"},
+            ]
+        }
+    )
+    fake = FakeGh(
+        [
+            (["gh", "project", "list"], 0, project_list),
+            (["gh", "project", "field-list"], 0, bad_fields),
+        ]
+    )
+    pb.run_gh = fake
+
+    try:
+        pb.bootstrap_project(owner="KKallas", title="Imp", on_conflict="stop")
+        assert False, "expected ConflictError"
+    except pb.ConflictError as exc:
+        names = {c["name"] for c in exc.conflicts}
+        assert names == {"duration_days", "confidence"}, names
+        # The report is a dict the CLI layer dumps to stdout as JSON
+        report = exc.report()
+        assert report["status"] == "conflicts_detected"
+        assert report["project_number"] == 5
+        assert "delete" in (report.get("next_steps") or "").lower()
+
+    # Config must not exist or at least must not carry the project_number —
+    # stop mode bails before config write
+    if pb.CONFIG_FILE.exists():
+        cfg = json.loads(pb.CONFIG_FILE.read_text())
+        assert "project_number" not in cfg, cfg
+    # Critically, no field-create call was attempted
+    assert not any("field-create" in c for c in fake.calls)
+    assert not any("field-delete" in c for c in fake.calls)
+    print("test_bootstrap_on_conflict_stop_raises_and_keeps_config_clean: OK")
+
+
+def test_bootstrap_on_conflict_delete_overwrites_and_creates() -> None:
+    """delete mode removes the conflicting field then recreates it fresh."""
+    _reset_config()
+    project_list = json.dumps({"projects": [{"number": 8, "title": "Imp"}]})
+    # First list call: existing field has wrong type
+    bad_fields = json.dumps(
+        {
+            "fields": [
+                {"id": "PVTF_x", "name": "duration_days", "dataType": "TEXT"},
+                {"id": "PVTF_start", "name": "start_date", "dataType": "DATE"},
+                {"id": "PVTF_end", "name": "end_date", "dataType": "DATE"},
+                {
+                    "id": "PVTF_c",
+                    "name": "confidence",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "high"}, {"name": "medium"}, {"name": "low"}],
+                },
+                {
+                    "id": "PVTF_s",
+                    "name": "source",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [
+                        {"name": "github"},
+                        {"name": "heuristic"},
+                        {"name": "llm"},
+                    ],
+                },
+                {
+                    "id": "PVTF_v",
+                    "name": "assignee_verified",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "yes"}, {"name": "no"}],
+                },
+                {"id": "PVTF_d", "name": "depends_on", "dataType": "TEXT"},
+            ]
+        }
+    )
+    # After deletion, re-list shows duration_days gone
+    refreshed_fields = json.dumps(
+        {
+            "fields": [
+                {"id": "PVTF_start", "name": "start_date", "dataType": "DATE"},
+                {"id": "PVTF_end", "name": "end_date", "dataType": "DATE"},
+                {
+                    "id": "PVTF_c",
+                    "name": "confidence",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "high"}, {"name": "medium"}, {"name": "low"}],
+                },
+                {
+                    "id": "PVTF_s",
+                    "name": "source",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [
+                        {"name": "github"},
+                        {"name": "heuristic"},
+                        {"name": "llm"},
+                    ],
+                },
+                {
+                    "id": "PVTF_v",
+                    "name": "assignee_verified",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "yes"}, {"name": "no"}],
+                },
+                {"id": "PVTF_d", "name": "depends_on", "dataType": "TEXT"},
+            ]
+        }
+    )
+    fake = FakeGh(
+        [
+            (["gh", "project", "list"], 0, project_list),
+            (["gh", "project", "field-list"], 0, bad_fields),
+            (["gh", "project", "field-delete", "--id", "PVTF_x"], 0, "{}"),
+            (["gh", "project", "field-list"], 0, refreshed_fields),
+            (["gh", "project", "field-create", None, None, None, None, "duration_days"], 0, "{}"),
+        ]
+    )
+    pb.run_gh = fake
+
+    result = pb.bootstrap_project(
+        owner="KKallas", title="Imp", on_conflict="delete"
+    )
+
+    assert result["deleted_fields"] == ["duration_days"]
+    assert result["created_fields"] == ["duration_days"]
+    assert result["on_conflict"] == "delete"
+    # Config IS written in delete mode after the overwrite completes
+    cfg = json.loads(pb.CONFIG_FILE.read_text())
+    assert cfg["project_number"] == 8
+    # Verify delete was called with the right field ID
+    delete_calls = [c for c in fake.calls if "field-delete" in c]
+    assert len(delete_calls) == 1
+    assert "PVTF_x" in delete_calls[0]
+    print("test_bootstrap_on_conflict_delete_overwrites_and_creates: OK")
+
+
+def test_bootstrap_on_conflict_skip_ignores_and_writes_config() -> None:
+    """skip mode: surface conflicts in return dict but proceed; config written."""
+    _reset_config()
+    project_list = json.dumps({"projects": [{"number": 11, "title": "Imp"}]})
+    bad_fields = json.dumps(
+        {
+            "fields": [
+                {"id": "PVTF_x", "name": "duration_days", "dataType": "TEXT"},
+                {"id": "PVTF_start", "name": "start_date", "dataType": "DATE"},
+                {"id": "PVTF_end", "name": "end_date", "dataType": "DATE"},
+                {
+                    "id": "PVTF_c",
+                    "name": "confidence",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "high"}, {"name": "medium"}, {"name": "low"}],
+                },
+                {
+                    "id": "PVTF_s",
+                    "name": "source",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [
+                        {"name": "github"},
+                        {"name": "heuristic"},
+                        {"name": "llm"},
+                    ],
+                },
+                {
+                    "id": "PVTF_v",
+                    "name": "assignee_verified",
+                    "dataType": "SINGLE_SELECT",
+                    "options": [{"name": "yes"}, {"name": "no"}],
+                },
+                {"id": "PVTF_d", "name": "depends_on", "dataType": "TEXT"},
+            ]
+        }
+    )
+    fake = FakeGh(
+        [
+            (["gh", "project", "list"], 0, project_list),
+            (["gh", "project", "field-list"], 0, bad_fields),
+        ]
+    )
+    pb.run_gh = fake
+
+    result = pb.bootstrap_project(
+        owner="KKallas", title="Imp", on_conflict="skip"
+    )
+
+    # Nothing was deleted or created — the wrong-type field stays
+    assert result["deleted_fields"] == []
+    assert result["created_fields"] == []
+    assert result["on_conflict"] == "skip"
+    # The conflict is surfaced in the return so the admin knows
+    conflict_names = {c["name"] for c in result["conflicts_ignored"]}
+    assert conflict_names == {"duration_days"}
+    # Config IS written — admin explicitly opted in to the runtime risk
+    cfg = json.loads(pb.CONFIG_FILE.read_text())
+    assert cfg["project_number"] == 11
+    print("test_bootstrap_on_conflict_skip_ignores_and_writes_config: OK")
+
+
+def test_bootstrap_rejects_bad_on_conflict_value() -> None:
+    _reset_config()
+    fake = FakeGh(
+        [
+            (["gh", "project", "list"], 0, json.dumps({"projects": [{"number": 1, "title": "Imp"}]})),
+            (["gh", "project", "field-list"], 0, json.dumps({"fields": []})),
+        ]
+    )
+    pb.run_gh = fake
+    try:
+        pb.bootstrap_project(owner="x", title="Imp", on_conflict="nope")
+        assert False, "expected ValueError on bad on_conflict"
+    except ValueError as exc:
+        assert "on_conflict" in str(exc)
+    print("test_bootstrap_rejects_bad_on_conflict_value: OK")
+
+
 def test_single_select_requires_options() -> None:
     """A SINGLE_SELECT field def without options list must raise before hitting gh."""
     _reset_config()
@@ -355,6 +651,13 @@ def main() -> None:
         test_bootstrap_aborts_without_writing_config_on_create_failure,
         test_bootstrap_errors_on_non_integer_project_number,
         test_list_fails_surface_gh_error,
+        test_detect_conflict_wrong_type,
+        test_detect_conflict_wrong_options,
+        test_detect_conflict_missing_field_is_not_conflict,
+        test_bootstrap_on_conflict_stop_raises_and_keeps_config_clean,
+        test_bootstrap_on_conflict_delete_overwrites_and_creates,
+        test_bootstrap_on_conflict_skip_ignores_and_writes_config,
+        test_bootstrap_rejects_bad_on_conflict_value,
         test_single_select_requires_options,
     ]
     for t in tests:
