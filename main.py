@@ -174,14 +174,18 @@ def _render_budget_status() -> str:
 
 
 def _is_admin() -> bool:
-    """True if the current Chainlit session is the admin user.
+    """True if the current Chainlit session is allowed to change budgets.
 
-    Currently a single-role app (only an admin can log in via the argon2
-    hash in `.imp/config.json`), but the check is here so future read-only
-    or guest roles never see the budget panel.
+    Imp is a single-role app: only the admin can log in at all (argon2
+    hash in `.imp/config.json`). So "logged in" == "admin". We don't
+    gate on `user.metadata["role"]` because Chainlit 2.x doesn't reliably
+    surface the auth-callback metadata in `on_chat_start` / `on_settings_update`
+    when the app has no persistence layer configured — the gate silently
+    bailed, hid the gear icon, and the bar never rendered regardless of
+    the toggle. Multi-role gating lands when the app grows more than one
+    user.
     """
-    user = cl.user_session.get("user")
-    return bool(user and user.metadata.get("role") == "admin")
+    return cl.user_session.get("user") is not None
 
 
 async def register_budget_settings() -> None:
@@ -192,7 +196,12 @@ async def register_budget_settings() -> None:
     from the on-disk state. Settings ARE the input shape; saving fires
     `@cl.on_settings_update` below.
     """
+    import sys
+
+    user = cl.user_session.get("user")
+    print(f"[budget-settings] register called — user={user!r}", file=sys.stderr)
     if not _is_admin():
+        print("[budget-settings] not admin — gear icon hidden", file=sys.stderr)
         return
     b = budgets.get_budgets()
     cfg = load_config()
@@ -263,17 +272,25 @@ async def refresh_budget_bar() -> None:
     (in a `finally`), after `run_demo_command`, and after
     `on_settings_update`. No-op when the admin has turned the bar off.
     """
+    import sys
+
     if not _is_admin():
+        print("[budget-bar] skipped: no user in session", file=sys.stderr)
         return
     cfg = load_config()
-    if not cfg.get("show_budget_bar", False):
+    show = cfg.get("show_budget_bar", False)
+    print(
+        f"[budget-bar] refresh called — show_budget_bar={show}",
+        file=sys.stderr,
+    )
+    if not show:
         # Admin turned it off. If a bar was previously rendered, tidy it up.
         old = cl.user_session.get("budget_status_msg")
         if old is not None:
             try:
                 await old.remove()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[budget-bar] remove failed: {e}", file=sys.stderr)
             cl.user_session.set("budget_status_msg", None)
         return
 
@@ -281,12 +298,15 @@ async def refresh_budget_bar() -> None:
     if old is not None:
         try:
             await old.remove()
-        except Exception:
-            # If the message is already gone (reconnect, etc.) keep going
-            pass
-    msg = cl.Message(author="Budgets", content=_render_budget_status())
-    await msg.send()
-    cl.user_session.set("budget_status_msg", msg)
+        except Exception as e:
+            print(f"[budget-bar] remove (replace) failed: {e}", file=sys.stderr)
+    try:
+        msg = cl.Message(author="Budgets", content=_render_budget_status())
+        await msg.send()
+        cl.user_session.set("budget_status_msg", msg)
+        print("[budget-bar] sent new bar", file=sys.stderr)
+    except Exception as e:
+        print(f"[budget-bar] send failed: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 @cl.on_settings_update
@@ -297,7 +317,11 @@ async def on_settings_update(settings: dict) -> None:
     surface. We diff against the current limits to decide whether to
     auto-flip the live-bar toggle.
     """
+    import sys
+
+    print(f"[budget-settings] update fired: {settings}", file=sys.stderr)
     if not _is_admin():
+        print("[budget-settings] not admin — bailing", file=sys.stderr)
         return
 
     before = budgets.get_budgets()
