@@ -825,13 +825,44 @@ async def _foreman_chart(artifact: dict) -> None:
         ).send()
 
 
+_PUBLIC_CHARTS_DIR = Path(__file__).resolve().parent / "public" / "charts"
+
+
+def _publish_chart_html(html_path: Path, template: str) -> str | None:
+    """Copy the rendered HTML into `public/charts/` so Chainlit's
+    built-in `GET /public/<filename>` route serves it, and return the
+    URL path. Markdown links in Chainlit get `target="_blank"` set on
+    the rendered `<a>` automatically — so a plain `[label](url)` opens
+    the full interactive page in a new browser tab rather than the
+    chat-embedded download chip.
+
+    Returns None when the copy fails — callers fall back to no link.
+    """
+    import shutil
+    import sys
+
+    try:
+        _PUBLIC_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+        dest = _PUBLIC_CHARTS_DIR / f"{template}.html"
+        shutil.copyfile(html_path, dest)
+    except OSError as exc:
+        print(
+            f"[main] _publish_chart_html({template!r}) failed: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return f"/public/charts/{template}.html"
+
+
 async def _render_chart_file(artifact: dict) -> None:
     """Display a `pipeline/render_chart.py` output in the chat.
 
     Layout: inline Plotly figure (when the template has a native
-    Plotly build — burndown does, the others don't yet), followed by
-    a download chip for the full self-contained HTML page so users
-    can open it in a browser tab with Chart.js / mermaid rendering.
+    Plotly build — burndown does, the others don't yet) + a markdown
+    link that opens the full self-contained HTML page in a new tab.
+    The HTML is copied into `public/charts/` so Chainlit's `/public`
+    static route can serve it; the frontend auto-targets markdown
+    links with `target="_blank"`.
     """
     template = artifact.get("template") or "chart"
     html_path = artifact.get("path")
@@ -856,17 +887,11 @@ async def _render_chart_file(artifact: dict) -> None:
                 file=sys.stderr,
             )
 
+    public_url: str | None = None
     if html_path and Path(html_path).exists():
-        elements.append(
-            cl.File(
-                name=f"{template}.html",
-                path=str(html_path),
-                display="inline",
-                mime="text/html",
-            )
-        )
+        public_url = _publish_chart_html(Path(html_path), template)
 
-    if not elements:
+    if not elements and not public_url:
         await cl.Message(
             author="Foreman",
             content=(
@@ -876,7 +901,12 @@ async def _render_chart_file(artifact: dict) -> None:
         ).send()
         return
 
-    content = f"**{template.capitalize()} chart** — click the chip to open the full page."
+    if public_url:
+        link_hint = f"[Open full {template} page in a new tab]({public_url})"
+    else:
+        link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
+    content = f"**{template.capitalize()} chart** — {link_hint}"
+
     await cl.Message(
         author="Foreman",
         content=content,

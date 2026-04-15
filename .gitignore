@@ -19,3 +19,7 @@ venv/
 # Chainlit auto-generated files (spike branch)
 .chainlit/
 chainlit.md
+
+# Rendered chart HTML copied into Chainlit's static-serve dir at runtime.
+# Keep the parent public/ available for manual assets (logos, CSS, etc.).
+public/charts/
