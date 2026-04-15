@@ -337,6 +337,24 @@ def _mark_synthesized(issue: dict[str, Any], key: str) -> None:
         cell.setdefault("confidence", "low")
 
 
+_PHASE_TAG_RE = re.compile(r"\[(P\d+(?:\.\d+)?[a-z]?)\]")
+
+
+def _short_issue_label(issue: dict[str, Any]) -> str:
+    """Compact label for chart rows: `#42 [P4.16]` or just `#42` when
+    the title has no phase tag. Full titles are too long on mobile —
+    they stack on top of each other and the chart becomes unreadable.
+    Agents can always hover the bar to see the full title via the
+    Plotly tooltip (when we wire hovertemplate later)."""
+    number = issue.get("number")
+    num_str = f"#{number}" if number is not None else "#?"
+    title = str(issue.get("title") or "")
+    match = _PHASE_TAG_RE.search(title)
+    if match:
+        return f"{num_str} [{match.group(1)}]"
+    return num_str
+
+
 def build_gantt_figure(
     data: dict[str, Any], title: str = "Gantt", color_by_state: bool = True
 ) -> dict[str, Any]:
@@ -376,9 +394,7 @@ def build_gantt_figure(
         # in milliseconds. Minimum 1 day so same-day tasks still show.
         width_ms = max(1, (end_d - start_d).days) * 86_400_000
 
-        number = issue.get("number") or "?"
-        title_txt = str(issue.get("title") or "")[:50]
-        bars_y.append(f"#{number} {title_txt}")
+        bars_y.append(_short_issue_label(issue))
         bars_base.append(start)
         bars_x.append(width_ms)
         if color_by_state:

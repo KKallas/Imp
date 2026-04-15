@@ -892,7 +892,8 @@ def _build_scenario_subplot(
     scenarios: list[dict], descriptions: list[str]
 ) -> cl.Plotly | None:
     """Combine the first chart of each scenario into a single Plotly
-    figure with horizontal subplots (one column per scenario). Returns
+    figure with **vertical** subplots (one row per scenario) — full
+    width each so labels and bars stay readable on a phone. Returns
     None if no scenario produced a chart."""
     try:
         import plotly.graph_objects as go
@@ -905,35 +906,52 @@ def _build_scenario_subplot(
         return None
 
     titles = [
-        (descriptions[i] if i < len(descriptions) else s.get("name", f"s{i+1}"))[:40]
+        (descriptions[i] if i < len(descriptions) else s.get("name", f"s{i+1}"))[:60]
         for i, s in enumerate(scenarios)
     ]
+    n = len(scenarios)
     fig = make_subplots(
-        rows=1,
-        cols=len(scenarios),
+        rows=n,
+        cols=1,
         subplot_titles=titles,
-        shared_yaxes=False,
-        horizontal_spacing=0.05,
+        shared_xaxes=False,
+        vertical_spacing=0.08,
     )
+
+    # Per-chart height: ~24px per bar + 80px title/axis overhead, with a
+    # minimum so an empty scenario doesn't collapse the row.
+    per_chart_rows: list[int] = []
 
     for idx, chart in enumerate(first_charts):
         if chart is None:
+            per_chart_rows.append(0)
             continue
-        col = idx + 1
-        # `chart` is a Plotly figure dict; copy its traces into the subplot.
+        row = idx + 1
+        bar_count = 0
         for trace in chart.get("data", []):
-            fig.add_trace(go.Bar(**trace) if trace.get("type") == "bar" else trace, row=1, col=col)
-        # Apply date-axis styling if the source chart set it
+            fig.add_trace(
+                go.Bar(**trace) if trace.get("type") == "bar" else trace,
+                row=row,
+                col=1,
+            )
+            if isinstance(trace.get("y"), list):
+                bar_count = max(bar_count, len(trace["y"]))
+        per_chart_rows.append(bar_count)
+
+        # Each subplot keeps its own date axis + reversed y so the first
+        # issue appears at the top of that scenario's panel.
         src_layout = chart.get("layout", {})
         if isinstance(src_layout.get("xaxis"), dict):
             xaxis_type = src_layout["xaxis"].get("type")
             if xaxis_type:
-                fig.update_xaxes(type=xaxis_type, row=1, col=col)
+                fig.update_xaxes(type=xaxis_type, row=row, col=1)
+        fig.update_yaxes(autorange="reversed", automargin=True, row=row, col=1)
 
+    total_height = sum(max(180, 24 * rows + 80) for rows in per_chart_rows)
     fig.update_layout(
-        height=max(350, 25 * max((len(c.get("data") or []) for c in first_charts if c), default=5) + 150),
+        height=total_height + 40 * n,  # slack for subplot titles
         showlegend=False,
-        margin=dict(l=20, r=20, t=60, b=40),
+        margin=dict(l=20, r=20, t=40, b=30),
     )
 
     return cl.Plotly(name="scenario-grid", figure=fig, display="inline")

@@ -497,6 +497,42 @@ async def test_start_session_rejects_too_few_or_too_many() -> None:
     print("test_start_session_rejects_too_few_or_too_many: OK")
 
 
+def test_build_gantt_figure_labels_use_short_format() -> None:
+    """Issue labels on the gantt are compact (`#42 [P4.16]` or `#42`)
+    so they don't stack on top of each other on narrow screens. Full
+    titles are tooltip material, not y-axis material."""
+    data = sc.synthesize_dates({
+        "issues": [
+            {"number": 16, "state": "OPEN",
+             "title": "[P4.16] pipeline/scenarios — compare N scenarios",
+             "labels": [], "depends_on_parsed": [],
+             "fields": {"duration_days": {"value": 2}}},
+            {"number": 42, "state": "OPEN", "title": "no phase tag",
+             "labels": [], "depends_on_parsed": [],
+             "fields": {"duration_days": {"value": 1}}},
+        ]
+    }, today=date(2026, 4, 15))
+    fig = sc.build_gantt_figure(data)
+    labels = fig["data"][0]["y"]
+    assert labels == ["#16 [P4.16]", "#42"], labels
+    print("test_build_gantt_figure_labels_use_short_format: OK")
+
+
+def test_short_issue_label_recognises_various_phase_tags() -> None:
+    cases = [
+        ({"number": 1, "title": "[P4.16] foo"},   "#1 [P4.16]"),
+        ({"number": 2, "title": "[P2.9b] bar"},   "#2 [P2.9b]"),
+        ({"number": 3, "title": "[P10] baz"},     "#3 [P10]"),
+        ({"number": 4, "title": "no tag at all"}, "#4"),
+        ({"number": 5, "title": ""},              "#5"),
+        ({"title": "[P1] headless"},              "#? [P1]"),
+    ]
+    for issue, expected in cases:
+        got = sc._short_issue_label(issue)
+        assert got == expected, f"{issue!r} → {got!r}, expected {expected!r}"
+    print("test_short_issue_label_recognises_various_phase_tags: OK")
+
+
 def test_build_gantt_figure_scales_to_milliseconds() -> None:
     """Plotly's date-type x-axis requires bar widths in ms. The LLM
     was previously emitting day counts directly, rendering bars a few
@@ -957,6 +993,8 @@ async def amain() -> None:
         test_validator_rejects_os_import,
         test_validator_rejects_exec_call,
         test_validator_rejects_dunder_access,
+        test_short_issue_label_recognises_various_phase_tags,
+        test_build_gantt_figure_labels_use_short_format,
         test_build_gantt_figure_scales_to_milliseconds,
         test_build_gantt_figure_colours_by_state,
         test_build_gantt_figure_skips_undated_issues,
