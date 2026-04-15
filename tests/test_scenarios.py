@@ -497,6 +497,82 @@ async def test_start_session_rejects_too_few_or_too_many() -> None:
     print("test_start_session_rejects_too_few_or_too_many: OK")
 
 
+def test_build_gantt_figure_scales_to_milliseconds() -> None:
+    """Plotly's date-type x-axis requires bar widths in ms. The LLM
+    was previously emitting day counts directly, rendering bars a few
+    ms wide (invisible). Helper must do the conversion."""
+    data = sc.synthesize_dates({
+        "issues": [
+            {"number": 1, "state": "OPEN", "title": "issue 1",
+             "labels": [], "depends_on_parsed": [],
+             "fields": {"duration_days": {"value": 5},
+                        "start_date": {"value": "2026-04-15"},
+                        "end_date": {"value": "2026-04-20"}}},
+        ]
+    })
+    fig = sc.build_gantt_figure(data, title="test")
+    # 5 days * 86_400_000 ms/day
+    assert fig["data"][0]["x"] == [5 * 86_400_000]
+    assert fig["layout"]["xaxis"]["type"] == "date"
+    print("test_build_gantt_figure_scales_to_milliseconds: OK")
+
+
+def test_build_gantt_figure_colours_by_state() -> None:
+    data = sc.synthesize_dates({
+        "issues": [
+            {"number": 1, "state": "CLOSED", "title": "done",
+             "labels": [], "depends_on_parsed": [],
+             "createdAt": "2026-04-11T00:00:00Z",
+             "closedAt": "2026-04-15T00:00:00Z",
+             "fields": {"duration_days": {"value": 4}}},
+            {"number": 2, "state": "OPEN", "title": "todo",
+             "labels": [], "depends_on_parsed": [],
+             "fields": {"duration_days": {"value": 3}}},
+        ]
+    }, today=date(2026, 4, 15))
+    fig = sc.build_gantt_figure(data)
+    colors = fig["data"][0]["marker"]["color"]
+    assert colors[0] == "#22c55e"  # closed = green
+    assert colors[1] == "#3b82f6"  # open = blue
+    print("test_build_gantt_figure_colours_by_state: OK")
+
+
+def test_build_gantt_figure_skips_undated_issues() -> None:
+    """Issues that didn't get dates (edge case: synthesis couldn't
+    resolve) are skipped rather than crashing or producing bogus bars."""
+    data = {"issues": [{"number": 1, "state": "OPEN", "title": "x",
+                        "labels": [], "depends_on_parsed": [],
+                        "fields": {}}]}
+    fig = sc.build_gantt_figure(data)
+    assert fig["data"] == []
+    assert "no datable" in fig["layout"]["title"]["text"]
+    print("test_build_gantt_figure_skips_undated_issues: OK")
+
+
+def test_build_gantt_figure_reachable_from_exec_namespace() -> None:
+    """Generated scenario source can call the helper directly."""
+    src = """
+@scenario("gantt")
+def s(data, out):
+    out.chart(build_gantt_figure(data, title="gantt"))
+    return data
+"""
+    fns = sc._exec_scenarios_source(src)
+    out = sc.Out(name=fns[0]._scenario_name)
+    baseline = sc.synthesize_dates({
+        "issues": [
+            {"number": 1, "state": "OPEN", "title": "x",
+             "labels": [], "depends_on_parsed": [],
+             "fields": {"duration_days": {"value": 3}}},
+        ]
+    }, today=date(2026, 4, 15))
+    fns[0](baseline, out)
+    assert len(out.charts) == 1
+    # Chart has a properly-scaled trace
+    assert out.charts[0]["data"][0]["x"][0] == 3 * 86_400_000
+    print("test_build_gantt_figure_reachable_from_exec_namespace: OK")
+
+
 def test_synthesize_dates_closed_from_gh_timestamps() -> None:
     """Closed issues without project-board dates get start/end from
     createdAt / closedAt (trimmed to YYYY-MM-DD)."""
@@ -881,6 +957,10 @@ async def amain() -> None:
         test_validator_rejects_os_import,
         test_validator_rejects_exec_call,
         test_validator_rejects_dunder_access,
+        test_build_gantt_figure_scales_to_milliseconds,
+        test_build_gantt_figure_colours_by_state,
+        test_build_gantt_figure_skips_undated_issues,
+        test_build_gantt_figure_reachable_from_exec_namespace,
         test_synthesize_dates_closed_from_gh_timestamps,
         test_synthesize_dates_open_forward_projects_from_today,
         test_synthesize_dates_respects_dependency_chain,

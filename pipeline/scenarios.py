@@ -337,6 +337,87 @@ def _mark_synthesized(issue: dict[str, Any], key: str) -> None:
         cell.setdefault("confidence", "low")
 
 
+def build_gantt_figure(
+    data: dict[str, Any], title: str = "Gantt", color_by_state: bool = True
+) -> dict[str, Any]:
+    """Build a ready-to-render horizontal Gantt Plotly figure.
+
+    Handles the ms-scaling quirk of Plotly's date-type x-axis: when
+    `xaxis.type == "date"`, bar widths must be in **milliseconds**, not
+    day counts. A naïve `x = duration_days` renders bars that are
+    5 ms / 3 ms / 2 ms wide — invisible. This helper does the
+    conversion correctly so scenario code never has to.
+
+    Colouring (when `color_by_state=True`):
+      - Closed issues: green
+      - Open issues:   blue
+
+    Issues missing start or end dates are skipped (synthesis should
+    have filled them in before this runs).
+
+    Returns a `{data, layout}` dict suitable for `out.chart(...)`.
+    """
+    bars_x: list[int] = []
+    bars_y: list[str] = []
+    bars_base: list[str] = []
+    colors: list[str] = []
+
+    for issue in data.get("issues") or []:
+        start = get_field(issue, "start_date")
+        end = get_field(issue, "end_date")
+        if not isinstance(start, str) or not isinstance(end, str):
+            continue
+        try:
+            start_d = date.fromisoformat(start)
+            end_d = date.fromisoformat(end)
+        except ValueError:
+            continue
+        # Plotly date-axis Bar: `base` is the start, `x` is the width
+        # in milliseconds. Minimum 1 day so same-day tasks still show.
+        width_ms = max(1, (end_d - start_d).days) * 86_400_000
+
+        number = issue.get("number") or "?"
+        title_txt = str(issue.get("title") or "")[:50]
+        bars_y.append(f"#{number} {title_txt}")
+        bars_base.append(start)
+        bars_x.append(width_ms)
+        if color_by_state:
+            state = str(issue.get("state") or "").upper()
+            colors.append("#22c55e" if state == "CLOSED" else "#3b82f6")
+
+    if not bars_y:
+        return {
+            "data": [],
+            "layout": {
+                "title": {"text": f"{title} (no datable issues)"},
+                "xaxis": {"type": "date"},
+                "yaxis": {"visible": False},
+                "height": 180,
+            },
+        }
+
+    trace: dict[str, Any] = {
+        "type": "bar",
+        "orientation": "h",
+        "x": bars_x,
+        "y": bars_y,
+        "base": bars_base,
+    }
+    if color_by_state:
+        trace["marker"] = {"color": colors}
+
+    return {
+        "data": [trace],
+        "layout": {
+            "title": {"text": title},
+            "xaxis": {"type": "date"},
+            "yaxis": {"automargin": True, "autorange": "reversed"},
+            "height": max(220, 25 * len(bars_y) + 100),
+            "margin": {"l": 20, "r": 20, "t": 50, "b": 40},
+        },
+    }
+
+
 def get_field(issue: dict[str, Any], key: str, default: Any = None) -> Any:
     """Public helper: safely read a field value from an issue.
 
@@ -640,6 +721,7 @@ _SAFE_NAMES: set[str] = {
     "exclude_weekends",
     "freeze_after",
     "get_field",
+    "build_gantt_figure",
     # From datetime, common names the generator may use
     "date",
     "datetime",
@@ -795,6 +877,7 @@ def _exec_scenarios_source(source: str) -> list[Callable[..., None]]:
         "exclude_weekends": exclude_weekends,
         "freeze_after": freeze_after,
         "get_field": get_field,
+        "build_gantt_figure": build_gantt_figure,
         "date": date,
         "datetime": datetime,
         "timedelta": timedelta,
@@ -1049,13 +1132,34 @@ Your job is to emit ONE valid Python file that:
 2. Each function takes `(data, out)` where `data` is an enriched-issues
    dict (see shape below) and `out` is an `Out` collector.
 3. Each function MUST populate `out` with at least:
-   - `out.chart(figure)` — one Plotly figure dict for the gantt view
+   - `out.chart(build_gantt_figure(transformed_data, title="..."))` —
+     use the helper; do NOT hand-build figure dicts unless you have to
    - `out.metric("duration", f"{total_days} days")`
    - `out.metric("finish date", "YYYY-MM-DD")`
    - `out.list("blockers", [...])` — list of blocker labels or "none"
 4. Each function MUST return the transformed data (result of applying
    the filter primitives) so `apply_active_scenario` can compose it
    on later render-chart calls.
+
+### Example scenario function
+
+```python
+@scenario("start 2 weeks from now")
+def s(data, out):
+    shifted = shift_start(data, "2026-04-29")
+    out.chart(build_gantt_figure(shifted, title="Start 2 weeks from now"))
+
+    ends = [get_field(i, "end_date") for i in shifted["issues"]]
+    ends = [e for e in ends if e]
+    starts = [get_field(i, "start_date") for i in shifted["issues"]]
+    starts = [s for s in starts if s]
+
+    out.metric("duration", f"{(date.fromisoformat(max(ends)) - date.fromisoformat(min(starts))).days} days")
+    out.metric("finish date", max(ends))
+    blocked = [f"#{i['number']}" for i in shifted["issues"] if i.get("depends_on_parsed")]
+    out.list("blockers", blocked if blocked else ["none"])
+    return shifted
+```
 
 ## Available filter primitives (import-free; pre-loaded in namespace)
 
@@ -1067,17 +1171,43 @@ Your job is to emit ONE valid Python file that:
   exclude_weekends(data)
   freeze_after(data, cutoff: "YYYY-MM-DD")
 
-## Building the chart
+## Building the chart — STRONGLY prefer the helper
 
-Since Plotly isn't importable, build the figure as a raw dict:
+Use the pre-imported `build_gantt_figure(data, title=...)` helper:
 
-  figure = {
-    "data": [{"type": "bar", "orientation": "h", "x": [...], "y": [...],
-              "base": [...], "marker": {"color": "#3b82f6"}}],
-    "layout": {"title": {"text": "..."}, "xaxis": {"type": "date"},
+```python
+out.chart(build_gantt_figure(transformed_data, title="my scenario"))
+```
+
+It produces a correct Gantt figure (ms-scaled bars on a date x-axis,
+open / closed colouring, handles missing dates gracefully). You
+almost never need to build a figure dict by hand.
+
+**CRITICAL gotcha** if you do build one manually: Plotly's date-type
+x-axis requires bar widths in MILLISECONDS, not day counts. A naïve
+`x = [duration_days, ...]` renders bars a few milliseconds wide —
+invisible. Multiply by 86_400_000 for each day. Stick with the
+helper unless you have a specific reason not to.
+
+```python
+# OK (helper does this correctly)
+figure = build_gantt_figure(data, title="As-is")
+
+# OK (manual, correctly scaled)
+figure = {
+    "data": [{
+        "type": "bar", "orientation": "h",
+        "x": [d * 86_400_000 for d in durations],  # MS, not days!
+        "y": labels, "base": starts,
+    }],
+    "layout": {"xaxis": {"type": "date"},
                "yaxis": {"automargin": True, "autorange": "reversed"}}
-  }
-  out.chart(figure)
+}
+
+# BAD (what the LLM was doing before; bars invisible)
+figure = {"data": [{"x": durations, "base": starts, ...}],
+          "layout": {"xaxis": {"type": "date"}, ...}}
+```
 
 ## Data shape
 
