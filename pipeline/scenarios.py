@@ -447,9 +447,26 @@ def freeze_after(data: dict[str, Any], cutoff: str) -> dict[str, Any]:
 
 # ---------- safe exec ----------
 
-# Modules + builtins the generated scenarios.py may reference. Anything
-# else is rejected at AST-scan time.
-_SAFE_IMPORTS: set[str] = {"datetime"}  # only `from datetime import ...`
+# Modules the generated scenarios.py may import. Pure-stdlib,
+# non-I/O, non-network only. The LLM routinely reaches for `copy`,
+# `itertools`, etc. for data wrangling — blocking those all the time
+# sent the generator into a fallback-to-mermaid loop. Guard's
+# code-review checklist (KKallas/Imp#46) is the authoritative gate
+# for anything concerning — this list is about removing false
+# positives that make the generator useless in practice.
+_SAFE_IMPORTS: set[str] = {
+    "datetime",
+    "copy",
+    "itertools",
+    "functools",
+    "collections",
+    "math",
+    "json",
+    "typing",
+    "re",
+    "statistics",
+}
+
 _SAFE_NAMES: set[str] = {
     "scenario",
     "Out",
@@ -486,6 +503,9 @@ _SAFE_NAMES: set[str] = {
     "map",
     "filter",
     "zip",
+    "getattr",  # safe with literal-string attr; dunder-access check catches the dangerous case
+    "isinstance",
+    "hasattr",
 }
 
 _FORBIDDEN_CALL_NAMES: set[str] = {
@@ -494,12 +514,11 @@ _FORBIDDEN_CALL_NAMES: set[str] = {
     "compile",
     "__import__",
     "open",
-    "getattr",
-    "setattr",
-    "delattr",
     "globals",
     "locals",
     "vars",
+    # setattr/delattr dropped — dunder-access check below already blocks the
+    # attack path; bare setattr on locals is harmless data shuffling.
 }
 
 
@@ -944,12 +963,17 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+MAX_GENERATOR_RETRIES = 2
+
+
 async def generate_scenarios_py(descriptions: list[str]) -> str:
     """High-level generator entry point: descriptions → validated .py source.
 
     Calls the backend (overridable for tests) and runs the AST scanner
-    on the result. Raises `ScenarioValidationError` if the source is
-    unsafe; caller should surface the reason to the admin.
+    on the result. If validation fails, retries up to
+    `MAX_GENERATOR_RETRIES` times — feeding the error text back to the
+    model so it can fix its output — before giving up. Raises
+    `ScenarioValidationError` on the final failure.
     """
     if len(descriptions) < MIN_SCENARIOS:
         raise ValueError(
@@ -960,9 +984,49 @@ async def generate_scenarios_py(descriptions: list[str]) -> str:
             f"max {MAX_SCENARIOS} scenarios supported, got {len(descriptions)}"
         )
     backend = get_generator_backend()
-    source = await backend(descriptions)
-    _validate_scenarios_source(source)  # raises on bad
-    return source
+
+    last_error: ScenarioValidationError | None = None
+    current_descriptions = list(descriptions)
+    for attempt in range(1 + MAX_GENERATOR_RETRIES):
+        source = await backend(current_descriptions)
+        try:
+            _validate_scenarios_source(source)
+            return source
+        except ScenarioValidationError as exc:
+            last_error = exc
+            # Ask the model to fix it on the next attempt by amending
+            # the user prompt with the failure reason. Only the LLM
+            # backend reads this; fake backends ignore it and are
+            # responsible for returning valid source directly.
+            if attempt < MAX_GENERATOR_RETRIES:
+                current_descriptions = _append_retry_note(
+                    descriptions, attempt=attempt + 1, reason=str(exc)
+                )
+                continue
+            raise
+
+    assert last_error is not None  # unreachable; loop always raises or returns
+    raise last_error
+
+
+def _append_retry_note(
+    descriptions: list[str], *, attempt: int, reason: str
+) -> list[str]:
+    """Modify the descriptions list to signal the LLM that the previous
+    attempt's source was rejected. The last description gets a
+    `[RETRY]` suffix with the AST-validator's rejection reason — the
+    default backend's prompt picks this up and knows to fix it. The
+    fake backend in tests ignores it."""
+    if not descriptions:
+        return descriptions
+    suffix = (
+        f"\n\n[RETRY {attempt}] Previous attempt was rejected by the AST "
+        f"validator with: {reason}. Regenerate the full file without that "
+        f"construct."
+    )
+    out = list(descriptions)
+    out[-1] = out[-1] + suffix
+    return out
 
 
 # ---------- convenience: start a session end-to-end ----------

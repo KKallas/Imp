@@ -497,6 +497,100 @@ async def test_start_session_rejects_too_few_or_too_many() -> None:
     print("test_start_session_rejects_too_few_or_too_many: OK")
 
 
+async def test_validator_accepts_now_allowed_imports() -> None:
+    """copy / itertools / functools / collections / math / json / typing / re /
+    statistics — all pure stdlib the generator commonly reaches for. Adding
+    them to the safe list (from only `datetime`) fixed the "sandbox
+    restriction" fallback loop we hit in production."""
+    for mod in ("copy", "itertools", "functools", "collections", "math", "json", "typing", "re", "statistics"):
+        src = f"""
+import {mod}
+
+@scenario("ok")
+def s(data, out):
+    return data
+"""
+        sc._validate_scenarios_source(src)
+    print("test_validator_accepts_now_allowed_imports: OK")
+
+
+async def test_validator_allows_getattr_literal() -> None:
+    """getattr() was previously forbidden outright — relaxed so that
+    `getattr(obj, "name")` is fine. The dunder-access check still
+    blocks `getattr(obj, "__class__")`-style attacks."""
+    src = """
+@scenario("ok")
+def s(data, out):
+    out.metric("x", getattr(data, "issue_count", 0))
+    return data
+"""
+    sc._validate_scenarios_source(src)
+    print("test_validator_allows_getattr_literal: OK")
+
+
+async def test_generator_retries_on_validation_failure() -> None:
+    """When the backend's first output fails validation, the retry loop
+    feeds the error back and lets the backend try again. Second attempt
+    returns valid source → session starts."""
+    attempts: list[list[str]] = []
+
+    async def flaky_gen(descriptions):
+        attempts.append(list(descriptions))
+        # First call returns invalid source (imports forbidden module).
+        # Second call (with retry note in the description) returns valid.
+        if len(attempts) == 1:
+            return "import socket\n@scenario('x')\ndef s(d,o): return d"
+        return """
+@scenario("fixed")
+def s1(data, out):
+    return data
+
+@scenario("also fixed")
+def s2(data, out):
+    return data
+"""
+
+    sc.set_generator_backend(flaky_gen)
+    try:
+        session_id, outs = await sc.start_session(["a", "b"], _baseline())
+    finally:
+        sc.set_generator_backend(None)
+
+    assert session_id.startswith("scn-")
+    assert len(outs) == 2
+    assert len(attempts) == 2, f"expected 2 backend calls, got {len(attempts)}"
+    # Retry note should have been appended to the last description
+    assert "[RETRY 1]" in attempts[1][-1]
+    assert "socket" in attempts[1][-1]  # the rejection reason
+    print("test_generator_retries_on_validation_failure: OK")
+
+
+async def test_generator_gives_up_after_max_retries() -> None:
+    """If every retry still fails validation, raise ScenarioValidationError."""
+    attempts: list[int] = []
+
+    async def persistent_fail(descriptions):
+        attempts.append(len(attempts) + 1)
+        return "import os\n@scenario('x')\ndef s(d,o): return d"
+
+    sc.set_generator_backend(persistent_fail)
+    try:
+        try:
+            await sc.start_session(["a", "b"], _baseline())
+        except sc.ScenarioValidationError as exc:
+            # Should have hit 1 initial + MAX_GENERATOR_RETRIES retries = 3 total
+            assert len(attempts) == 1 + sc.MAX_GENERATOR_RETRIES, len(attempts)
+            assert "os" in str(exc)
+            print("test_generator_gives_up_after_max_retries: OK")
+            return
+        finally:
+            sc.set_generator_backend(None)
+    except Exception:
+        sc.set_generator_backend(None)
+        raise
+    assert False, "expected ScenarioValidationError after retries exhausted"
+
+
 async def test_generator_output_validated_before_save() -> None:
     """If the generator returns forbidden Python, start_session refuses
     BEFORE writing any session files."""
@@ -553,6 +647,10 @@ async def amain() -> None:
         test_apply_active_scenario_composes,
         test_apply_active_scenario_noop_when_no_commit,
         test_start_session_rejects_too_few_or_too_many,
+        test_validator_accepts_now_allowed_imports,
+        test_validator_allows_getattr_literal,
+        test_generator_retries_on_validation_failure,
+        test_generator_gives_up_after_max_retries,
         test_generator_output_validated_before_save,
     ]
     for t in sync_tests:

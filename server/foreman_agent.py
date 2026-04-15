@@ -423,17 +423,11 @@ async def do_run_render_chart(
     )
 
 
-async def do_run_scenario(
-    delay: str, *, user_intent: str
-) -> dict[str, Any]:
-    """pipeline/scenario.py — A/B timeline comparison.
-    Blocked on KKallas/Imp#16 (P4.16)."""
-    argv = [sys.executable, "pipeline/scenario.py", "--delay", delay]
-    return await do_run_shell(
-        argv,
-        user_intent=user_intent,
-        rationale=f"scenario comparison with delay={delay!r}",
-    )
+# (`do_run_scenario` / `run_scenario_tool` removed — KKallas/Imp#16
+# ships the real scenario system via `start_scenario_session` + friends.
+# The old stub shelled out to a non-existent `pipeline/scenario.py` and
+# was a fallback magnet for Foreman when `start_scenario_session`
+# rejected something.)
 
 
 # ---------- control tools (local, no guard) ----------
@@ -687,9 +681,8 @@ more writes until the admin resolves it. Don't retry destructively.
 - `list_prs(state, limit)` — `gh pr list`
 - `view_pr(number)` — `gh pr view <n>`
 - `list_project_items(project_number, owner)` — `gh project item-list`
-- `run_sync_issues` / `run_heuristics` / `run_render_chart(template)` / \
-`run_scenario(delay)` — pipeline visibility scripts (some still stubbed \
-pending P4.12–16; they'll return a "script not found" error until then).
+- `run_sync_issues` / `run_heuristics` / `run_render_chart(template)` — \
+pipeline visibility scripts.
 
 ### PM writes (gated by checkpoint B, counts toward edit budget)
 - `comment_on_issue(number, body)` — `gh issue comment`
@@ -704,6 +697,28 @@ milestone)` — `gh issue edit`
 - `run_solve_issues(issue)` — one task; writes a branch, opens a PR
 - `run_fix_prs(pr)` — one task
 
+### Scenario comparison (KKallas/Imp#16 — FOR ANY "what if" / "compare" REQUEST)
+- `start_scenario_session(descriptions: list[str])` — start a side-by-side \
+comparison of 2-5 variants. Takes plain-English descriptions like \
+`["as-is", "start 2 weeks from now", "4 devs not 2"]`. Generates a hidden \
+Python file, runs it, renders a grid of charts + metrics, and **freezes the \
+chat** until the admin commits to one or closes.
+- `commit_scenario(session_id, choice_index)` — record the admin's choice. \
+Usually driven by the admin clicking an action button; you normally won't \
+call it directly.
+- `switch_scenario(session_id, choice_index)` — change a prior commit.
+- `close_scenario(session_id)` — close without committing.
+- `open_scenario_session(session_id)` — re-run a saved session.
+- `list_scenario_sessions(limit)` — list recent saved sessions.
+
+**CRITICAL**: for any "compare / what-if / scenarios / A-vs-B" request, \
+use `start_scenario_session`. Do NOT fall back to shelling out, writing \
+mermaid blocks, or building the comparison by hand — Chainlit doesn't \
+render mermaid, and the scenario system gives you interactive Plotly + \
+commit/switch buttons for free. If `start_scenario_session` returns an \
+error (e.g. validation failure on the generated code), surface the error \
+to the admin and stop; do not retry with shell commands.
+
 ### Control (local, no guard)
 - `loop_pause` / `loop_resume` / `loop_scope(only_issues, only_prs)` / \
 `loop_clear_scope`
@@ -712,13 +727,19 @@ panel in the Chainlit UI; you cannot set or reset them.
 
 ### Escape hatch
 - `run_shell(argv)` — any argv the classifier recognises. Prefer named \
-tools when possible; fall back to this only when no named tool fits.
+tools when possible; fall back to this only when no named tool fits. \
+**Never** use `run_shell` to substitute for a tool that exists (e.g. \
+don't `run_shell cat .imp/enriched.json` when `list_issues` / scenarios \
+give you structured data).
 
 ## How you respond
 
-Plain markdown. When you produce a chart via `run_render_chart`, embed \
-the result as a mermaid fenced code block in your reply — Chainlit \
-renders it inline. Keep replies concise; the admin reads quickly.
+Plain markdown. Do NOT emit mermaid fenced code blocks — Chainlit 2.x \
+does not render mermaid. Charts come from the named tools \
+(`run_render_chart`, `start_scenario_session`) as Plotly elements \
+attached to your reply by the UI layer. Your prose should describe what \
+the charts show, not try to draw them. Keep replies concise; the admin \
+reads quickly.
 """
 
 
@@ -962,18 +983,8 @@ def _build_mcp_server(user_intent: str) -> Any:
             )
         )
 
-    @tool(
-        "run_scenario",
-        "A/B timeline comparison (e.g. delay='Issue #12: +14d').",
-        {"delay": str},
-    )
-    async def run_scenario_tool(args: dict[str, Any]) -> dict[str, Any]:
-        return _wrap(
-            await do_run_scenario(
-                delay=str(args["delay"]),
-                user_intent=user_intent,
-            )
-        )
+    # (`run_scenario` tool removed — KKallas/Imp#16 ships
+    # `start_scenario_session` as the real scenario surface.)
 
     # --- control (local, no guard) ---
 
@@ -1119,7 +1130,6 @@ def _build_mcp_server(user_intent: str) -> Any:
             run_sync_tool,
             run_heuristics_tool,
             run_render_tool,
-            run_scenario_tool,
             loop_pause_tool,
             loop_resume_tool,
             loop_scope_tool,
@@ -1234,7 +1244,6 @@ async def dispatch(
             "run_sync_issues",
             "run_heuristics",
             "run_render_chart",
-            "run_scenario",
             "loop_pause",
             "loop_resume",
             "loop_scope",
