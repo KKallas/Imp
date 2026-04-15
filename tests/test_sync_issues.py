@@ -139,6 +139,12 @@ def test_fetch_issues_builds_argv_and_parses_json() -> None:
     assert "--state" in call and "open" in call
     assert "--limit" in call and "500" in call
     assert "--json" in call
+    # P4.19: burndown needs closedAt + stateReason from gh (actual
+    # closure time; NOT_PLANNED vs COMPLETED distinction). They must
+    # be in the --json field list we hand to `gh issue list`.
+    json_arg = call[call.index("--json") + 1]
+    assert "closedAt" in json_arg, json_arg
+    assert "stateReason" in json_arg, json_arg
     print("test_fetch_issues_builds_argv_and_parses_json: OK")
 
 

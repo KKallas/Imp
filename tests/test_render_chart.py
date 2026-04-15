@@ -417,8 +417,8 @@ def test_kanban_unassigned_card_shows_placeholder() -> None:
 # ---------- burndown ----------
 
 
-def test_burndown_series_empty_when_no_renderable_issues() -> None:
-    labels, remaining, ideal, tracked, open_today, span, missing = (
+def test_burndown_series_empty_when_no_issues() -> None:
+    labels, remaining, ideal, tracked, open_today, span, excluded, missing = (
         rc._burndown_series({"issues": []})
     )
     assert labels == []
@@ -426,44 +426,166 @@ def test_burndown_series_empty_when_no_renderable_issues() -> None:
     assert ideal == []
     assert tracked == 0
     assert span == 0
+    assert excluded == 0
     assert missing == []
-    print("test_burndown_series_empty_when_no_renderable_issues: OK")
+    print("test_burndown_series_empty_when_no_issues: OK")
 
 
-def test_burndown_series_remaining_monotonic_nonincreasing() -> None:
-    enriched = _load_enriched()
-    _, remaining, _, tracked, _, _, _ = rc._burndown_series(
-        enriched, today=TODAY
-    )
-    assert tracked > 0
-    # Remaining must never increase — a classic burndown invariant.
-    for a, b in zip(remaining, remaining[1:]):
-        assert b <= a, (a, b)
-    # The first point equals the total tracked issues (nothing has
-    # resolved yet on day 0 — issues only resolve at their end_date).
-    assert remaining[0] == tracked
-    print("test_burndown_series_remaining_monotonic_nonincreasing: OK")
-
-
-def test_burndown_series_ideal_linearly_descends_to_zero() -> None:
-    enriched = _load_enriched()
-    _, _, ideal, tracked, _, span, _ = rc._burndown_series(enriched, today=TODAY)
-    assert len(ideal) == span
-    assert ideal[0] == float(tracked)
-    assert ideal[-1] == 0 or abs(ideal[-1]) < 0.01
-    print("test_burndown_series_ideal_linearly_descends_to_zero: OK")
-
-
-def test_burndown_context_includes_missing_issues() -> None:
-    """Issues without resolvable dates go to the missing list — same
-    contract as gantt."""
+def test_burndown_tracks_every_fixture_issue_via_gh_timestamps() -> None:
+    """Fixture issues all have createdAt, so none should be missing —
+    even the ones without project-board dates land on the burndown."""
     enriched = _load_enriched()
     ctx = rc.build_context_for_burndown(enriched)
-    # Fixture #13 (no fields) and #14 (only depends_on) are unrenderable.
-    missing_nums = {m["number"] for m in ctx["missing_issues"]}
-    assert 13 in missing_nums
-    assert 14 in missing_nums
-    print("test_burndown_context_includes_missing_issues: OK")
+    # All 6 fixture issues have createdAt → all trackable.
+    assert ctx["tracked_count"] == 6
+    assert ctx["missing_issues"] == []
+    assert ctx["excluded_count"] == 0
+    print("test_burndown_tracks_every_fixture_issue_via_gh_timestamps: OK")
+
+
+def test_burndown_series_remaining_bounded_and_non_negative() -> None:
+    """Remaining per day is non-negative and never exceeds tracked_count.
+    (The series is NOT monotonic: scope can grow when new issues are
+    filed mid-span, so we drop that stricter invariant.)"""
+    enriched = _load_enriched()
+    _, remaining, _, tracked, _, span, _, _ = rc._burndown_series(
+        enriched, today=TODAY
+    )
+    assert len(remaining) == span
+    for r in remaining:
+        assert 0 <= r <= tracked
+    print("test_burndown_series_remaining_bounded_and_non_negative: OK")
+
+
+def test_burndown_scope_growth_increases_remaining_mid_span() -> None:
+    """When a new issue is filed mid-span, remaining[d] should go up
+    on that day relative to d-1 — which the old fixed-scope burndown
+    would have hidden."""
+    enriched = {
+        "repo": "t/r",
+        "issues": [
+            # Day 1: one issue open
+            {
+                "number": 1,
+                "title": "day 1",
+                "state": "OPEN",
+                "createdAt": "2026-04-01T09:00:00Z",
+                "updatedAt": "2026-04-01T09:00:00Z",
+                "assignees": [],
+                "fields": {},
+            },
+            # Day 3: a second issue filed (scope grows)
+            {
+                "number": 2,
+                "title": "day 3",
+                "state": "OPEN",
+                "createdAt": "2026-04-03T09:00:00Z",
+                "updatedAt": "2026-04-03T09:00:00Z",
+                "assignees": [],
+                "fields": {},
+            },
+        ],
+    }
+    _, remaining, _, _, _, _, _, _ = rc._burndown_series(
+        enriched, today=date(2026, 4, 3)
+    )
+    # Day 1 = 1 open, day 2 = 1 open, day 3 = 2 open.
+    assert remaining == [1, 1, 2], remaining
+    print("test_burndown_scope_growth_increases_remaining_mid_span: OK")
+
+
+def test_burndown_excludes_not_planned_closures() -> None:
+    """The user-facing fix for P4.19: closed-as-NOT_PLANNED issues are
+    tallied as `excluded_count` but never enter scope — they're
+    out-scoped work, not completed work."""
+    enriched = {
+        "repo": "t/r",
+        "issues": [
+            {
+                "number": 1,
+                "title": "real work",
+                "state": "CLOSED",
+                "stateReason": "COMPLETED",
+                "createdAt": "2026-04-01T09:00:00Z",
+                "closedAt": "2026-04-03T09:00:00Z",
+                "updatedAt": "2026-04-03T09:00:00Z",
+                "assignees": [],
+                "fields": {},
+            },
+            {
+                "number": 2,
+                "title": "out of scope",
+                "state": "CLOSED",
+                "stateReason": "NOT_PLANNED",
+                "createdAt": "2026-04-01T09:00:00Z",
+                "closedAt": "2026-04-02T09:00:00Z",
+                "updatedAt": "2026-04-02T09:00:00Z",
+                "assignees": [],
+                "fields": {},
+            },
+        ],
+    }
+    _, remaining, _, tracked, _, _, excluded, missing = rc._burndown_series(
+        enriched, today=date(2026, 4, 3)
+    )
+    assert excluded == 1
+    assert tracked == 1  # only the COMPLETED one
+    assert missing == []
+    # Day 1: 1 open; day 2: 1 open (not_planned dropping on day 2 is
+    # ignored); day 3: 0 open (completed one closes on 04-03).
+    assert remaining == [1, 1, 0], remaining
+    print("test_burndown_excludes_not_planned_closures: OK")
+
+
+def test_burndown_closedAt_resolves_before_updatedAt_fallback() -> None:
+    """When closedAt is present, it takes priority over updatedAt."""
+    enriched = {
+        "repo": "t/r",
+        "issues": [
+            {
+                "number": 1,
+                "title": "x",
+                "state": "CLOSED",
+                "stateReason": "COMPLETED",
+                "createdAt": "2026-04-01T09:00:00Z",
+                "closedAt": "2026-04-02T09:00:00Z",
+                "updatedAt": "2026-04-05T09:00:00Z",  # later — ignored
+                "assignees": [],
+                "fields": {},
+            }
+        ],
+    }
+    _, remaining, _, _, _, _, _, _ = rc._burndown_series(
+        enriched, today=date(2026, 4, 5)
+    )
+    # Semantics: `resolved > d` means open at end of day d. So the
+    # issue is open on day 04-01 (its creation day), and gone from
+    # day 04-02 onward (closedAt == 04-02, not > 04-02).
+    assert remaining == [1, 0, 0, 0, 0], remaining
+    print("test_burndown_closedAt_resolves_before_updatedAt_fallback: OK")
+
+
+def test_burndown_context_missing_list_only_when_no_timestamps() -> None:
+    """Issues WITHOUT createdAt (and without fields.start_date) go to
+    the missing list — the path a sparse fixture would hit."""
+    enriched = {
+        "repo": "t/r",
+        "issues": [
+            {
+                "number": 42,
+                "title": "timestamp-less",
+                "state": "OPEN",
+                # no createdAt at all
+                "assignees": [],
+                "fields": {},
+            }
+        ],
+    }
+    ctx = rc.build_context_for_burndown(enriched)
+    assert ctx["tracked_count"] == 0
+    assert len(ctx["missing_issues"]) == 1
+    assert ctx["missing_issues"][0]["number"] == 42
+    print("test_burndown_context_missing_list_only_when_no_timestamps: OK")
 
 
 def test_burndown_render_html_self_contained() -> None:
@@ -479,6 +601,44 @@ def test_burndown_render_html_self_contained() -> None:
     print("test_burndown_render_html_self_contained: OK")
 
 
+def test_burndown_render_html_surfaces_excluded_count() -> None:
+    """The out-scoped tally appears in the page so readers don't
+    wonder where the missing closures went."""
+    enriched = {
+        "repo": "t/r",
+        "issues": [
+            {
+                "number": 1,
+                "title": "done",
+                "state": "CLOSED",
+                "stateReason": "COMPLETED",
+                "createdAt": "2026-04-01T09:00:00Z",
+                "closedAt": "2026-04-02T09:00:00Z",
+                "updatedAt": "2026-04-02T09:00:00Z",
+                "assignees": [],
+                "fields": {},
+            },
+            {
+                "number": 2,
+                "title": "won't fix",
+                "state": "CLOSED",
+                "stateReason": "NOT_PLANNED",
+                "createdAt": "2026-04-01T09:00:00Z",
+                "closedAt": "2026-04-01T09:00:00Z",
+                "updatedAt": "2026-04-01T09:00:00Z",
+                "assignees": [],
+                "fields": {},
+            },
+        ],
+    }
+    ctx = rc.build_context_for_burndown(enriched)
+    html = rc.render_html("burndown", ctx)
+    assert ctx["excluded_count"] == 1
+    assert "NOT_PLANNED" in html
+    assert "Out-scoped" in html
+    print("test_burndown_render_html_surfaces_excluded_count: OK")
+
+
 def test_burndown_render_html_no_data_path() -> None:
     enriched = {
         "repo": "test/repo",
@@ -489,6 +649,7 @@ def test_burndown_render_html_no_data_path() -> None:
                 "state": "OPEN",
                 "fields": {},
                 "assignees": [],
+                # no createdAt → missing path
             }
         ],
         "issue_count": 1,
@@ -644,11 +805,15 @@ def main() -> None:
         test_kanban_context_groups_fixture_into_three_columns,
         test_kanban_render_html_self_contained_and_has_all_columns,
         test_kanban_unassigned_card_shows_placeholder,
-        test_burndown_series_empty_when_no_renderable_issues,
-        test_burndown_series_remaining_monotonic_nonincreasing,
-        test_burndown_series_ideal_linearly_descends_to_zero,
-        test_burndown_context_includes_missing_issues,
+        test_burndown_series_empty_when_no_issues,
+        test_burndown_tracks_every_fixture_issue_via_gh_timestamps,
+        test_burndown_series_remaining_bounded_and_non_negative,
+        test_burndown_scope_growth_increases_remaining_mid_span,
+        test_burndown_excludes_not_planned_closures,
+        test_burndown_closedAt_resolves_before_updatedAt_fallback,
+        test_burndown_context_missing_list_only_when_no_timestamps,
         test_burndown_render_html_self_contained,
+        test_burndown_render_html_surfaces_excluded_count,
         test_burndown_render_html_no_data_path,
         test_comparison_deltas_zero_when_variant_identical,
         test_comparison_detects_shifted_end_dates,

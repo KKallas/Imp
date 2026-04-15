@@ -77,9 +77,13 @@ DEFAULT_LIMIT = 1000
 # Fields we ask `gh issue list` to populate. Picked to match the AC
 # (number, title, body, labels, milestone, assignees, state) plus a
 # few extras (url + createdAt + updatedAt) that downstream scripts
-# need for chart rendering and stale-data detection.
+# need for chart rendering and stale-data detection. `closedAt` +
+# `stateReason` land here specifically so the burndown template (P4.19)
+# can anchor on real closure timestamps and exclude NOT_PLANNED
+# closures — i.e. out-scoped work that shouldn't count as "completed".
 ISSUE_JSON_FIELDS = (
-    "number,title,body,labels,milestone,assignees,state,url,createdAt,updatedAt"
+    "number,title,body,labels,milestone,assignees,state,stateReason,"
+    "url,createdAt,updatedAt,closedAt"
 )
 
 

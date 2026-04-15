@@ -403,95 +403,204 @@ def build_context_for_kanban(enriched: dict[str, Any]) -> dict[str, Any]:
 
 # ---------- burndown ----------
 #
-# Classic burndown: for each day in the project span, count how many
-# tracked issues are still "open" at end-of-day. An issue is resolved
-# at its `end_date` (explicit or derived). Issues without resolvable
-# dates go to the missing list — same rule as gantt.
+# Burndown chart semantics (updated P4.19 follow-up):
 #
-# Ideal line: linear from (start, total) to (end, 0). No weekend
-# awareness for now — keep the math trivial and predictable.
+# A burndown measures how much real work remains open on each day. We
+# anchor on GH timestamps because they represent actual lifecycle
+# events (issue filed, issue closed) — project-board start/end dates
+# are *planned* dates and aren't what burndown is measuring.
+#
+# Per-issue resolution:
+#   start    = createdAt (date portion); fallback to fields.start_date
+#              only for fixtures / synthetic data without timestamps.
+#   resolved = closedAt; fallback to fields.end_date, then updatedAt;
+#              None for still-open issues (so they keep counting
+#              toward "remaining" across the whole span).
+#
+# Exclusions: closed issues with stateReason == NOT_PLANNED are
+# out-scoped, not completed. They don't enter scope and don't count
+# as "burned down" — they're tallied separately as `excluded_count`
+# so the reader can see *why* the numbers might differ from
+# `gh issue list --state closed` counts.
+#
+# For each day in the span, remaining = count of tracked issues where
+# start <= d AND (resolved is None OR resolved > d). Scope can grow
+# mid-project (new issues filed), so the line is NOT strictly
+# monotonic; the reference "ideal" line descends linearly from day-0
+# scope to 0 over the span, as a visual benchmark only.
+
+
+def _iso_date_from_raw(raw: Any) -> date | None:
+    """Parse `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ` (gh timestamp) into
+    a `date`. Returns None for unparseable / non-string input."""
+    if not isinstance(raw, str) or len(raw) < 10:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+@dataclass
+class _BurndownIssue:
+    number: int | None
+    title: str | None
+    start: date
+    resolved: date | None  # None = still open at end of span
+
+
+# GH stateReason values that indicate the issue was closed *without*
+# being completed — we treat these as out-of-scope work for burndown.
+# Compared case-insensitively against issue["stateReason"].
+_OUT_OF_SCOPE_STATE_REASONS: frozenset[str] = frozenset({"NOT_PLANNED"})
+
+
+def _resolve_burndown_issue(
+    issue: dict[str, Any],
+) -> tuple[_BurndownIssue | None, str | None, str | None]:
+    """Classify an enriched issue for burndown plotting.
+
+    Returns `(tracked, excluded_reason, missing_reason)` — exactly one
+    non-None. Excluded issues are tallied but omitted from scope and
+    the missing list. Missing issues had no parseable creation date.
+    """
+    state = str(issue.get("state") or "").upper()
+    state_reason = str(issue.get("stateReason") or "").upper()
+    if state == "CLOSED" and state_reason in _OUT_OF_SCOPE_STATE_REASONS:
+        return (None, f"closed as {state_reason}", None)
+
+    start = _iso_date_from_raw(issue.get("createdAt"))
+    if start is None:
+        start = _iso_date_from_raw(field_value(issue, "start_date"))
+    if start is None:
+        return (None, None, "no createdAt or start_date")
+
+    resolved: date | None = None
+    if state == "CLOSED":
+        resolved = (
+            _iso_date_from_raw(issue.get("closedAt"))
+            or _iso_date_from_raw(field_value(issue, "end_date"))
+            or _iso_date_from_raw(issue.get("updatedAt"))
+        )
+        if resolved is None:
+            # Closed but no timestamp anywhere — collapse to start so
+            # it contributes to scope but resolves immediately. Rare.
+            resolved = start
+        elif resolved < start:
+            resolved = start
+
+    number = issue.get("number") if isinstance(issue.get("number"), int) else None
+    return (
+        _BurndownIssue(
+            number=number,
+            title=issue.get("title"),
+            start=start,
+            resolved=resolved,
+        ),
+        None,
+        None,
+    )
 
 
 def _burndown_series(
     enriched: dict[str, Any], *, today: date | None = None
-) -> tuple[list[str], list[int], list[float], int, int, int, list[dict[str, Any]]]:
-    """Return (labels, remaining, ideal, tracked, open_today, span_days, missing).
+) -> tuple[
+    list[str], list[int], list[float], int, int, int, int, list[dict[str, Any]]
+]:
+    """Return (labels, remaining, ideal, tracked, open_today, span_days,
+    excluded, missing).
 
-    `labels` is an ISO-date string per day from earliest start to latest
-    end, inclusive. `remaining[i]` is the number of open tracked issues
-    at end of `labels[i]`. `ideal[i]` is the straight-line burndown.
+    `labels[i]` is an ISO date per day of the span (inclusive);
+    `remaining[i]` is the count of tracked issues open at end of day
+    `labels[i]`; `ideal[i]` is the straight-line reference burndown.
+    `excluded` counts NOT_PLANNED closures (not plotted). `missing`
+    lists issues with no usable creation timestamp.
     """
     issues = enriched.get("issues") or []
-    tracked: list[tuple[date, date]] = []
+    tracked: list[_BurndownIssue] = []
     missing: list[dict[str, Any]] = []
+    excluded = 0
+
     for issue in issues:
-        dates = resolve_dates(issue)
-        if not dates.renderable:
+        meta, excluded_reason, missing_reason = _resolve_burndown_issue(issue)
+        if excluded_reason:
+            excluded += 1
+            continue
+        if missing_reason:
             missing.append(
                 {
                     "number": issue.get("number"),
                     "title": issue.get("title"),
-                    "reason": dates.why_unrenderable,
+                    "reason": missing_reason,
                 }
             )
             continue
-        try:
-            start = date.fromisoformat(dates.start or "")
-            end = date.fromisoformat(dates.end or "")
-        except ValueError:
-            missing.append(
-                {
-                    "number": issue.get("number"),
-                    "title": issue.get("title"),
-                    "reason": "bad ISO date",
-                }
-            )
-            continue
-        if end < start:
-            end = start
-        tracked.append((start, end))
+        assert meta is not None
+        tracked.append(meta)
 
     if not tracked:
-        return ([], [], [], 0, 0, 0, missing)
+        return ([], [], [], 0, 0, 0, excluded, missing)
 
-    project_start = min(s for s, _ in tracked)
-    project_end = max(e for _, e in tracked)
+    today = today or datetime.now(timezone.utc).date()
+    project_start = min(t.start for t in tracked)
+    resolved_dates = [t.resolved for t in tracked if t.resolved is not None]
+    last_resolved = max(resolved_dates) if resolved_dates else project_start
+    project_end = max(project_start, last_resolved, today)
     span_days = (project_end - project_start).days + 1
 
     labels: list[str] = []
     remaining: list[int] = []
-    total = len(tracked)
-    today = today or datetime.now(timezone.utc).date()
     open_today = 0
 
     for offset in range(span_days):
         d = project_start + timedelta(days=offset)
         labels.append(d.isoformat())
-        count = sum(1 for _s, e in tracked if e > d)
+        count = sum(
+            1
+            for t in tracked
+            if t.start <= d and (t.resolved is None or t.resolved > d)
+        )
         remaining.append(count)
         if d == today:
             open_today = count
 
-    # If today is past the project end, open_today is 0 (all resolved);
-    # if before the start, it's the full total.
-    if today > project_end:
-        open_today = 0
-    elif today < project_start:
-        open_today = total
+    # If today falls before the span started (no issues yet),
+    # open_today stays 0 by construction. The common case (today
+    # inside or past the span) is handled by the loop above.
 
-    if span_days > 1:
-        step = total / (span_days - 1)
-        ideal = [round(total - step * i, 2) for i in range(span_days)]
+    # Ideal line: straight descent from initial in-scope count to 0.
+    initial_scope = remaining[0] if remaining else 0
+    if span_days > 1 and initial_scope > 0:
+        step = initial_scope / (span_days - 1)
+        ideal = [
+            round(max(0.0, initial_scope - step * i), 2) for i in range(span_days)
+        ]
     else:
-        ideal = [float(total)]
+        ideal = [float(initial_scope)] * span_days
 
-    return (labels, remaining, ideal, total, open_today, span_days, missing)
+    return (
+        labels,
+        remaining,
+        ideal,
+        len(tracked),
+        open_today,
+        span_days,
+        excluded,
+        missing,
+    )
 
 
 def build_context_for_burndown(enriched: dict[str, Any]) -> dict[str, Any]:
-    labels, remaining, ideal, tracked, open_today, span_days, missing = (
-        _burndown_series(enriched)
-    )
+    (
+        labels,
+        remaining,
+        ideal,
+        tracked,
+        open_today,
+        span_days,
+        excluded,
+        missing,
+    ) = _burndown_series(enriched)
     return {
         "title": enriched.get("repo", "Project"),
         "synced_at": enriched.get("synced_at"),
@@ -502,6 +611,7 @@ def build_context_for_burndown(enriched: dict[str, Any]) -> dict[str, Any]:
         "tracked_count": tracked,
         "open_today": open_today,
         "span_days": span_days,
+        "excluded_count": excluded,
         "missing_issues": missing,
         "rendered_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -694,18 +804,22 @@ def main() -> int:
     html = render_html(args.template, context)
     out = write_html(html, args.template, args.output_dir)
 
-    # Per-template summary line — gantt/burndown report renderable/missing;
-    # kanban reports per-column counts; comparison reports delta count.
-    if args.template in ("gantt", "burndown"):
-        renderable = (
-            context.get("renderable_issues")
-            or context.get("labels")
-            or []
-        )
+    # Per-template summary line — gantt reports renderable/missing;
+    # burndown reports tracked/excluded/missing; kanban reports per-
+    # column counts; comparison reports delta count.
+    if args.template == "gantt":
         print(
-            f"Rendered {args.template} chart with {len(renderable)} "
-            f"entries, {len(context.get('missing_issues') or [])} missing "
+            f"Rendered gantt chart with "
+            f"{len(context.get('renderable_issues') or [])} issues, "
+            f"{len(context.get('missing_issues') or [])} missing dates "
             f"→ {out}",
+            file=sys.stderr,
+        )
+    elif args.template == "burndown":
+        print(
+            f"Rendered burndown: {context.get('tracked_count', 0)} tracked, "
+            f"{context.get('excluded_count', 0)} out-scoped, "
+            f"{len(context.get('missing_issues') or [])} missing → {out}",
             file=sys.stderr,
         )
     elif args.template == "kanban":
