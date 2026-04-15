@@ -104,6 +104,9 @@
         <div>Tracked<br><strong>{{ tracked_count }}</strong></div>
         <div>Open today<br><strong>{{ open_today }}</strong></div>
         <div>Total span<br><strong>{{ span_days }} days</strong></div>
+        {% if excluded_count %}
+        <div>Out-scoped<br><strong>{{ excluded_count }}</strong></div>
+        {% endif %}
     </div>
 
     <div class="chart-wrap">
@@ -111,19 +114,27 @@
             <canvas id="burndown"></canvas>
         {% else %}
             <p class="empty">
-                No issues with <code>start_date</code> / <code>end_date</code>
-                to burn down yet — see the list below.
+                No issues with a <code>createdAt</code> timestamp to burn
+                down yet — see the list below.
             </p>
         {% endif %}
     </div>
 
+    {% if excluded_count %}
+    <p class="meta">
+        {{ excluded_count }} closed
+        {% if excluded_count == 1 %}issue{% else %}issues{% endif %}
+        excluded as <code>NOT_PLANNED</code> (out-of-scope, not completed).
+    </p>
+    {% endif %}
+
     {% if missing_issues %}
     <div class="missing">
-        <h2>Issues without dates ({{ missing_issues | length }})</h2>
+        <h2>Issues without timestamps ({{ missing_issues | length }})</h2>
         <p>
-            These can't be placed on the burndown — they need at least two of
-            <code>start_date</code>, <code>end_date</code>, or
-            <code>duration_days</code>.
+            These can't be placed on the burndown — they need a
+            <code>createdAt</code> timestamp from <code>gh</code> or an
+            explicit <code>start_date</code> field.
         </p>
         <ul>
         {% for i in missing_issues %}
