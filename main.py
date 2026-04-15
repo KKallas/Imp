@@ -42,6 +42,7 @@ import asyncio
 import json
 import re
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import chainlit as cl
@@ -762,6 +763,19 @@ async def _foreman_ask(question: str) -> str | None:
     answer = (resp.get("output") if isinstance(resp, dict) else None) or ""
     answer = answer.strip()
     return answer or None
+
+
+@asynccontextmanager
+async def _foreman_thinking(label: str):
+    """Bracket a slow LLM call with a visible `cl.Step` spinner.
+
+    Foreman's `dispatch` enters this around the SDK conversation so the
+    admin sees a "thinking…" step instead of an awkward silent pause.
+    The step auto-closes (spinner clears) as soon as the dispatch
+    returns, regardless of success or failure.
+    """
+    async with cl.Step(name=label, type="run") as step:
+        yield step
 
 
 # ---------- real intercept demo (P2.6) ----------
