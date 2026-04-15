@@ -497,6 +497,54 @@ async def test_start_session_rejects_too_few_or_too_many() -> None:
     print("test_start_session_rejects_too_few_or_too_many: OK")
 
 
+def test_get_field_unwraps_envelope_and_handles_missing() -> None:
+    """get_field() is the defensive alternative to raw field access.
+    Tells the LLM-generated code how to survive issues that lack
+    start_date / end_date (most open issues in a real project)."""
+    issue = {
+        "fields": {
+            "duration_days": {"value": 5, "source": "heuristic"},
+            "raw_field": 42,  # no envelope
+        }
+    }
+    assert sc.get_field(issue, "duration_days") == 5
+    assert sc.get_field(issue, "raw_field") == 42
+    assert sc.get_field(issue, "missing") is None
+    assert sc.get_field(issue, "missing", default="fallback") == "fallback"
+    # Empty issue → None
+    assert sc.get_field({}, "duration_days") is None
+    assert sc.get_field({"fields": None}, "duration_days") is None
+    print("test_get_field_unwraps_envelope_and_handles_missing: OK")
+
+
+def test_get_field_reachable_from_exec_namespace() -> None:
+    """Generated scenarios.py can call get_field directly without
+    importing anything — it's pre-loaded in the exec namespace."""
+    src = """
+@scenario("uses get_field")
+def s(data, out):
+    total = 0
+    for issue in data["issues"]:
+        total += get_field(issue, "duration_days", default=0)
+    out.metric("total", total)
+    return data
+"""
+    fns = sc._exec_scenarios_source(src)
+    assert len(fns) == 1
+    out = sc.Out(name=fns[0]._scenario_name)
+    baseline = {
+        "issues": [
+            {"fields": {"duration_days": {"value": 5}}},
+            {"fields": {}},  # missing — must not crash
+            {"fields": {"duration_days": {"value": 3}}},
+        ]
+    }
+    fns[0](baseline, out)
+    # 5 + 0 (default) + 3 = 8
+    assert ("total", "8") in out.metrics
+    print("test_get_field_reachable_from_exec_namespace: OK")
+
+
 def test_exec_namespace_has_working_import() -> None:
     """The restricted exec namespace must support `import X` at runtime
     for whitelisted modules — fixed the `__import__ not found` bug that
@@ -692,6 +740,8 @@ async def amain() -> None:
         test_validator_rejects_os_import,
         test_validator_rejects_exec_call,
         test_validator_rejects_dunder_access,
+        test_get_field_unwraps_envelope_and_handles_missing,
+        test_get_field_reachable_from_exec_namespace,
         test_exec_namespace_has_working_import,
         test_exec_namespace_rejects_unsafe_import_at_runtime,
         test_exec_namespace_rejects_relative_import,

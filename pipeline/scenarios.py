@@ -194,6 +194,25 @@ def _field_value(issue: dict[str, Any], key: str) -> Any:
     return cell
 
 
+def get_field(issue: dict[str, Any], key: str, default: Any = None) -> Any:
+    """Public helper: safely read a field value from an issue.
+
+    Exposed in the scenarios exec namespace so LLM-generated code can
+    access fields without crashing on missing keys. Handles three shapes:
+
+      - Missing field → returns `default`
+      - Provenance envelope `{"value": ..., "source": ..., ...}` → returns the value
+      - Flat scalar (no envelope) → returns it unchanged
+
+    Heuristics populates an envelope for every issue, but only for fields
+    that actually have data. Open issues without project-board dates won't
+    have `start_date` at all — the LLM's generated code must not assume
+    every field is present. Use this helper instead of raw dict access.
+    """
+    value = _field_value(issue, key)
+    return default if value is None else value
+
+
 def _set_field_value(issue: dict[str, Any], key: str, value: Any) -> None:
     fields = issue.setdefault("fields", {})
     cell = fields.get(key)
@@ -477,6 +496,7 @@ _SAFE_NAMES: set[str] = {
     "shift_start",
     "exclude_weekends",
     "freeze_after",
+    "get_field",
     # From datetime, common names the generator may use
     "date",
     "datetime",
@@ -631,6 +651,7 @@ def _exec_scenarios_source(source: str) -> list[Callable[..., None]]:
         "shift_start": shift_start,
         "exclude_weekends": exclude_weekends,
         "freeze_after": freeze_after,
+        "get_field": get_field,
         "date": date,
         "datetime": datetime,
         "timedelta": timedelta,
@@ -917,13 +938,40 @@ Since Plotly isn't importable, build the figure as a raw dict:
         "depends_on_parsed": [12, 15],
         "fields": {
           "duration_days": {"value": 5, "source": "...", ...},
-          "start_date":    {"value": "2026-04-15", ...},
-          "end_date":      {"value": "2026-04-20", ...}
+          "start_date":    {"value": "2026-04-15", ...},  # MAY BE ABSENT
+          "end_date":      {"value": "2026-04-20", ...}   # MAY BE ABSENT
         }
       },
       ...
     ]
   }
+
+## CRITICAL — defensive field access
+
+**Fields are NOT guaranteed to be present.** `duration_days` is usually
+populated by the heuristics pipeline, but `start_date` and `end_date`
+are only there when the GitHub Project board has them set explicitly.
+Most open issues have NO start_date / end_date. Writing
+`issue["fields"]["start_date"]["value"]` WILL KeyError on those issues.
+
+Use the pre-imported `get_field(issue, key, default=None)` helper instead:
+
+```python
+# GOOD — safe, handles missing envelope + missing key
+start = get_field(issue, "start_date")
+if start is None:
+    continue  # or supply a default, or skip this issue
+
+# GOOD — with default
+dur = get_field(issue, "duration_days", default=3)
+
+# BAD — crashes on issues without the field
+start = issue["fields"]["start_date"]["value"]
+```
+
+The filter primitives (delay_all, delay_issue, scale_durations, etc.)
+ALREADY handle missing fields correctly. If you only compose filters
+and call `get_field` for reads, your code won't KeyError.
 
 ## Rules
 
