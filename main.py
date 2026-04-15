@@ -42,6 +42,7 @@ import asyncio
 import json
 import re
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import chainlit as cl
@@ -721,19 +722,21 @@ async def _on_message_body(msg: cl.Message) -> None:
         ).send()
         return
 
-    # ---- Hand off to the real dispatcher ----
-    # P2.9 replaces the keyword-matcher below this line with an LLM-driven
-    # dispatcher that routes to intercept.execute_command, asks clarifying
-    # questions, or answers directly. Explicit-mode shortcuts (run:, keyword
-    # argv) are handled inside `dispatcher._parse_explicit` and also above
-    # via `run_demo_command` / `show_log_command`, which keep their richer
-    # UX (verdict table, log sidebar).
-    from server import dispatcher
+    # ---- Hand off to Foreman ----
+    # P4.11 swaps the P2.9 JSON-verdict dispatcher for the real Foreman
+    # agent: native claude-agent-sdk tool use, multi-turn via
+    # ClaudeSDKClient, system prompt from v0.1.md §The Agent's Role.
+    # Every shell invocation still routes through intercept.execute_command
+    # (via Foreman's MCP tools) so the guard + budgets stay in force.
+    # Explicit-mode shortcuts (run: and log) above are kept for their
+    # richer UX (verdict table, log sidebar).
+    from server import foreman_agent
 
-    await dispatcher.dispatch(
+    await foreman_agent.dispatch(
         msg.content,
         say=_foreman_say,
         ask=_foreman_ask,
+        thinking=_foreman_thinking,
     )
 
 
@@ -760,6 +763,19 @@ async def _foreman_ask(question: str) -> str | None:
     answer = (resp.get("output") if isinstance(resp, dict) else None) or ""
     answer = answer.strip()
     return answer or None
+
+
+@asynccontextmanager
+async def _foreman_thinking(label: str):
+    """Bracket a slow LLM call with a visible `cl.Step` spinner.
+
+    Foreman's `dispatch` enters this around the SDK conversation so the
+    admin sees a "thinking…" step instead of an awkward silent pause.
+    The step auto-closes (spinner clears) as soon as the dispatch
+    returns, regardless of success or failure.
+    """
+    async with cl.Step(name=label, type="run") as step:
+        yield step
 
 
 # ---------- real intercept demo (P2.6) ----------
