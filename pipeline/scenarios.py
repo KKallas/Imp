@@ -194,6 +194,149 @@ def _field_value(issue: dict[str, Any], key: str) -> Any:
     return cell
 
 
+def synthesize_dates(data: dict[str, Any], *, today: date | None = None) -> dict[str, Any]:
+    """Fill in missing `start_date` / `end_date` on every issue.
+
+    Most open issues in a real project never get explicit project-board
+    dates — only `duration_days` from the heuristics pass. Without dates,
+    scenario charts render empty. This pass walks the issues in
+    dependency order and fills in the gaps:
+
+      - Closed issue, missing dates: use `createdAt` / `closedAt`
+        (or `updatedAt` as a closedAt fallback).
+      - Open issue, missing dates: start = max(`today`, max end of
+        predecessors), end = start + `duration_days`.
+      - Both dates already set: left alone.
+      - Synthesized values get `source: "synthesized"` in the envelope
+        so the UI / downstream tools can distinguish them from real
+        project-board data.
+
+    Mutates a deep copy; the input dict is never changed. Idempotent.
+    """
+    today = today or date.today()
+    out = _deep_copy_issues(data)
+    by_num = {i["number"]: i for i in out["issues"] if isinstance(i.get("number"), int)}
+
+    # Naive multi-pass fill: each pass fills any issue whose predecessors
+    # are all resolved. Bounded at 2x the issue count — far more than
+    # enough for any sane dependency depth.
+    max_passes = max(1, 2 * len(out["issues"]))
+    for _ in range(max_passes):
+        changed = False
+        for issue in out["issues"]:
+            start = _field_value(issue, "start_date")
+            end = _field_value(issue, "end_date")
+            if start and end:
+                continue
+
+            state = str(issue.get("state") or "").upper()
+            duration = _field_value(issue, "duration_days") or 3
+            try:
+                duration = max(1, int(duration))
+            except (TypeError, ValueError):
+                duration = 3
+
+            if state == "CLOSED":
+                start, end = _dates_from_gh_timestamps(issue, start, end, duration)
+            else:
+                start, end = _forward_project_open(
+                    issue, by_num, today=today, duration=duration,
+                    current_start=start, current_end=end,
+                )
+
+            if start and not _field_value(issue, "start_date"):
+                _set_field_value(issue, "start_date", start)
+                _mark_synthesized(issue, "start_date")
+                changed = True
+            if end and not _field_value(issue, "end_date"):
+                _set_field_value(issue, "end_date", end)
+                _mark_synthesized(issue, "end_date")
+                changed = True
+
+        if not changed:
+            break
+
+    return out
+
+
+def _dates_from_gh_timestamps(
+    issue: dict[str, Any], current_start: Any, current_end: Any, duration: int
+) -> tuple[str | None, str | None]:
+    """Pull start/end from the gh-sync createdAt/closedAt fields."""
+    def _to_iso(raw: Any) -> str | None:
+        if not isinstance(raw, str):
+            return None
+        # gh returns ISO 8601 like "2026-04-11T12:30:18Z"; take the date.
+        return raw[:10] if len(raw) >= 10 else None
+
+    created = _to_iso(issue.get("createdAt"))
+    closed = _to_iso(issue.get("closedAt")) or _to_iso(issue.get("updatedAt"))
+    start = current_start or created
+    end = current_end or closed
+    # If we have start but not end, derive end from duration
+    if start and not end:
+        try:
+            end = (date.fromisoformat(start) + timedelta(days=duration)).isoformat()
+        except ValueError:
+            end = None
+    # Similarly derive start from end if missing
+    if end and not start:
+        try:
+            start = (date.fromisoformat(end) - timedelta(days=duration)).isoformat()
+        except ValueError:
+            start = None
+    return start, end
+
+
+def _forward_project_open(
+    issue: dict[str, Any],
+    by_num: dict[int, dict[str, Any]],
+    *,
+    today: date,
+    duration: int,
+    current_start: Any,
+    current_end: Any,
+) -> tuple[str | None, str | None]:
+    """Compute start/end for an open issue by forward-projecting from
+    the latest predecessor end (or today if no predecessors are dated)."""
+    start = current_start
+    end = current_end
+
+    if not start:
+        anchor = today
+        for dep in issue.get("depends_on_parsed") or []:
+            dep_issue = by_num.get(dep)
+            if not dep_issue:
+                continue
+            dep_end = _field_value(dep_issue, "end_date")
+            if isinstance(dep_end, str):
+                try:
+                    dep_end_d = date.fromisoformat(dep_end)
+                    if dep_end_d > anchor:
+                        anchor = dep_end_d
+                except ValueError:
+                    pass
+        start = anchor.isoformat()
+
+    if not end:
+        try:
+            end = (date.fromisoformat(start) + timedelta(days=duration)).isoformat()
+        except ValueError:
+            end = None
+
+    return start, end
+
+
+def _mark_synthesized(issue: dict[str, Any], key: str) -> None:
+    """Tag the newly-written envelope so the UI can show that the date
+    was computed, not read from the project board."""
+    fields = issue.get("fields") or {}
+    cell = fields.get(key)
+    if isinstance(cell, dict):
+        cell["source"] = "synthesized"
+        cell.setdefault("confidence", "low")
+
+
 def get_field(issue: dict[str, Any], key: str, default: Any = None) -> Any:
     """Public helper: safely read a field value from an issue.
 
@@ -719,9 +862,17 @@ def load_session_source(session_id: str) -> str:
 
 def run_session(session_id: str, baseline: dict[str, Any]) -> list[Out]:
     """Import the session's scenarios.py, call each @scenario function,
-    collect outputs in declaration order."""
+    collect outputs in declaration order.
+
+    Runs `synthesize_dates()` on the baseline first so every issue has
+    `start_date` / `end_date` populated — open issues that lacked dates
+    get forward-projected from today, closed issues use their gh
+    timestamps. Without this the scenarios render empty charts because
+    heuristics only fills `duration_days`, not dates.
+    """
     source = load_session_source(session_id)
     fns = _exec_scenarios_source(source)
+    baseline = synthesize_dates(baseline)
     outs: list[Out] = []
     for fn in fns:
         name = getattr(fn, "_scenario_name", fn.__name__)
@@ -946,32 +1097,32 @@ Since Plotly isn't importable, build the figure as a raw dict:
     ]
   }
 
-## CRITICAL — defensive field access
+## Field access — use get_field for safety
 
-**Fields are NOT guaranteed to be present.** `duration_days` is usually
-populated by the heuristics pipeline, but `start_date` and `end_date`
-are only there when the GitHub Project board has them set explicitly.
-Most open issues have NO start_date / end_date. Writing
-`issue["fields"]["start_date"]["value"]` WILL KeyError on those issues.
+The baseline data has already been date-synthesized before your
+scenario runs: every issue has `start_date`, `end_date`, and
+`duration_days` populated. Closed issues use their gh createdAt /
+closedAt timestamps; open issues are forward-projected from today in
+dependency order. Synthesized envelopes carry `source: "synthesized"`
+so you can distinguish them from project-board values.
 
-Use the pre-imported `get_field(issue, key, default=None)` helper instead:
+That said, still use the pre-imported `get_field(issue, key,
+default=None)` helper rather than raw dict access — it unwraps the
+provenance envelope (`{"value": ..., "source": ..., "confidence": ...}`)
+and guards against edge cases:
 
 ```python
-# GOOD — safe, handles missing envelope + missing key
+# GOOD — handles envelope + missing gracefully
 start = get_field(issue, "start_date")
-if start is None:
-    continue  # or supply a default, or skip this issue
-
-# GOOD — with default
 dur = get_field(issue, "duration_days", default=3)
 
-# BAD — crashes on issues without the field
+# BAD — brittle; don't reach into the envelope by hand
 start = issue["fields"]["start_date"]["value"]
 ```
 
 The filter primitives (delay_all, delay_issue, scale_durations, etc.)
-ALREADY handle missing fields correctly. If you only compose filters
-and call `get_field` for reads, your code won't KeyError.
+already handle the envelope correctly. Composing filters is always
+safer than reimplementing them inside your scenario function.
 
 ## Rules
 

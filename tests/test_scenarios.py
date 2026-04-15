@@ -497,6 +497,147 @@ async def test_start_session_rejects_too_few_or_too_many() -> None:
     print("test_start_session_rejects_too_few_or_too_many: OK")
 
 
+def test_synthesize_dates_closed_from_gh_timestamps() -> None:
+    """Closed issues without project-board dates get start/end from
+    createdAt / closedAt (trimmed to YYYY-MM-DD)."""
+    data = {
+        "issues": [
+            {
+                "number": 11,
+                "state": "CLOSED",
+                "createdAt": "2026-04-11T12:30:00Z",
+                "closedAt": "2026-04-15T09:00:00Z",
+                "labels": [],
+                "depends_on_parsed": [],
+                "fields": {"duration_days": {"value": 4}},
+            }
+        ]
+    }
+    out = sc.synthesize_dates(data)
+    i11 = out["issues"][0]
+    assert sc.get_field(i11, "start_date") == "2026-04-11"
+    assert sc.get_field(i11, "end_date") == "2026-04-15"
+    # Source tagged as synthesized
+    cells = i11["fields"]
+    assert cells["start_date"]["source"] == "synthesized"
+    print("test_synthesize_dates_closed_from_gh_timestamps: OK")
+
+
+def test_synthesize_dates_open_forward_projects_from_today() -> None:
+    """Open issues with no dates and no predecessors start today,
+    end today + duration_days."""
+    today = date(2026, 4, 15)
+    data = {
+        "issues": [
+            {
+                "number": 1,
+                "state": "OPEN",
+                "labels": [],
+                "depends_on_parsed": [],
+                "fields": {"duration_days": {"value": 5}},
+            }
+        ]
+    }
+    out = sc.synthesize_dates(data, today=today)
+    i = out["issues"][0]
+    assert sc.get_field(i, "start_date") == "2026-04-15"
+    assert sc.get_field(i, "end_date") == "2026-04-20"
+    print("test_synthesize_dates_open_forward_projects_from_today: OK")
+
+
+def test_synthesize_dates_respects_dependency_chain() -> None:
+    """Open issue that depends on another issue starts after that one
+    finishes, not at 'today'."""
+    today = date(2026, 4, 15)
+    data = {
+        "issues": [
+            {
+                "number": 1,
+                "state": "OPEN",
+                "labels": [],
+                "depends_on_parsed": [],
+                "fields": {"duration_days": {"value": 10}},
+            },
+            {
+                "number": 2,
+                "state": "OPEN",
+                "labels": [],
+                "depends_on_parsed": [1],
+                "fields": {"duration_days": {"value": 3}},
+            },
+        ]
+    }
+    out = sc.synthesize_dates(data, today=today)
+    by_num = {i["number"]: i for i in out["issues"]}
+    # Issue 1: today → today + 10d
+    assert sc.get_field(by_num[1], "end_date") == "2026-04-25"
+    # Issue 2: starts after #1 ends, not "today"
+    assert sc.get_field(by_num[2], "start_date") == "2026-04-25"
+    assert sc.get_field(by_num[2], "end_date") == "2026-04-28"
+    print("test_synthesize_dates_respects_dependency_chain: OK")
+
+
+def test_synthesize_dates_preserves_existing_dates() -> None:
+    """Issues that already have both start and end are not touched."""
+    data = {
+        "issues": [
+            {
+                "number": 1,
+                "state": "OPEN",
+                "labels": [],
+                "depends_on_parsed": [],
+                "fields": {
+                    "start_date": {"value": "2026-05-01", "source": "github"},
+                    "end_date": {"value": "2026-05-05", "source": "github"},
+                    "duration_days": {"value": 4},
+                },
+            }
+        ]
+    }
+    out = sc.synthesize_dates(data, today=date(2026, 4, 15))
+    i = out["issues"][0]
+    assert sc.get_field(i, "start_date") == "2026-05-01"
+    assert i["fields"]["start_date"]["source"] == "github"  # unchanged
+    print("test_synthesize_dates_preserves_existing_dates: OK")
+
+
+def test_synthesize_dates_is_idempotent() -> None:
+    """Running synthesis twice yields the same result as running once."""
+    data = {
+        "issues": [
+            {
+                "number": 1,
+                "state": "OPEN",
+                "labels": [],
+                "depends_on_parsed": [],
+                "fields": {"duration_days": {"value": 7}},
+            }
+        ]
+    }
+    once = sc.synthesize_dates(data, today=date(2026, 4, 15))
+    twice = sc.synthesize_dates(once, today=date(2026, 4, 15))
+    assert once["issues"][0]["fields"] == twice["issues"][0]["fields"]
+    print("test_synthesize_dates_is_idempotent: OK")
+
+
+def test_synthesize_dates_does_not_mutate_input() -> None:
+    data = {
+        "issues": [
+            {
+                "number": 1,
+                "state": "OPEN",
+                "labels": [],
+                "depends_on_parsed": [],
+                "fields": {"duration_days": {"value": 3}},
+            }
+        ]
+    }
+    snap = json.dumps(data, sort_keys=True)
+    sc.synthesize_dates(data, today=date(2026, 4, 15))
+    assert json.dumps(data, sort_keys=True) == snap
+    print("test_synthesize_dates_does_not_mutate_input: OK")
+
+
 def test_get_field_unwraps_envelope_and_handles_missing() -> None:
     """get_field() is the defensive alternative to raw field access.
     Tells the LLM-generated code how to survive issues that lack
@@ -740,6 +881,12 @@ async def amain() -> None:
         test_validator_rejects_os_import,
         test_validator_rejects_exec_call,
         test_validator_rejects_dunder_access,
+        test_synthesize_dates_closed_from_gh_timestamps,
+        test_synthesize_dates_open_forward_projects_from_today,
+        test_synthesize_dates_respects_dependency_chain,
+        test_synthesize_dates_preserves_existing_dates,
+        test_synthesize_dates_is_idempotent,
+        test_synthesize_dates_does_not_mutate_input,
         test_get_field_unwraps_envelope_and_handles_missing,
         test_get_field_reachable_from_exec_namespace,
         test_exec_namespace_has_working_import,
