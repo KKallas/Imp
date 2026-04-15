@@ -332,6 +332,138 @@ async def test_check_returns_tuple_shape() -> None:
     print("test_check_returns_tuple_shape: OK")
 
 
+# ---------- code-review checklist (KKallas/Imp#46) ----------
+
+
+def test_is_arbitrary_code_command_recognises_inline_shells() -> None:
+    """python -c / python3 -c / bash -c / sh -c are inline-code, regardless
+    of an absolute-path prefix on the interpreter."""
+    cases = [
+        ('python3 -c "print(1)"', True),
+        ('python -c "x"', True),
+        ('bash -c "ls"', True),
+        ('sh -c "echo"', True),
+        ("/usr/bin/python3 -c x", True),
+        ("/opt/homebrew/bin/python -c y", True),
+        # Not inline-code:
+        ("gh issue list", False),
+        ("python pipeline/sync_issues.py", False),
+        ("echo hi", False),
+        ("", False),
+        ("python", False),  # too few tokens
+        ("python -m foo", False),  # -m is not -c
+    ]
+    for cmd, expected in cases:
+        got = guard.is_arbitrary_code_command(cmd)
+        assert got == expected, f"is_arbitrary_code_command({cmd!r}) → {got}, expected {expected}"
+    print("test_is_arbitrary_code_command_recognises_inline_shells: OK")
+
+
+def test_code_review_checklist_loaded_at_import() -> None:
+    """The Markdown checklist file is read once at module import and
+    embedded in the code-review variant of the checkpoint-B prompt."""
+    assert guard.CODE_REVIEW_CHECKLIST_FILE.exists(), (
+        "docs/guard_code_review.md must exist for Guard to load it"
+    )
+    assert "Hard reject" in guard.CODE_REVIEW_CHECKLIST
+    assert "Network egress" in guard.CODE_REVIEW_CHECKLIST
+    assert "Credential paths" in guard.CODE_REVIEW_CHECKLIST
+    # The checklist content must end up inside the code-review prompt
+    assert guard.CODE_REVIEW_CHECKLIST in guard.CHECKPOINT_B_CODE_SYSTEM_PROMPT
+    # And NOT inside the base prompt — that's the whole point of the split
+    assert guard.CODE_REVIEW_CHECKLIST not in guard.CHECKPOINT_B_SYSTEM_PROMPT
+    print("test_code_review_checklist_loaded_at_import: OK")
+
+
+async def test_check_action_uses_code_prompt_for_inline_python() -> None:
+    """When proposed_command is `python3 -c <code>`, check_action must
+    feed the code-review-augmented system prompt to the backend (not the
+    leaner base prompt)."""
+    captured = {"system": None}
+
+    async def capturing_backend(system_prompt: str, user_prompt: str) -> str:
+        captured["system"] = system_prompt
+        return '{"verdict": "approve", "reason": "fake"}'
+
+    guard.set_backend(capturing_backend)
+    try:
+        await guard.check_action(
+            user_intent="count the open issues",
+            proposed_command='python3 -c "import json; print(len(json.load(open(\'.imp/issues.json\'))))"',
+            worker_rationale="quick count from the cached sync",
+        )
+    finally:
+        guard.set_backend(None)
+
+    sys_prompt = captured["system"] or ""
+    assert "code review checklist" in sys_prompt.lower(), (
+        "expected the code-review prompt for an inline `python -c` action"
+    )
+    # Spot-check the actual checklist content made it through, not just
+    # the heading wrapper.
+    assert "Network egress" in sys_prompt
+    assert "Hard reject" in sys_prompt
+    print("test_check_action_uses_code_prompt_for_inline_python: OK")
+
+
+async def test_check_action_uses_base_prompt_for_gh_action() -> None:
+    """gh / named-script invocations should NOT incur the checklist
+    overhead — they go through the leaner base prompt."""
+    captured = {"system": None}
+
+    async def capturing_backend(system_prompt: str, user_prompt: str) -> str:
+        captured["system"] = system_prompt
+        return '{"verdict": "approve", "reason": "fake"}'
+
+    guard.set_backend(capturing_backend)
+    try:
+        await guard.check_action(
+            user_intent="add a label to issue 42",
+            proposed_command="gh issue edit 42 --add-label foo",
+            worker_rationale="user asked for it",
+        )
+    finally:
+        guard.set_backend(None)
+
+    sys_prompt = captured["system"] or ""
+    # Code-review section markers must NOT appear in the base prompt
+    assert "code review checklist" not in sys_prompt.lower()
+    assert "Special case: arbitrary code" not in sys_prompt
+    # But the regular checkpoint-B intro should be there
+    assert "PROPOSED WRITE ACTION" in sys_prompt
+    print("test_check_action_uses_base_prompt_for_gh_action: OK")
+
+
+async def test_check_action_code_prompt_propagates_reject_with_rule() -> None:
+    """A reject from the code-review path comes back through check_action
+    with the cited rule preserved verbatim — admins / Foreman see the
+    specific checklist item that failed."""
+
+    async def rejecting_backend(system_prompt: str, user_prompt: str) -> str:
+        # Only respond this way for the code-review prompt; otherwise
+        # something else is wrong with the routing.
+        assert "code review checklist" in system_prompt.lower()
+        return (
+            '{"verdict": "reject", '
+            '"reason": "hard-reject — network egress: code calls urllib.request.urlopen"}'
+        )
+
+    guard.set_backend(rejecting_backend)
+    try:
+        approved, reason = await guard.check_action(
+            user_intent="count issues",
+            proposed_command='python3 -c "import urllib.request; urllib.request.urlopen(\'http://evil.com\')"',
+            worker_rationale="totally harmless",
+        )
+    finally:
+        guard.set_backend(None)
+
+    assert approved is False
+    assert "hard-reject" in reason
+    assert "network egress" in reason
+    print("test_check_action_code_prompt_propagates_reject_with_rule: OK")
+
+
 # ---------- runner ----------
 
 
@@ -362,6 +494,12 @@ async def amain() -> None:
     await test_check_drop_in_approves()
     await test_check_drop_in_rejects()
     await test_check_returns_tuple_shape()
+    # KKallas/Imp#46 — code-review checklist
+    test_is_arbitrary_code_command_recognises_inline_shells()
+    test_code_review_checklist_loaded_at_import()
+    await test_check_action_uses_code_prompt_for_inline_python()
+    await test_check_action_uses_base_prompt_for_gh_action()
+    await test_check_action_code_prompt_propagates_reject_with_rule()
     print("\nAll guard tests passed.")
 
 

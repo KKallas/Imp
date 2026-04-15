@@ -165,8 +165,14 @@ def classify_command(argv: list[str]) -> ClassifyResult:
             return "read"
         return "unknown"
 
-    # python / python3 <script>
+    # python / python3 <script>  OR  python -c "<code>"
     if basename in ("python", "python3") and len(argv) >= 2:
+        # Inline `-c` code — KKallas/Imp#46. Classified as "write" so the
+        # Guard Agent reviews the code against the checklist in
+        # docs/guard_code_review.md before it runs. The classifier is NOT
+        # the security boundary here — Guard is.
+        if len(argv) >= 3 and argv[1] == "-c":
+            return "write"
         script = argv[1]
         for s in PIPELINE_READ_SCRIPTS:
             if script.endswith(s):
@@ -175,6 +181,10 @@ def classify_command(argv: list[str]) -> ClassifyResult:
             if script.endswith(s):
                 return "write"
         return "unknown"
+
+    # bash / sh -c "<cmd>" — same Guard-reviewed path as python -c.
+    if basename in ("bash", "sh") and len(argv) >= 3 and argv[1] == "-c":
+        return "write"
 
     # 99-tools/run_all.sh directly
     if cmd.endswith("/run_all.sh") or basename == "run_all.sh":
