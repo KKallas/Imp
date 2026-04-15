@@ -312,6 +312,309 @@ def test_unknown_template_main_returns_error() -> None:
     print("test_unknown_template_main_returns_error: OK")
 
 
+# ---------- kanban ----------
+
+
+def test_kanban_all_three_templates_registered() -> None:
+    """P4.19: the extra templates must all register context builders."""
+    for name in ("kanban", "burndown", "comparison"):
+        assert name in rc.CONTEXT_BUILDERS, name
+    print("test_kanban_all_three_templates_registered: OK")
+
+
+def test_kanban_status_falls_back_to_state_when_field_absent() -> None:
+    closed = {"state": "CLOSED", "fields": {}, "assignees": []}
+    assigned = {"state": "OPEN", "fields": {}, "assignees": [{"login": "alice"}]}
+    bare = {"state": "OPEN", "fields": {}, "assignees": []}
+    assert rc._kanban_status(closed) == "done"
+    assert rc._kanban_status(assigned) == "in-progress"
+    assert rc._kanban_status(bare) == "open"
+    print("test_kanban_status_falls_back_to_state_when_field_absent: OK")
+
+
+def test_kanban_status_honors_project_board_field() -> None:
+    """If project-board status is set, it wins over GH state."""
+    issue = {
+        "state": "OPEN",
+        "fields": {"status": {"value": "Done"}},
+        "assignees": [],
+    }
+    assert rc._kanban_status(issue) == "done"
+
+    issue2 = {
+        "state": "OPEN",
+        "fields": {"status": {"value": "In Progress"}},
+        "assignees": [],
+    }
+    assert rc._kanban_status(issue2) == "in-progress"
+
+    # Unknown status string falls through to state-based rules.
+    issue3 = {
+        "state": "CLOSED",
+        "fields": {"status": {"value": "something weird"}},
+        "assignees": [],
+    }
+    assert rc._kanban_status(issue3) == "done"
+    print("test_kanban_status_honors_project_board_field: OK")
+
+
+def test_kanban_context_groups_fixture_into_three_columns() -> None:
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_kanban(enriched)
+
+    slugs = [c["slug"] for c in ctx["columns"]]
+    assert slugs == ["open", "in-progress", "done"]
+
+    by_slug = {c["slug"]: c for c in ctx["columns"]}
+    all_numbers: set[int] = set()
+    for col in ctx["columns"]:
+        for card in col["cards"]:
+            assert "number" in card and "title" in card
+            all_numbers.add(card["number"])
+
+    # Every issue in the fixture lands in exactly one column.
+    assert all_numbers == {11, 12, 13, 14, 15, 16}
+
+    # #11 and #15 are closed → Done column.
+    done_nums = {c["number"] for c in by_slug["done"]["cards"]}
+    assert {11, 15} <= done_nums
+    print("test_kanban_context_groups_fixture_into_three_columns: OK")
+
+
+def test_kanban_render_html_self_contained_and_has_all_columns() -> None:
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_kanban(enriched)
+    html = rc.render_html("kanban", ctx)
+    assert html.startswith("<!doctype html>")
+    assert "<style>" in html  # inline, no external CSS link
+    for label in ("Open", "In Progress", "Done"):
+        assert label in html, label
+    # Issue title shows up on a card.
+    assert "[P4.11]" in html
+    print("test_kanban_render_html_self_contained_and_has_all_columns: OK")
+
+
+def test_kanban_unassigned_card_shows_placeholder() -> None:
+    enriched = {
+        "repo": "test/repo",
+        "issues": [
+            {
+                "number": 1,
+                "title": "nobody's working on this",
+                "state": "OPEN",
+                "assignees": [],
+                "fields": {},
+            }
+        ],
+        "issue_count": 1,
+    }
+    ctx = rc.build_context_for_kanban(enriched)
+    html = rc.render_html("kanban", ctx)
+    assert "unassigned" in html
+    print("test_kanban_unassigned_card_shows_placeholder: OK")
+
+
+# ---------- burndown ----------
+
+
+def test_burndown_series_empty_when_no_renderable_issues() -> None:
+    labels, remaining, ideal, tracked, open_today, span, missing = (
+        rc._burndown_series({"issues": []})
+    )
+    assert labels == []
+    assert remaining == []
+    assert ideal == []
+    assert tracked == 0
+    assert span == 0
+    assert missing == []
+    print("test_burndown_series_empty_when_no_renderable_issues: OK")
+
+
+def test_burndown_series_remaining_monotonic_nonincreasing() -> None:
+    enriched = _load_enriched()
+    _, remaining, _, tracked, _, _, _ = rc._burndown_series(
+        enriched, today=TODAY
+    )
+    assert tracked > 0
+    # Remaining must never increase — a classic burndown invariant.
+    for a, b in zip(remaining, remaining[1:]):
+        assert b <= a, (a, b)
+    # The first point equals the total tracked issues (nothing has
+    # resolved yet on day 0 — issues only resolve at their end_date).
+    assert remaining[0] == tracked
+    print("test_burndown_series_remaining_monotonic_nonincreasing: OK")
+
+
+def test_burndown_series_ideal_linearly_descends_to_zero() -> None:
+    enriched = _load_enriched()
+    _, _, ideal, tracked, _, span, _ = rc._burndown_series(enriched, today=TODAY)
+    assert len(ideal) == span
+    assert ideal[0] == float(tracked)
+    assert ideal[-1] == 0 or abs(ideal[-1]) < 0.01
+    print("test_burndown_series_ideal_linearly_descends_to_zero: OK")
+
+
+def test_burndown_context_includes_missing_issues() -> None:
+    """Issues without resolvable dates go to the missing list — same
+    contract as gantt."""
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_burndown(enriched)
+    # Fixture #13 (no fields) and #14 (only depends_on) are unrenderable.
+    missing_nums = {m["number"] for m in ctx["missing_issues"]}
+    assert 13 in missing_nums
+    assert 14 in missing_nums
+    print("test_burndown_context_includes_missing_issues: OK")
+
+
+def test_burndown_render_html_self_contained() -> None:
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_burndown(enriched)
+    html = rc.render_html("burndown", ctx)
+    assert html.startswith("<!doctype html>")
+    assert 'src="https://cdn.jsdelivr.net/npm/chart.js' in html
+    # Chart.js bootstrap runs when there's data.
+    assert 'new Chart(' in html
+    # ISO date labels surface as JSON.
+    assert "2026-04" in html
+    print("test_burndown_render_html_self_contained: OK")
+
+
+def test_burndown_render_html_no_data_path() -> None:
+    enriched = {
+        "repo": "test/repo",
+        "issues": [
+            {
+                "number": 1,
+                "title": "no dates",
+                "state": "OPEN",
+                "fields": {},
+                "assignees": [],
+            }
+        ],
+        "issue_count": 1,
+    }
+    ctx = rc.build_context_for_burndown(enriched)
+    html = rc.render_html("burndown", ctx)
+    # No chart bootstrap when there's no data — the placeholder shows.
+    assert "No issues with" in html
+    assert "new Chart(" not in html
+    print("test_burndown_render_html_no_data_path: OK")
+
+
+# ---------- comparison ----------
+
+
+def test_comparison_deltas_zero_when_variant_identical() -> None:
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_comparison(enriched, enriched)
+    assert ctx["deltas"], "expected at least one overlapping issue"
+    for d in ctx["deltas"]:
+        # Any issue present in both sides should have delta == 0.
+        if d["only_in"] is None and d["delta_days"] is not None:
+            assert d["delta_days"] == 0, d
+    print("test_comparison_deltas_zero_when_variant_identical: OK")
+
+
+def test_comparison_detects_shifted_end_dates() -> None:
+    """Shifting the variant's end_date by N days should produce Δ = N."""
+    enriched = _load_enriched()
+    import copy
+
+    variant = copy.deepcopy(enriched)
+    # Shift #11's end_date +3 days (explicit envelope format).
+    for issue in variant["issues"]:
+        if issue["number"] == 11:
+            issue["fields"]["end_date"] = {"value": "2026-04-18"}
+            issue["fields"]["start_date"] = {"value": "2026-04-11"}
+            break
+
+    ctx = rc.build_context_for_comparison(enriched, variant)
+    delta_11 = next(d for d in ctx["deltas"] if d["number"] == 11)
+    assert delta_11["delta_days"] == 3, delta_11
+    print("test_comparison_detects_shifted_end_dates: OK")
+
+
+def test_comparison_flags_issues_only_in_one_side() -> None:
+    baseline = {
+        "repo": "test/repo",
+        "issues": [
+            {
+                "number": 1,
+                "title": "in both",
+                "state": "OPEN",
+                "fields": {
+                    "start_date": {"value": "2026-04-01"},
+                    "end_date": {"value": "2026-04-05"},
+                },
+                "assignees": [],
+            },
+            {
+                "number": 2,
+                "title": "baseline only",
+                "state": "OPEN",
+                "fields": {
+                    "start_date": {"value": "2026-04-06"},
+                    "end_date": {"value": "2026-04-10"},
+                },
+                "assignees": [],
+            },
+        ],
+    }
+    variant = {
+        "repo": "test/repo",
+        "issues": [
+            baseline["issues"][0],
+            {
+                "number": 3,
+                "title": "variant only",
+                "state": "OPEN",
+                "fields": {
+                    "start_date": {"value": "2026-04-06"},
+                    "end_date": {"value": "2026-04-08"},
+                },
+                "assignees": [],
+            },
+        ],
+    }
+    ctx = rc.build_context_for_comparison(baseline, variant)
+    by_num = {d["number"]: d for d in ctx["deltas"]}
+    assert by_num[2]["only_in"] == "baseline"
+    assert by_num[3]["only_in"] == "variant"
+    # Delta is None when only one side has the issue.
+    assert by_num[2]["delta_days"] is None
+    assert by_num[3]["delta_days"] is None
+    print("test_comparison_flags_issues_only_in_one_side: OK")
+
+
+def test_comparison_variant_defaults_to_baseline() -> None:
+    """Calling without a variant should render baseline on both sides
+    (all deltas zero, no only_in flags)."""
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_comparison(enriched, None)
+    for d in ctx["deltas"]:
+        assert d["only_in"] is None
+        if d["delta_days"] is not None:
+            assert d["delta_days"] == 0
+    print("test_comparison_variant_defaults_to_baseline: OK")
+
+
+def test_comparison_render_html_has_both_panels_and_delta_table() -> None:
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_comparison(
+        enriched, enriched, baseline_label="As-is", variant_label="Delay 2w"
+    )
+    html = rc.render_html("comparison", ctx)
+    assert html.startswith("<!doctype html>")
+    # Both panels rendered.
+    assert html.count('class="mermaid"') == 2
+    # Custom labels surface in the output.
+    assert "As-is" in html
+    assert "Delay 2w" in html
+    # Delta table header is present.
+    assert "Δ days" in html or "&#916; days" in html
+    print("test_comparison_render_html_has_both_panels_and_delta_table: OK")
+
+
 # ---------- runner ----------
 
 
@@ -335,6 +638,23 @@ def main() -> None:
         test_render_html_no_renderable_issues_still_valid_doc,
         test_write_html_creates_output_file,
         test_unknown_template_main_returns_error,
+        test_kanban_all_three_templates_registered,
+        test_kanban_status_falls_back_to_state_when_field_absent,
+        test_kanban_status_honors_project_board_field,
+        test_kanban_context_groups_fixture_into_three_columns,
+        test_kanban_render_html_self_contained_and_has_all_columns,
+        test_kanban_unassigned_card_shows_placeholder,
+        test_burndown_series_empty_when_no_renderable_issues,
+        test_burndown_series_remaining_monotonic_nonincreasing,
+        test_burndown_series_ideal_linearly_descends_to_zero,
+        test_burndown_context_includes_missing_issues,
+        test_burndown_render_html_self_contained,
+        test_burndown_render_html_no_data_path,
+        test_comparison_deltas_zero_when_variant_identical,
+        test_comparison_detects_shifted_end_dates,
+        test_comparison_flags_issues_only_in_one_side,
+        test_comparison_variant_defaults_to_baseline,
+        test_comparison_render_html_has_both_panels_and_delta_table,
     ]
     for t in tests:
         t()
