@@ -313,8 +313,7 @@ async def test_do_run_fix_prs() -> None:
 
 
 async def test_do_run_render_chart_builds_argv() -> None:
-    """run_render_chart forwards --template correctly. The script itself
-    doesn't exist yet (P4.14), but the wiring must be right."""
+    """run_render_chart forwards --template correctly."""
     _reset()
     _FAKE.script([(0, "<html>", FakeAction(classified_as="read"))])
     await foreman_agent.do_run_render_chart(template="gantt", user_intent="u")
@@ -323,6 +322,81 @@ async def test_do_run_render_chart_builds_argv() -> None:
     assert "--template" in argv
     assert "gantt" in argv
     print("test_do_run_render_chart_builds_argv: OK")
+
+
+async def test_do_run_render_chart_collects_plotly_artifact() -> None:
+    """When the script writes .imp/output/<template>.plotly.json,
+    do_run_render_chart pushes a Plotly artifact descriptor into the
+    module-level collector that dispatch() reads after the turn."""
+    _reset()
+    foreman_agent._pending_artifacts.clear()
+
+    # Redirect OUTPUT_DIR to a tempdir so we can plant a fake artifact
+    # without touching the real .imp/output/.
+    tmp_output = Path(tempfile.mkdtemp(prefix="imp-foreman-chart-"))
+    foreman_agent.OUTPUT_DIR = tmp_output
+    fake_plotly = tmp_output / "gantt.plotly.json"
+    fake_plotly.write_text('{"data": [], "layout": {}}')
+
+    _FAKE.script(
+        [(0, "rendered ok", FakeAction(classified_as="read", verdict="approve"))]
+    )
+
+    await foreman_agent.do_run_render_chart(template="gantt", user_intent="u")
+
+    assert len(foreman_agent._pending_artifacts) == 1
+    art = foreman_agent._pending_artifacts[0]
+    assert art["type"] == "plotly"
+    assert art["name"] == "gantt"
+    assert art["path"] == str(fake_plotly)
+    print("test_do_run_render_chart_collects_plotly_artifact: OK")
+
+
+async def test_do_run_render_chart_no_artifact_on_failure() -> None:
+    """A failed render (rc != 0) must NOT push an artifact, even if a
+    stale .plotly.json from a prior run happens to be on disk."""
+    _reset()
+    foreman_agent._pending_artifacts.clear()
+
+    tmp_output = Path(tempfile.mkdtemp(prefix="imp-foreman-chart-fail-"))
+    foreman_agent.OUTPUT_DIR = tmp_output
+    (tmp_output / "gantt.plotly.json").write_text('{"data": [], "layout": {}}')
+
+    _FAKE.script(
+        [(1, "boom", FakeAction(classified_as="read", verdict="approve", returncode=1))]
+    )
+
+    await foreman_agent.do_run_render_chart(template="gantt", user_intent="u")
+    assert foreman_agent._pending_artifacts == []
+    print("test_do_run_render_chart_no_artifact_on_failure: OK")
+
+
+async def test_do_run_render_chart_no_artifact_on_rejection() -> None:
+    """A guard/budget rejection must NOT push an artifact even if rc==0."""
+    _reset()
+    foreman_agent._pending_artifacts.clear()
+
+    tmp_output = Path(tempfile.mkdtemp(prefix="imp-foreman-chart-rej-"))
+    foreman_agent.OUTPUT_DIR = tmp_output
+    (tmp_output / "gantt.plotly.json").write_text('{"data": [], "layout": {}}')
+
+    _FAKE.script(
+        [
+            (
+                0,
+                "",
+                FakeAction(
+                    classified_as="read",
+                    verdict="reject",
+                    verdict_reason="hypothetical guard rejection",
+                ),
+            )
+        ]
+    )
+
+    await foreman_agent.do_run_render_chart(template="gantt", user_intent="u")
+    assert foreman_agent._pending_artifacts == []
+    print("test_do_run_render_chart_no_artifact_on_rejection: OK")
 
 
 # ---------- control tools (no intercept, pure config) ----------
@@ -457,6 +531,9 @@ async def amain() -> None:
         test_do_run_solve_issues,
         test_do_run_fix_prs,
         test_do_run_render_chart_builds_argv,
+        test_do_run_render_chart_collects_plotly_artifact,
+        test_do_run_render_chart_no_artifact_on_failure,
+        test_do_run_render_chart_no_artifact_on_rejection,
         test_do_loop_pause_and_resume,
         test_do_loop_scope_accepts_only_issues,
         test_do_loop_scope_rejects_empty,

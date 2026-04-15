@@ -319,6 +319,118 @@ def build_context_for_gantt(enriched: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------- Plotly figure (for inline chat rendering via cl.Plotly) ----------
+#
+# Chainlit 2.x has no native mermaid renderer, so the mermaid block in
+# the standalone HTML doesn't render in chat. We also produce a Plotly
+# Figure JSON next to it, which `server/foreman_agent.py` attaches to
+# the chat reply via `cl.Plotly` for an inline interactive chart.
+
+
+def build_plotly_figure(enriched: dict[str, Any]) -> dict[str, Any]:
+    """Build a Plotly Figure dict (JSON-serializable) for the gantt.
+
+    Returns a dict with `data` and `layout` keys — the canonical Plotly
+    JSON shape that `cl.Plotly(figure=Figure(...))` consumes after a
+    `plotly.graph_objects.Figure(**dict)` rehydrate.
+
+    Each renderable issue becomes a horizontal bar between its start
+    and end. Closed issues are coloured green; delayed (open + past
+    end_date + imp:baseline) are red; everything else is blue. Hover
+    text includes the issue number, title, and section.
+    """
+    _, renderable, _ = build_mermaid_gantt(enriched)
+
+    if not renderable:
+        # Empty figure with a friendly placeholder title — Chainlit
+        # still renders it, just nothing to chart yet.
+        return {
+            "data": [],
+            "layout": {
+                "title": {
+                    "text": (
+                        f"{enriched.get('repo', 'Project')} — no datable "
+                        "issues yet"
+                    )
+                },
+                "xaxis": {"type": "date"},
+                "yaxis": {"visible": False},
+                "height": 200,
+            },
+        }
+
+    # Sort by start date so the chart reads top-to-bottom in time order.
+    sorted_issues = sorted(renderable, key=lambda it: it["start"])
+
+    bars: list[dict[str, Any]] = []
+    for it in sorted_issues:
+        if it.get("delayed"):
+            colour = "#dc2626"  # red
+        elif (it.get("state") or "").upper() == "CLOSED":
+            colour = "#10b981"  # green
+        else:
+            colour = "#3b82f6"  # blue
+
+        label = f"#{it['number']} {it['title'][:60]}"
+        hover = (
+            f"<b>#{it['number']}</b> {it['title']}<br>"
+            f"Section: {it['section']}<br>"
+            f"{it['start']} → {it['end']}<br>"
+            f"State: {it.get('state', 'unknown')}"
+            + (
+                f"<br>Dependencies: {', '.join(f'#{d}' for d in it['dependencies'])}"
+                if it.get("dependencies")
+                else ""
+            )
+        )
+        bars.append(
+            {
+                "type": "bar",
+                "orientation": "h",
+                "x": [_days_between(it["start"], it["end"])],
+                "y": [label],
+                "base": [it["start"]],
+                "marker": {"color": colour},
+                "hovertemplate": hover + "<extra></extra>",
+                "showlegend": False,
+            }
+        )
+
+    layout = {
+        "title": {
+            "text": (
+                f"{enriched.get('repo', 'Project')} — Gantt"
+                + (
+                    f" ({enriched.get('delayed_count', 0)} delayed)"
+                    if enriched.get("delayed_count")
+                    else ""
+                )
+            )
+        },
+        "barmode": "stack",
+        "xaxis": {"type": "date", "title": {"text": "Timeline"}},
+        "yaxis": {
+            "title": {"text": "Issue"},
+            "automargin": True,
+            "autorange": "reversed",
+        },
+        "height": max(220, 30 * len(sorted_issues) + 120),
+        "margin": {"l": 20, "r": 20, "t": 60, "b": 40},
+    }
+
+    return {"data": bars, "layout": layout}
+
+
+def _days_between(start_iso: str, end_iso: str) -> int:
+    """Inclusive day count between two ISO dates, min 1."""
+    try:
+        s = date.fromisoformat(start_iso)
+        e = date.fromisoformat(end_iso)
+        return max(1, (e - s).days)
+    except ValueError:
+        return 1
+
+
 # Per-template context builders. Add new entries as kanban /
 # burndown / comparison templates land in later phases.
 CONTEXT_BUILDERS: dict[str, Any] = {
@@ -341,6 +453,18 @@ def write_html(html: str, template_name: str, output_dir: Path = OUTPUT_DIR) -> 
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{template_name}.html"
     path.write_text(html)
+    return path
+
+
+def write_plotly_json(
+    figure: dict[str, Any],
+    template_name: str,
+    output_dir: Path = OUTPUT_DIR,
+) -> Path:
+    """Persist the Plotly Figure JSON for `cl.Plotly` to consume from chat."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{template_name}.plotly.json"
+    path.write_text(json.dumps(figure, indent=2))
     return path
 
 
@@ -389,16 +513,34 @@ def main() -> int:
 
     context = builder(enriched)
     html = render_html(args.template, context)
-    out = write_html(html, args.template, args.output_dir)
+    html_path = write_html(html, args.template, args.output_dir)
+
+    # Also produce a Plotly Figure JSON so the chat layer can render
+    # the chart inline via cl.Plotly. Only meaningful for gantt today;
+    # other templates can opt in by adding their own builder + a
+    # PLOTLY_BUILDERS entry below.
+    plotly_path: Path | None = None
+    plotly_builder = PLOTLY_BUILDERS.get(args.template)
+    if plotly_builder is not None:
+        figure = plotly_builder(enriched)
+        plotly_path = write_plotly_json(figure, args.template, args.output_dir)
 
     print(
         f"Rendered {args.template} chart with {len(context.get('renderable_issues') or [])} "
         f"issues, {len(context.get('missing_issues') or [])} missing dates "
-        f"→ {out}",
+        f"→ {html_path}"
+        + (f" + {plotly_path}" if plotly_path else ""),
         file=sys.stderr,
     )
-    print(str(out))
+    print(str(html_path))
     return 0
+
+
+# Per-template Plotly figure builders. Add entries as new chart types
+# get inline-renderable Plotly equivalents.
+PLOTLY_BUILDERS: dict[str, Any] = {
+    "gantt": build_plotly_figure,
+}
 
 
 if __name__ == "__main__":
