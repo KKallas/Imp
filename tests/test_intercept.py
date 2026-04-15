@@ -103,6 +103,15 @@ def test_classify_command() -> None:
         (["rm", "-rf", "/"], "unknown"),
         ([], "unknown"),
         (["gh"], "unknown"),
+        # KKallas/Imp#46 — inline code routed to Guard via "write"
+        (["python3", "-c", "print(1)"], "write"),
+        (["python", "-c", "x"], "write"),
+        (["bash", "-c", "ls"], "write"),
+        (["sh", "-c", "echo"], "write"),
+        # `-c` requires a payload — bare `python -c` is unknown
+        (["python", "-c"], "unknown"),
+        # `-c` only matters as the immediate next arg
+        (["python", "script.py", "-c"], "unknown"),
     ]
     for argv, expected in cases:
         got = intercept.classify_command(argv)

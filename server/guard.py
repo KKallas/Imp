@@ -66,7 +66,11 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
+
+ROOT = Path(__file__).resolve().parent.parent
+CODE_REVIEW_CHECKLIST_FILE = ROOT / "docs" / "guard_code_review.md"
 
 # ---------- pluggable backend ----------
 
@@ -223,6 +227,74 @@ can revise or abandon the action and the admin can see why it was blocked.
 """
 
 
+# ---------- arbitrary-code review (KKallas/Imp#46) ----------
+#
+# When the proposed action is `python -c "<code>"` or `bash -c "<cmd>"`,
+# the classifier in intercept.py routes it here as a "write" so Guard
+# reviews the code against the checklist in docs/guard_code_review.md.
+# The classifier whitelist is NOT the security boundary — Guard is.
+
+
+def _load_code_review_checklist() -> str:
+    """Read docs/guard_code_review.md once at module import.
+
+    Restart the server to pick up edits. We don't re-read on every check
+    because (a) it'd add disk I/O to every guard call and (b) hot-swapping
+    a security checklist mid-process is a pretty good way to ship subtle
+    bugs.
+    """
+    if CODE_REVIEW_CHECKLIST_FILE.exists():
+        return CODE_REVIEW_CHECKLIST_FILE.read_text()
+    return (
+        "# Guard Code Review Checklist (MISSING)\n\n"
+        "docs/guard_code_review.md was not found at module import. Guard\n"
+        "will fall back to its base prompt for arbitrary-code reviews,\n"
+        "which is less precise. Restore the file and restart to fix."
+    )
+
+
+CODE_REVIEW_CHECKLIST = _load_code_review_checklist()
+
+
+CHECKPOINT_B_CODE_SYSTEM_PROMPT = (
+    CHECKPOINT_B_SYSTEM_PROMPT
+    + "\n\n"
+    + "## Special case: arbitrary code (python -c / bash -c)\n\n"
+    + "The PROPOSED COMMAND below is INLINE CODE — `python -c \"<code>\"`,\n"
+    + "`python3 -c \"<code>\"`, `bash -c \"<cmd>\"`, or `sh -c \"<cmd>\"`.\n"
+    + "Apply the checklist below in addition to the on-task check above.\n"
+    + "The classifier in intercept.py is NOT a security boundary — you are.\n"
+    + "When you reject, your reason MUST cite the specific checklist rule\n"
+    + "that tripped, in the format `\"hard-reject — <rule>: <evidence>\"` or\n"
+    + "`\"scope: <what the code touches> vs <what the admin asked for>\"`.\n\n"
+    + "---\n\n"
+    + CODE_REVIEW_CHECKLIST
+)
+
+
+# Detection helpers — public so tests can exercise them and intercept.py
+# could (someday) reuse without duplicating regex.
+_INLINE_CODE_BASENAMES = ("python", "python3", "bash", "sh")
+
+
+def is_arbitrary_code_command(proposed_command: str) -> bool:
+    """True if the proposed command is `<basename> -c "<code>"` for one of
+    the inline-code shells we route through the checklist prompt.
+
+    `proposed_command` is the same string the LLM sees — already joined
+    by check() / check_action() from an argv list. We match on the first
+    two whitespace-separated tokens (basename + `-c`) and ignore the
+    payload itself.
+    """
+    if not isinstance(proposed_command, str):
+        return False
+    tokens = proposed_command.strip().split(maxsplit=2)
+    if len(tokens) < 2:
+        return False
+    basename = tokens[0].rsplit("/", 1)[-1]
+    return basename in _INLINE_CODE_BASENAMES and tokens[1] == "-c"
+
+
 # ---------- sanitization + parsing helpers ----------
 
 MAX_USER_TEXT_CHARS = 8000
@@ -365,9 +437,18 @@ async def check_action(
         "<<<END PROPOSED COMMAND>>>"
     )
 
+    # Pick the right system prompt: if this is arbitrary inline code
+    # (`python -c` / `bash -c`), embed the code-review checklist; for
+    # everything else (gh, named scripts), use the leaner base prompt.
+    # Saves tokens on actions Guard already handles cleanly.
+    if is_arbitrary_code_command(cmd):
+        system_prompt = CHECKPOINT_B_CODE_SYSTEM_PROMPT
+    else:
+        system_prompt = CHECKPOINT_B_SYSTEM_PROMPT
+
     backend = get_backend()
     try:
-        raw = await backend(CHECKPOINT_B_SYSTEM_PROMPT, user_prompt)
+        raw = await backend(system_prompt, user_prompt)
     except Exception as exc:  # noqa: BLE001 — fail closed on any backend error
         return (False, f"guard (checkpoint B) backend error: {exc}")
 
