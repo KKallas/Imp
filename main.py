@@ -737,6 +737,7 @@ async def _on_message_body(msg: cl.Message) -> None:
         say=_foreman_say,
         ask=_foreman_ask,
         thinking=_foreman_thinking,
+        chart=_foreman_chart,
     )
 
 
@@ -776,6 +777,46 @@ async def _foreman_thinking(label: str):
     """
     async with cl.Step(name=label, type="run") as step:
         yield step
+
+
+async def _foreman_chart(artifact: dict) -> None:
+    """Render a chart artifact inline in chat.
+
+    Foreman's `run_render_chart` tool body pushes `{type, name, path}`
+    descriptors into a per-turn collector; `dispatch()` calls this
+    once per descriptor after the SDK loop finishes. Today only
+    `type=="plotly"` is wired (Chainlit 2.x has no mermaid renderer);
+    extend the dispatch table when other element types make sense.
+    """
+    import plotly.graph_objects as go
+
+    artifact_type = artifact.get("type")
+    if artifact_type != "plotly":
+        await cl.Message(
+            author="Foreman",
+            content=f"_(Skipped chart artifact of unknown type: {artifact_type!r})_",
+        ).send()
+        return
+
+    path = artifact.get("path")
+    if not path:
+        return
+    try:
+        figure_dict = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        await cl.Message(
+            author="Foreman",
+            content=f"_(Couldn't load chart from `{path}`: {exc})_",
+        ).send()
+        return
+
+    figure = go.Figure(figure_dict)
+    name = artifact.get("name") or "chart"
+    await cl.Message(
+        author="Foreman",
+        content="",
+        elements=[cl.Plotly(name=name, figure=figure, display="inline")],
+    ).send()
 
 
 # ---------- real intercept demo (P2.6) ----------

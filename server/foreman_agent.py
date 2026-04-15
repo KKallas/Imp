@@ -62,6 +62,14 @@ from . import budgets, intercept
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
+OUTPUT_DIR = ROOT / ".imp" / "output"
+
+# Module-level artifact collector — populated by tool bodies that
+# produce chat-renderable side outputs (currently: chart Plotly JSONs).
+# `dispatch()` clears this at the start of every turn and reads it at
+# the end so it can pass artifact descriptors to the UI layer via the
+# `chart` callable. Tests reset it via `_pending_artifacts.clear()`.
+_pending_artifacts: list[dict[str, Any]] = []
 
 
 # ---------- config I/O (local copy — server.setup_agent has another
@@ -407,12 +415,32 @@ async def do_run_heuristics(*, user_intent: str) -> dict[str, Any]:
 async def do_run_render_chart(
     template: str, *, user_intent: str
 ) -> dict[str, Any]:
-    """pipeline/render_chart.py — renders gantt/kanban/burndown/comparison.
-    Blocked on KKallas/Imp#14 (P4.14)."""
+    """Render a chart via `pipeline/render_chart.py`.
+
+    On success, also picks up the `.plotly.json` the script writes
+    alongside the HTML and pushes it into the module-level
+    `_pending_artifacts` collector. `dispatch()` reads that after the
+    turn and forwards it to the UI layer via the `chart` callable so
+    the chart renders inline in chat (Chainlit 2.x doesn't render
+    mermaid blocks; Plotly is the path that works today).
+    """
     argv = [sys.executable, "pipeline/render_chart.py", "--template", template]
-    return await do_run_shell(
+    result = await do_run_shell(
         argv, user_intent=user_intent, rationale=f"render {template} chart"
     )
+
+    if result.get("exit_code") == 0 and result.get("verdict") != "reject":
+        plotly_path = OUTPUT_DIR / f"{template}.plotly.json"
+        if plotly_path.exists():
+            _pending_artifacts.append(
+                {
+                    "type": "plotly",
+                    "name": template,
+                    "path": str(plotly_path),
+                }
+            )
+
+    return result
 
 
 async def do_run_scenario(
@@ -552,9 +580,13 @@ tools when possible; fall back to this only when no named tool fits.
 
 ## How you respond
 
-Plain markdown. When you produce a chart via `run_render_chart`, embed \
-the result as a mermaid fenced code block in your reply — Chainlit \
-renders it inline. Keep replies concise; the admin reads quickly.
+Plain markdown. When you call `run_render_chart`, the chart is \
+attached to your reply automatically as an interactive Plotly figure \
+— **don't paste mermaid or other chart syntax into your prose**, and \
+don't embed a code fence with the chart text. Just describe what the \
+chart shows in a sentence or two so the admin knows what they're \
+looking at, then let the attached figure do the rest. Keep replies \
+concise; the admin reads quickly.
 """
 
 
@@ -920,6 +952,11 @@ _DISALLOWED_TOOLS: tuple[str, ...] = (
 SayFn = Callable[[str], Awaitable[None]]
 AskFn = Callable[[str], Awaitable[Optional[str]]]
 ThinkingFn = Callable[[str], Any]
+# `chart(artifact)` is called once per chart artifact produced during
+# the turn. The UI layer picks the right Chainlit element from the
+# artifact descriptor (`{type, name, path}`) — main.py wires this to
+# `cl.Plotly` for `type=="plotly"`. None disables chart rendering.
+ChartFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class _NullAsyncContext:
@@ -936,6 +973,7 @@ async def dispatch(
     say: SayFn,
     ask: AskFn,
     thinking: Optional[ThinkingFn] = None,
+    chart: Optional[ChartFn] = None,
 ) -> None:
     """Run one Foreman conversation turn for `user_text`.
 
@@ -946,7 +984,14 @@ async def dispatch(
 
     The `thinking` seam brackets the SDK call with a cl.Step spinner
     in the UI layer (same pattern as dispatcher.py's synthesis turn).
+    The `chart` seam receives any chart artifacts produced by tool
+    calls (currently `run_render_chart`) so they render inline in
+    chat — Chainlit doesn't render mermaid blocks, so we render them
+    as `cl.Plotly` figures instead.
     """
+    # Reset the per-turn artifact collector so this dispatch only sees
+    # charts created by its own tool calls.
+    _pending_artifacts.clear()
     import sys
 
     print(f"[foreman] dispatch called: user_text={user_text!r}", file=sys.stderr)
@@ -1055,8 +1100,22 @@ async def dispatch(
                 f"but produced no prose reply. Ask a follow-up for a summary.)_"
             )
 
+    # Emit any chart artifacts collected during the turn. The chart
+    # callable is responsible for translating each descriptor into a
+    # Chainlit element (cl.Plotly for `type=="plotly"`).
+    if chart is not None and _pending_artifacts:
+        for artifact in list(_pending_artifacts):
+            try:
+                await chart(artifact)
+            except Exception as exc:  # noqa: BLE001 — don't let chart UI bugs swallow the turn
+                print(
+                    f"[foreman] chart render failed for {artifact!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
     print(
         f"[foreman] dispatch complete: tool_calls={tool_calls_seen} "
-        f"reply_chars={len(reply)}",
+        f"reply_chars={len(reply)} chart_artifacts={len(_pending_artifacts)}",
         file=sys.stderr,
     )

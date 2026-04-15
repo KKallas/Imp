@@ -303,6 +303,54 @@ def test_write_html_creates_output_file() -> None:
     print("test_write_html_creates_output_file: OK")
 
 
+def test_build_plotly_figure_against_fixture() -> None:
+    """Plotly figure dict has the expected `data` + `layout` shape and
+    one bar per renderable issue."""
+    enriched = _load_enriched()
+    figure = rc.build_plotly_figure(enriched)
+    assert isinstance(figure, dict)
+    assert "data" in figure and "layout" in figure
+    bars = figure["data"]
+    # Fixture has 3 renderable issues after enrichment (heuristics fills
+    # in duration_days from label hints): #11, #12, #15.
+    # #16 also has end_date + heuristic duration → renderable.
+    assert len(bars) >= 2, len(bars)
+    # Each bar carries a Plotly-shaped marker + hovertemplate
+    for bar in bars:
+        assert bar["type"] == "bar"
+        assert bar["orientation"] == "h"
+        assert "marker" in bar and "color" in bar["marker"]
+        assert "hovertemplate" in bar
+    # The closed issue #11 should be coloured green
+    eleven_bar = next(b for b in bars if "#11" in b["y"][0])
+    assert eleven_bar["marker"]["color"] == "#10b981"
+    # The delayed issue #12 should be coloured red
+    twelve_bar = next(b for b in bars if "#12" in b["y"][0])
+    assert twelve_bar["marker"]["color"] == "#dc2626"
+    # Layout title mentions the repo
+    assert "KKallas/Imp" in figure["layout"]["title"]["text"]
+    print("test_build_plotly_figure_against_fixture: OK")
+
+
+def test_build_plotly_figure_empty_payload_yields_friendly_placeholder() -> None:
+    """No renderable issues → empty data + layout that hints at why."""
+    figure = rc.build_plotly_figure({"issues": [], "repo": "x/y"})
+    assert figure["data"] == []
+    assert "no datable" in figure["layout"]["title"]["text"]
+    print("test_build_plotly_figure_empty_payload_yields_friendly_placeholder: OK")
+
+
+def test_write_plotly_json_creates_file() -> None:
+    enriched = _load_enriched()
+    figure = rc.build_plotly_figure(enriched)
+    path = rc.write_plotly_json(figure, "gantt", output_dir=_TMP_DIR)
+    assert path.exists()
+    assert path.suffix == ".json"
+    on_disk = json.loads(path.read_text())
+    assert on_disk["data"] == figure["data"]
+    print("test_write_plotly_json_creates_file: OK")
+
+
 def test_unknown_template_main_returns_error() -> None:
     """CLI: passing --template foo (with no foo.html.j2) returns rc=1."""
     # main() uses sys.argv via argparse; easiest path is to call the
@@ -334,6 +382,9 @@ def main() -> None:
         test_render_html_against_fixture_produces_valid_doc,
         test_render_html_no_renderable_issues_still_valid_doc,
         test_write_html_creates_output_file,
+        test_build_plotly_figure_against_fixture,
+        test_build_plotly_figure_empty_payload_yields_friendly_placeholder,
+        test_write_plotly_json_creates_file,
         test_unknown_template_main_returns_error,
     ]
     for t in tests:
