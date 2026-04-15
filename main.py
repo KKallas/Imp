@@ -670,6 +670,23 @@ async def _on_message_body(msg: cl.Message) -> None:
         await run_setup_agent()
         return
 
+    # ---- Chat freeze: scenario session is open (KKallas/Imp#16) ----
+    # While a scenario session is awaiting commit, free-form chat is
+    # refused. The admin must pick a scenario via the action buttons or
+    # click "close" to abandon. This forces the decision and prevents
+    # accidental drift mid-deliberation.
+    active_scenario = cl.user_session.get("active_scenario_session_id")
+    if active_scenario:
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"A scenario session is open (`{active_scenario}`). The chat "
+                f"is frozen until you pick a scenario or close the session. "
+                f"Use the action buttons below the grid to proceed."
+            ),
+        ).send()
+        return
+
     # ---- Checkpoint A: screen every inbound message ----
     # The guard sees the raw text and decides whether it's safe to pass
     # to the worker. On reject, the worker never sees this turn.
@@ -737,6 +754,7 @@ async def _on_message_body(msg: cl.Message) -> None:
         say=_foreman_say,
         ask=_foreman_ask,
         thinking=_foreman_thinking,
+        chart=_foreman_chart,
     )
 
 
@@ -776,6 +794,281 @@ async def _foreman_thinking(label: str):
     """
     async with cl.Step(name=label, type="run") as step:
         yield step
+
+
+# ---------- scenario session UI (KKallas/Imp#16) ----------
+
+
+async def _foreman_chart(artifact: dict) -> None:
+    """Render an artifact produced by a Foreman tool call.
+
+    Today the only registered artifact type is `scenario_session` —
+    rendered as a side-by-side grid (Plotly subplot for charts +
+    Markdown table for metrics) with commit/switch/close buttons.
+    Unknown types log a warning and are skipped — a single bad tool
+    output shouldn't kill the turn.
+    """
+    artifact_type = artifact.get("type")
+    if artifact_type == "scenario_session":
+        await _render_scenario_grid(artifact)
+    else:
+        await cl.Message(
+            author="Foreman",
+            content=f"_(Unknown artifact type `{artifact_type}` — skipped.)_",
+        ).send()
+
+
+async def _render_scenario_grid(artifact: dict) -> None:
+    """Render a scenario session as a one-message grid: Plotly subplot
+    at the top, Markdown metric table below, action buttons for commit
+    / switch / close. Also freezes the chat by setting the session id
+    in `cl.user_session`."""
+    session_id = artifact["session_id"]
+    scenarios = artifact.get("scenarios") or []
+    descriptions = artifact.get("descriptions") or []
+    committed_choice = artifact.get("committed_choice")
+    baseline_empty = artifact.get("baseline_empty")
+
+    # Plotly subplot grid — one column per scenario.
+    plotly_element: cl.Plotly | None = None
+    if any(s.get("charts") for s in scenarios):
+        plotly_element = _build_scenario_subplot(scenarios, descriptions)
+
+    # Markdown metric table — scenarios as columns.
+    table_md = _build_scenario_metric_table(scenarios, descriptions, committed_choice)
+
+    # Action buttons — commit each scenario + switch (if already committed)
+    # + close-without-commit escape hatch.
+    actions: list[cl.Action] = []
+    for idx, sc in enumerate(scenarios):
+        label_prefix = "Switch to" if committed_choice is not None else "Commit"
+        actions.append(
+            cl.Action(
+                name="scenario_commit",
+                payload={"session_id": session_id, "choice_index": idx},
+                label=f"{label_prefix} s{idx + 1}",
+                tooltip=f"{label_prefix} scenario {idx + 1}: {sc.get('name', '?')}",
+            )
+        )
+    actions.append(
+        cl.Action(
+            name="scenario_close",
+            payload={"session_id": session_id},
+            label="Close without committing",
+            tooltip="Close the session. Files stay on disk; re-openable later.",
+        )
+    )
+
+    warning_prefix = ""
+    if baseline_empty:
+        warning_prefix = (
+            "> **Warning:** no enriched baseline data — run `sync issues` then "
+            "`run heuristics` first, then re-open this session.\n\n"
+        )
+
+    header = f"### Scenario session `{session_id}`\n\n"
+    if committed_choice is not None:
+        header += (
+            f"_Current commit: **s{committed_choice + 1}** "
+            f"({scenarios[committed_choice].get('name', '?')})._\n\n"
+        )
+
+    content = warning_prefix + header + table_md
+
+    elements = [plotly_element] if plotly_element is not None else []
+
+    await cl.Message(
+        author="Foreman",
+        content=content,
+        elements=elements,
+        actions=actions,
+    ).send()
+
+    # Freeze the chat until a button is clicked.
+    cl.user_session.set("active_scenario_session_id", session_id)
+
+
+def _build_scenario_subplot(
+    scenarios: list[dict], descriptions: list[str]
+) -> cl.Plotly | None:
+    """Combine the first chart of each scenario into a single Plotly
+    figure with horizontal subplots (one column per scenario). Returns
+    None if no scenario produced a chart."""
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        return None
+
+    first_charts = [s["charts"][0] if s.get("charts") else None for s in scenarios]
+    if not any(first_charts):
+        return None
+
+    titles = [
+        (descriptions[i] if i < len(descriptions) else s.get("name", f"s{i+1}"))[:40]
+        for i, s in enumerate(scenarios)
+    ]
+    fig = make_subplots(
+        rows=1,
+        cols=len(scenarios),
+        subplot_titles=titles,
+        shared_yaxes=False,
+        horizontal_spacing=0.05,
+    )
+
+    for idx, chart in enumerate(first_charts):
+        if chart is None:
+            continue
+        col = idx + 1
+        # `chart` is a Plotly figure dict; copy its traces into the subplot.
+        for trace in chart.get("data", []):
+            fig.add_trace(go.Bar(**trace) if trace.get("type") == "bar" else trace, row=1, col=col)
+        # Apply date-axis styling if the source chart set it
+        src_layout = chart.get("layout", {})
+        if isinstance(src_layout.get("xaxis"), dict):
+            xaxis_type = src_layout["xaxis"].get("type")
+            if xaxis_type:
+                fig.update_xaxes(type=xaxis_type, row=1, col=col)
+
+    fig.update_layout(
+        height=max(350, 25 * max((len(c.get("data") or []) for c in first_charts if c), default=5) + 150),
+        showlegend=False,
+        margin=dict(l=20, r=20, t=60, b=40),
+    )
+
+    return cl.Plotly(name="scenario-grid", figure=fig, display="inline")
+
+
+def _build_scenario_metric_table(
+    scenarios: list[dict],
+    descriptions: list[str],
+    committed_choice: int | None,
+) -> str:
+    """Build a Markdown table with scenarios as columns and all
+    emitted metrics / lists / texts as rows. Rows that a given scenario
+    didn't produce get a `—` placeholder."""
+    # Collect all unique row keys across all scenarios, preserving order.
+    row_keys: list[str] = []
+    seen: set[str] = set()
+    for sc in scenarios:
+        for name, _ in sc.get("metrics") or []:
+            if name not in seen:
+                row_keys.append(name)
+                seen.add(name)
+        for name, _ in sc.get("lists") or []:
+            if name not in seen:
+                row_keys.append(name)
+                seen.add(name)
+        for name, _ in sc.get("texts") or []:
+            if name not in seen:
+                row_keys.append(name)
+                seen.add(name)
+
+    if not row_keys:
+        return "_(No metrics emitted by any scenario.)_\n"
+
+    # Header row: scenario labels.
+    header_cells = ["**Metric**"]
+    for idx, sc in enumerate(scenarios):
+        label = descriptions[idx] if idx < len(descriptions) else sc.get("name", f"s{idx+1}")
+        marker = " ✓" if committed_choice == idx else ""
+        header_cells.append(f"**s{idx + 1}{marker}: {label[:40]}**")
+    header = "| " + " | ".join(header_cells) + " |"
+    separator = "|" + "|".join(["---"] * len(header_cells)) + "|"
+
+    rows: list[str] = [header, separator]
+
+    for key in row_keys:
+        row = [f"`{key}`"]
+        for sc in scenarios:
+            value = _find_output_value(sc, key)
+            row.append(value or "—")
+        rows.append("| " + " | ".join(row) + " |")
+
+    return "\n".join(rows) + "\n"
+
+
+def _find_output_value(scenario: dict, key: str) -> str:
+    """Look up a row value by name across metrics / lists / texts.
+    First match wins; list values are bullet-separated."""
+    for name, value in scenario.get("metrics") or []:
+        if name == key:
+            return str(value)
+    for name, items in scenario.get("lists") or []:
+        if name == key:
+            if not items:
+                return "_(none)_"
+            return ", ".join(str(i) for i in items)
+    for name, content in scenario.get("texts") or []:
+        if name == key:
+            return str(content)
+    return ""
+
+
+@cl.action_callback("scenario_commit")
+async def on_scenario_commit(action: cl.Action) -> None:
+    """Action callback: commit a scenario choice, unfreeze the chat."""
+    payload = action.payload or {}
+    session_id = payload.get("session_id")
+    choice_index = payload.get("choice_index")
+    if not isinstance(session_id, str) or not isinstance(choice_index, int):
+        await cl.Message(
+            author="Foreman",
+            content=f"_(bad scenario_commit payload: {payload!r})_",
+        ).send()
+        return
+
+    from server import foreman_agent
+
+    result = await foreman_agent.do_commit_scenario(session_id, choice_index)
+    # Unfreeze regardless of success/failure — admin can retry if it failed.
+    cl.user_session.set("active_scenario_session_id", None)
+
+    if "error" in result:
+        await cl.Message(
+            author="Foreman",
+            content=f"**Commit failed:** {result['error']}",
+        ).send()
+        return
+
+    committed = result.get("committed") or {}
+    await cl.Message(
+        author="Foreman",
+        content=(
+            f"**Committed.** Active scenario: "
+            f"`{committed.get('choice_name', f's{choice_index + 1}')}`\n\n"
+            f"Baseline data on disk is unchanged. Future gantt renders will "
+            f"compose this scenario as a lens. Say 'apply to project board' "
+            f"when you're ready to write it to GitHub (Stage 2, separate "
+            f"workflow — not yet implemented)."
+        ),
+    ).send()
+
+
+@cl.action_callback("scenario_close")
+async def on_scenario_close(action: cl.Action) -> None:
+    """Action callback: close a scenario session without committing."""
+    payload = action.payload or {}
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str):
+        await cl.Message(
+            author="Foreman",
+            content=f"_(bad scenario_close payload: {payload!r})_",
+        ).send()
+        return
+
+    from server import foreman_agent
+
+    await foreman_agent.do_close_scenario(session_id)
+    cl.user_session.set("active_scenario_session_id", None)
+    await cl.Message(
+        author="Foreman",
+        content=(
+            f"Session `{session_id}` closed without commit. "
+            f"Files stay on disk — reopen with 'open scenario session "
+            f"{session_id}' later if you want."
+        ),
+    ).send()
 
 
 # ---------- real intercept demo (P2.6) ----------

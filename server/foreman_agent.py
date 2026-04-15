@@ -63,6 +63,14 @@ from . import budgets, intercept
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
 
+# Per-turn artifact collector for chat-renderable side outputs (charts,
+# scenario grids, etc.). `dispatch()` clears this at the start of every
+# turn and drains it at the end via the `chart` UI callable. Tool bodies
+# append descriptors of type {"type": "...", ...} that `main.py`
+# knows how to render. Currently only "scenario_session" is wired;
+# "plotly" arrives with KKallas/Imp#14 follow-up work.
+_pending_artifacts: list[dict[str, Any]] = []
+
 
 # ---------- config I/O (local copy — server.setup_agent has another
 # copy; if a third caller appears, lift into server/config.py) ----------
@@ -484,6 +492,162 @@ async def do_get_budgets() -> dict[str, Any]:
     return budgets.get_budgets().to_dict()
 
 
+# ---------- scenario sessions (KKallas/Imp#16) ----------
+#
+# Start / commit / switch / close / open / list — the six-verb surface
+# for the scenario-comparison flow. Tool bodies call into
+# `pipeline/scenarios.py` (generator + runner + session I/O) and push
+# a `{"type": "scenario_session", ...}` artifact into
+# `_pending_artifacts` so `main.py` can render the grid + action buttons.
+
+
+def _load_baseline_for_scenarios() -> dict[str, Any]:
+    """Load `.imp/enriched.json` for scenario runs. If the user hasn't
+    run sync + heuristics yet, return a minimal stub so the LLM sees a
+    structured error via the scenario outputs rather than an exception."""
+    enriched_path = ROOT / ".imp" / "enriched.json"
+    if not enriched_path.exists():
+        return {
+            "issues": [],
+            "issue_count": 0,
+            "_warning": "no enriched.json — run sync + heuristics first",
+        }
+    try:
+        return json.loads(enriched_path.read_text())
+    except json.JSONDecodeError as exc:
+        return {
+            "issues": [],
+            "issue_count": 0,
+            "_warning": f"enriched.json unparseable: {exc}",
+        }
+
+
+async def do_start_scenario_session(descriptions: list[str]) -> dict[str, Any]:
+    """Generate + save + run a scenario session. Pushes a grid artifact
+    into _pending_artifacts for the chat layer to render."""
+    from pipeline import scenarios
+
+    if not isinstance(descriptions, list) or not all(isinstance(d, str) for d in descriptions):
+        return {"error": "descriptions must be a list of strings"}
+    descriptions = [d.strip() for d in descriptions if d.strip()]
+
+    try:
+        baseline = _load_baseline_for_scenarios()
+        session_id, outs = await scenarios.start_session(descriptions, baseline)
+    except scenarios.ScenarioValidationError as exc:
+        return {"error": f"generated scenarios failed validation: {exc}"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"scenario generation failed: {type(exc).__name__}: {exc}"}
+
+    artifact = {
+        "type": "scenario_session",
+        "session_id": session_id,
+        "descriptions": descriptions,
+        "scenarios": [o.to_dict() for o in outs],
+        "committed_choice": None,
+        "baseline_empty": baseline.get("_warning") is not None,
+    }
+    _pending_artifacts.append(artifact)
+
+    return {
+        "session_id": session_id,
+        "scenario_count": len(outs),
+        "scenario_names": [o.name for o in outs],
+        "message": (
+            f"Scenario session `{session_id}` started with {len(outs)} scenarios. "
+            f"The chat is now frozen until you commit to one or close the session. "
+            f"Grid will render in the next message."
+        ),
+    }
+
+
+async def do_commit_scenario(session_id: str, choice_index: int) -> dict[str, Any]:
+    """Stage-1 commit: record the admin's scenario choice without
+    mutating baseline data. Clears the chat-freeze."""
+    from pipeline import scenarios
+
+    try:
+        baseline = _load_baseline_for_scenarios()
+        committed = scenarios.commit_session(session_id, int(choice_index), baseline)
+    except FileNotFoundError:
+        return {"error": f"session {session_id!r} not found"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except scenarios.ScenarioValidationError as exc:
+        return {"error": f"session source failed re-validation: {exc}"}
+
+    return {"committed": committed, "message": f"Committed scenario '{committed['choice_name']}'."}
+
+
+async def do_switch_scenario(session_id: str, choice_index: int) -> dict[str, Any]:
+    """Switch the active commit to a different scenario. Same mechanics
+    as commit; distinct tool name so the admin sees the distinction
+    in the chat log."""
+    return await do_commit_scenario(session_id, choice_index)
+
+
+async def do_close_scenario(session_id: str) -> dict[str, Any]:
+    """Close without committing. Session stays on disk (re-openable)."""
+    from pipeline import scenarios
+
+    scenarios.close_session(session_id)
+    return {"closed": session_id, "message": f"Session `{session_id}` closed without commit."}
+
+
+async def do_open_scenario_session(session_id: str) -> dict[str, Any]:
+    """Re-run a saved session against current baseline data, push grid
+    artifact + previously-committed choice if any."""
+    from pipeline import scenarios
+
+    descriptions = scenarios.load_session_descriptions(session_id)
+    if not descriptions:
+        return {"error": f"session {session_id!r} not found or has no descriptions"}
+
+    baseline = _load_baseline_for_scenarios()
+    try:
+        outs = scenarios.run_session(session_id, baseline)
+    except scenarios.ScenarioValidationError as exc:
+        return {"error": f"session source failed validation on re-open: {exc}"}
+    except FileNotFoundError:
+        return {"error": f"session {session_id!r} source missing on disk"}
+
+    committed_path = scenarios.session_dir(session_id) / "committed.json"
+    committed: dict[str, Any] | None = None
+    if committed_path.exists():
+        try:
+            committed = json.loads(committed_path.read_text())
+        except json.JSONDecodeError:
+            committed = None
+
+    artifact = {
+        "type": "scenario_session",
+        "session_id": session_id,
+        "descriptions": descriptions,
+        "scenarios": [o.to_dict() for o in outs],
+        "committed_choice": committed.get("choice_index") if committed else None,
+        "baseline_empty": baseline.get("_warning") is not None,
+    }
+    _pending_artifacts.append(artifact)
+
+    return {
+        "session_id": session_id,
+        "scenario_count": len(outs),
+        "scenario_names": [o.name for o in outs],
+        "committed_choice": committed.get("choice_index") if committed else None,
+        "message": f"Reopened session `{session_id}`.",
+    }
+
+
+async def do_list_scenario_sessions(limit: int = 20) -> dict[str, Any]:
+    """Return recent saved scenario sessions with their committed state."""
+    from pipeline import scenarios
+
+    rows = scenarios.list_sessions(limit=int(limit))
+    return {"count": len(rows), "sessions": rows}
+
+
 # ---------- system prompt ----------
 
 SYSTEM_PROMPT = """\
@@ -846,6 +1010,75 @@ def _build_mcp_server(user_intent: str) -> Any:
     async def get_budgets_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _wrap(await do_get_budgets())
 
+    # --- scenario sessions (KKallas/Imp#16) ---
+
+    @tool(
+        "start_scenario_session",
+        "Start a scenario-comparison session. Takes 2-5 text descriptions "
+        "(one per scenario, e.g. 'as-is', 'start 2 weeks from now', '4 devs "
+        "not 2'). Generates a hidden Python file that produces a grid of "
+        "charts + metrics side-by-side. The chat FREEZES until the admin "
+        "commits to one scenario or closes the session.",
+        {"descriptions": list},
+    )
+    async def start_scenario_tool(args: dict[str, Any]) -> dict[str, Any]:
+        descriptions = args.get("descriptions") or []
+        return _wrap(await do_start_scenario_session(descriptions))
+
+    @tool(
+        "commit_scenario",
+        "Commit a choice in a scenario session. Baseline data on disk is "
+        "NOT modified — commit is internal state the render pipeline uses "
+        "as the active lens. Separate 'apply to project board' flow handles "
+        "the real GitHub writes.",
+        {"session_id": str, "choice_index": int},
+    )
+    async def commit_scenario_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(
+            await do_commit_scenario(
+                str(args["session_id"]), int(args["choice_index"])
+            )
+        )
+
+    @tool(
+        "switch_scenario",
+        "Change the committed choice on an existing session.",
+        {"session_id": str, "choice_index": int},
+    )
+    async def switch_scenario_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(
+            await do_switch_scenario(
+                str(args["session_id"]), int(args["choice_index"])
+            )
+        )
+
+    @tool(
+        "close_scenario",
+        "Close a scenario session without committing. Session stays on "
+        "disk (re-openable).",
+        {"session_id": str},
+    )
+    async def close_scenario_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(await do_close_scenario(str(args["session_id"])))
+
+    @tool(
+        "open_scenario_session",
+        "Reopen a saved scenario session by id. Re-runs the saved .py "
+        "against current baseline data and shows the grid again.",
+        {"session_id": str},
+    )
+    async def open_scenario_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(await do_open_scenario_session(str(args["session_id"])))
+
+    @tool(
+        "list_scenario_sessions",
+        "List recent saved scenario sessions (newest first) with their "
+        "descriptions and commit state.",
+        {"limit": int},
+    )
+    async def list_scenarios_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(await do_list_scenario_sessions(int(args.get("limit", 20))))
+
     # --- escape hatch ---
 
     @tool(
@@ -892,6 +1125,12 @@ def _build_mcp_server(user_intent: str) -> Any:
             loop_scope_tool,
             loop_clear_tool,
             get_budgets_tool,
+            start_scenario_tool,
+            commit_scenario_tool,
+            switch_scenario_tool,
+            close_scenario_tool,
+            open_scenario_tool,
+            list_scenarios_tool,
             run_shell_tool,
         ],
     )
@@ -920,6 +1159,11 @@ _DISALLOWED_TOOLS: tuple[str, ...] = (
 SayFn = Callable[[str], Awaitable[None]]
 AskFn = Callable[[str], Awaitable[Optional[str]]]
 ThinkingFn = Callable[[str], Any]
+# `chart(artifact)` is called once per artifact descriptor accumulated
+# during the turn. Currently used for `{type: "scenario_session", ...}`
+# (KKallas/Imp#16) — main.py renders the side-by-side grid + commit
+# action buttons. None disables artifact rendering (tests / headless).
+ChartFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class _NullAsyncContext:
@@ -936,6 +1180,7 @@ async def dispatch(
     say: SayFn,
     ask: AskFn,
     thinking: Optional[ThinkingFn] = None,
+    chart: Optional[ChartFn] = None,
 ) -> None:
     """Run one Foreman conversation turn for `user_text`.
 
@@ -946,7 +1191,13 @@ async def dispatch(
 
     The `thinking` seam brackets the SDK call with a cl.Step spinner
     in the UI layer (same pattern as dispatcher.py's synthesis turn).
+    The `chart` seam receives any artifacts collected by tool calls
+    during the turn (currently scenario-session grids); main.py wires
+    this to the appropriate Chainlit element constructors.
     """
+    # Reset the per-turn artifact collector so this dispatch only
+    # surfaces artifacts created by its own tool calls.
+    _pending_artifacts.clear()
     import sys
 
     print(f"[foreman] dispatch called: user_text={user_text!r}", file=sys.stderr)
@@ -989,6 +1240,13 @@ async def dispatch(
             "loop_scope",
             "loop_clear_scope",
             "get_budgets",
+            # KKallas/Imp#16 scenario session tools
+            "start_scenario_session",
+            "commit_scenario",
+            "switch_scenario",
+            "close_scenario",
+            "open_scenario_session",
+            "list_scenario_sessions",
             "run_shell",
         )
     ]
@@ -1055,8 +1313,21 @@ async def dispatch(
                 f"but produced no prose reply. Ask a follow-up for a summary.)_"
             )
 
+    # Drain pending artifacts (scenario grids, etc.) — emit each via
+    # the chart UI seam so main.py can render them as Chainlit elements.
+    if chart is not None and _pending_artifacts:
+        for artifact in list(_pending_artifacts):
+            try:
+                await chart(artifact)
+            except Exception as exc:  # noqa: BLE001 — UI bugs shouldn't kill the turn
+                print(
+                    f"[foreman] chart render failed for {artifact.get('type')!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
     print(
         f"[foreman] dispatch complete: tool_calls={tool_calls_seen} "
-        f"reply_chars={len(reply)}",
+        f"reply_chars={len(reply)} artifacts={len(_pending_artifacts)}",
         file=sys.stderr,
     )
