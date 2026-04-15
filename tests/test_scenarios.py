@@ -497,6 +497,60 @@ async def test_start_session_rejects_too_few_or_too_many() -> None:
     print("test_start_session_rejects_too_few_or_too_many: OK")
 
 
+def test_exec_namespace_has_working_import() -> None:
+    """The restricted exec namespace must support `import X` at runtime
+    for whitelisted modules — fixed the `__import__ not found` bug that
+    the AST validator alone couldn't catch because it only parses."""
+    src = """
+import copy
+from datetime import timedelta
+
+@scenario("uses stdlib")
+def s(data, out):
+    dup = copy.deepcopy(data)
+    out.metric("count", len(dup["issues"]))
+    return dup
+"""
+    fns = sc._exec_scenarios_source(src)
+    assert len(fns) == 1
+    # Actually invoke it — exec succeeded but the import machinery
+    # still has to work INSIDE the function body.
+    out = sc.Out(name=fns[0]._scenario_name)
+    result = fns[0]({"issues": [{"number": 1}]}, out)
+    assert result is not None
+    assert ("count", "1") in out.metrics
+    print("test_exec_namespace_has_working_import: OK")
+
+
+def test_exec_namespace_rejects_unsafe_import_at_runtime() -> None:
+    """Even if the AST validator somehow missed a forbidden import,
+    the runtime `_safe_import` shim refuses to load it. Defence in
+    depth — both layers must fail for a bad module to load."""
+    # We can't easily write source that the AST accepts but whose import
+    # isn't whitelisted, because AST screens imports. So we test
+    # _safe_import directly.
+    try:
+        sc._safe_import("subprocess")
+    except ImportError as exc:
+        assert "not allowed" in str(exc)
+        print("test_exec_namespace_rejects_unsafe_import_at_runtime: OK")
+        return
+    assert False, "expected ImportError for subprocess"
+
+
+def test_exec_namespace_rejects_relative_import() -> None:
+    """Relative imports (e.g. `from . import foo`) are refused — no
+    legitimate use in a scenarios.py, and they open attack paths via
+    package context fiddling."""
+    try:
+        sc._safe_import("anything", level=1)
+    except ImportError as exc:
+        assert "relative" in str(exc).lower()
+        print("test_exec_namespace_rejects_relative_import: OK")
+        return
+    assert False, "expected ImportError for relative import"
+
+
 async def test_validator_accepts_now_allowed_imports() -> None:
     """copy / itertools / functools / collections / math / json / typing / re /
     statistics — all pure stdlib the generator commonly reaches for. Adding
@@ -638,6 +692,9 @@ async def amain() -> None:
         test_validator_rejects_os_import,
         test_validator_rejects_exec_call,
         test_validator_rejects_dunder_access,
+        test_exec_namespace_has_working_import,
+        test_exec_namespace_rejects_unsafe_import_at_runtime,
+        test_exec_namespace_rejects_relative_import,
     ]
     async_tests = [
         test_start_session_with_fake_generator,

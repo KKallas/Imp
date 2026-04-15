@@ -526,6 +526,36 @@ class ScenarioValidationError(Exception):
     """Raised when the generated .py fails AST validation before exec."""
 
 
+# Real `__import__` captured once; our `_safe_import` wraps it with a
+# name-gate so scenarios can `import copy` etc. (runtime path) without
+# opening the door to arbitrary imports.
+import builtins as _builtins_module  # noqa: E402
+
+_REAL_IMPORT = _builtins_module.__import__
+
+
+def _safe_import(
+    name: str,
+    globals: Optional[dict[str, Any]] = None,
+    locals: Optional[dict[str, Any]] = None,
+    fromlist: tuple = (),
+    level: int = 0,
+) -> Any:
+    """Restricted `__import__` used in the scenarios exec namespace.
+
+    AST validation already rejects imports of non-whitelisted modules at
+    parse time — this function is belt-and-suspenders for the runtime
+    path (e.g. if someone ever disables the AST check, or if a scenario
+    imports inside a function body in a way the walker didn't catch).
+    """
+    if level != 0:
+        raise ImportError("relative imports are not allowed in scenarios")
+    root = name.split(".")[0]
+    if root not in _SAFE_IMPORTS:
+        raise ImportError(f"import of {name!r} is not allowed in scenarios")
+    return _REAL_IMPORT(name, globals, locals, fromlist, level)
+
+
 def _validate_scenarios_source(source: str) -> None:
     """AST-scan the generated source for forbidden constructs.
 
@@ -568,12 +598,30 @@ def _validate_scenarios_source(source: str) -> None:
                 )
 
 
+def _build_restricted_builtins() -> dict[str, Any]:
+    """Construct the `__builtins__` dict for the scenarios exec namespace.
+
+    Copies each name in `_SAFE_NAMES` from the real `builtins` module,
+    plus plugs in our name-gated `_safe_import` so `import X` statements
+    work for whitelisted modules at runtime.
+    """
+    restricted: dict[str, Any] = {}
+    for name in _SAFE_NAMES:
+        if hasattr(_builtins_module, name):
+            restricted[name] = getattr(_builtins_module, name)
+    # `import X` statements at runtime go through `__builtins__.__import__`.
+    # Without this entry, even AST-approved imports fail at exec time with
+    # "__import__ not found". Our wrapper re-checks the module name.
+    restricted["__import__"] = _safe_import
+    return restricted
+
+
 def _exec_scenarios_source(source: str) -> list[Callable[..., None]]:
     """Exec the source in a restricted namespace and collect scenario functions."""
     _validate_scenarios_source(source)
 
     namespace: dict[str, Any] = {
-        "__builtins__": {name: __builtins__[name] if isinstance(__builtins__, dict) else getattr(__builtins__, name) for name in _SAFE_NAMES if name in (__builtins__ if isinstance(__builtins__, dict) else dir(__builtins__))},
+        "__builtins__": _build_restricted_builtins(),
         "scenario": scenario,
         "Out": Out,
         "delay_all": delay_all,
