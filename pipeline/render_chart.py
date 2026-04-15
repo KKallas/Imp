@@ -617,6 +617,61 @@ def build_context_for_burndown(enriched: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_burndown_plotly_figure(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a Plotly JSON figure for the burndown context.
+
+    Used by the Foreman chat UI to render the chart inline (Chainlit
+    can't render HTML/Chart.js pages, but does render Plotly figures
+    natively). Returns None when the context has no plottable data,
+    so the caller can decide whether to skip the inline chart.
+    """
+    labels = context.get("labels") or []
+    if not labels:
+        return None
+    remaining = context.get("remaining") or []
+    ideal = context.get("ideal") or []
+    excluded = context.get("excluded_count") or 0
+    title = context.get("title") or "Project"
+    title_suffix = f" — {excluded} out-scoped excluded" if excluded else ""
+
+    return {
+        "data": [
+            {
+                "x": labels,
+                "y": remaining,
+                "type": "scatter",
+                "mode": "lines+markers",
+                "name": "Remaining (actual)",
+                "line": {"color": "#2563eb", "width": 3},
+                "marker": {"size": 7},
+            },
+            {
+                "x": labels,
+                "y": ideal,
+                "type": "scatter",
+                "mode": "lines",
+                "name": "Ideal",
+                "line": {"color": "#9ca3af", "width": 1, "dash": "dash"},
+            },
+        ],
+        "layout": {
+            "title": {
+                "text": f"Burndown — {title}{title_suffix}",
+                "font": {"size": 15},
+            },
+            "xaxis": {"title": "Date", "type": "date"},
+            "yaxis": {
+                "title": "Open issues",
+                "rangemode": "tozero",
+                "dtick": 1,
+            },
+            "legend": {"orientation": "h", "y": -0.2},
+            "template": "plotly_white",
+            "margin": {"l": 40, "r": 20, "t": 60, "b": 60},
+        },
+    }
+
+
 # ---------- comparison ----------
 #
 # Renders TWO enriched payloads side-by-side: a mermaid gantt for each

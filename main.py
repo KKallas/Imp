@@ -802,20 +802,86 @@ async def _foreman_thinking(label: str):
 async def _foreman_chart(artifact: dict) -> None:
     """Render an artifact produced by a Foreman tool call.
 
-    Today the only registered artifact type is `scenario_session` —
-    rendered as a side-by-side grid (Plotly subplot for charts +
-    Markdown table for metrics) with commit/switch/close buttons.
+    Registered artifact types:
+      - scenario_session : scenario-comparison grid (Plotly subplot
+        + metric table + commit/switch/close buttons).
+      - chart_file : `pipeline/render_chart.py` output. Renders the
+        Plotly figure inline when present (burndown) and always
+        attaches the HTML file as a download chip so the full
+        interactive page is one click away.
+
     Unknown types log a warning and are skipped — a single bad tool
     output shouldn't kill the turn.
     """
     artifact_type = artifact.get("type")
     if artifact_type == "scenario_session":
         await _render_scenario_grid(artifact)
+    elif artifact_type == "chart_file":
+        await _render_chart_file(artifact)
     else:
         await cl.Message(
             author="Foreman",
             content=f"_(Unknown artifact type `{artifact_type}` — skipped.)_",
         ).send()
+
+
+async def _render_chart_file(artifact: dict) -> None:
+    """Display a `pipeline/render_chart.py` output in the chat.
+
+    Layout: inline Plotly figure (when the template has a native
+    Plotly build — burndown does, the others don't yet), followed by
+    a download chip for the full self-contained HTML page so users
+    can open it in a browser tab with Chart.js / mermaid rendering.
+    """
+    template = artifact.get("template") or "chart"
+    html_path = artifact.get("path")
+    plotly_figure = artifact.get("plotly_figure")
+
+    import sys
+
+    elements: list = []
+    if plotly_figure:
+        try:
+            elements.append(
+                cl.Plotly(
+                    name=f"{template}-chart",
+                    figure=plotly_figure,
+                    display="inline",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the turn
+            print(
+                f"[main] cl.Plotly failed for {template!r}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
+    if html_path and Path(html_path).exists():
+        elements.append(
+            cl.File(
+                name=f"{template}.html",
+                path=str(html_path),
+                display="inline",
+                mime="text/html",
+            )
+        )
+
+    if not elements:
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"_(Rendered `{template}` chart but the output file is missing "
+                f"and no inline figure is available — nothing to show.)_"
+            ),
+        ).send()
+        return
+
+    content = f"**{template.capitalize()} chart** — click the chip to open the full page."
+    await cl.Message(
+        author="Foreman",
+        content=content,
+        elements=elements,
+    ).send()
 
 
 async def _render_scenario_grid(artifact: dict) -> None:

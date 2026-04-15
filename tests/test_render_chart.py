@@ -639,6 +639,51 @@ def test_burndown_render_html_surfaces_excluded_count() -> None:
     print("test_burndown_render_html_surfaces_excluded_count: OK")
 
 
+def test_build_burndown_plotly_figure_has_expected_traces() -> None:
+    """The Plotly figure used by the Foreman chat UI should carry the
+    same series the HTML template renders — 'Remaining (actual)' and
+    'Ideal' — with x=labels and y matching the context."""
+    enriched = _load_enriched()
+    ctx = rc.build_context_for_burndown(enriched)
+    fig = rc.build_burndown_plotly_figure(ctx)
+    assert fig is not None
+    traces = fig["data"]
+    names = {t["name"] for t in traces}
+    assert "Remaining (actual)" in names
+    assert "Ideal" in names
+    for t in traces:
+        assert t["x"] == ctx["labels"]
+    remaining_trace = next(t for t in traces if t["name"] == "Remaining (actual)")
+    assert remaining_trace["y"] == ctx["remaining"]
+    print("test_build_burndown_plotly_figure_has_expected_traces: OK")
+
+
+def test_build_burndown_plotly_figure_returns_none_when_empty() -> None:
+    """Empty context (no labels) means no chart — returning None lets
+    the caller fall back to the HTML download chip only."""
+    assert rc.build_burndown_plotly_figure({"labels": []}) is None
+    assert rc.build_burndown_plotly_figure({}) is None
+    print("test_build_burndown_plotly_figure_returns_none_when_empty: OK")
+
+
+def test_build_burndown_plotly_figure_title_mentions_excluded_when_nonzero() -> None:
+    """The out-scoped count should appear in the Plotly title so the
+    reader sees the same disclosure the HTML page carries."""
+    ctx = {
+        "title": "test/repo",
+        "labels": ["2026-04-01", "2026-04-02"],
+        "remaining": [2, 1],
+        "ideal": [2.0, 0.0],
+        "excluded_count": 3,
+    }
+    fig = rc.build_burndown_plotly_figure(ctx)
+    assert fig is not None
+    title_text = fig["layout"]["title"]["text"]
+    assert "3" in title_text
+    assert "out-scoped" in title_text.lower()
+    print("test_build_burndown_plotly_figure_title_mentions_excluded_when_nonzero: OK")
+
+
 def test_burndown_render_html_no_data_path() -> None:
     enriched = {
         "repo": "test/repo",
@@ -814,6 +859,9 @@ def main() -> None:
         test_burndown_context_missing_list_only_when_no_timestamps,
         test_burndown_render_html_self_contained,
         test_burndown_render_html_surfaces_excluded_count,
+        test_build_burndown_plotly_figure_has_expected_traces,
+        test_build_burndown_plotly_figure_returns_none_when_empty,
+        test_build_burndown_plotly_figure_title_mentions_excluded_when_nonzero,
         test_burndown_render_html_no_data_path,
         test_comparison_deltas_zero_when_variant_identical,
         test_comparison_detects_shifted_end_dates,
