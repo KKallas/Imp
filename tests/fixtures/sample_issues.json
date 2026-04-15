@@ -1,0 +1,107 @@
+{
+  "synced_at": "2026-04-15T06:30:00+00:00",
+  "repo": "KKallas/Imp",
+  "project_number": 7,
+  "project_owner": "KKallas",
+  "issue_count": 6,
+  "issues": [
+    {
+      "number": 11,
+      "title": "[P4.11] server/foreman_agent.py — worker definition",
+      "body": "Foreman worker agent ...",
+      "labels": [
+        {"name": "area:server"},
+        {"name": "imp:baseline"}
+      ],
+      "milestone": {"title": "Phase 4 — Foreman & visibility tools"},
+      "assignees": [],
+      "state": "CLOSED",
+      "url": "https://github.com/KKallas/Imp/issues/11",
+      "createdAt": "2026-04-11T12:30:18Z",
+      "updatedAt": "2026-04-15T06:00:00Z",
+      "fields": {
+        "duration_days": 4,
+        "start_date": "2026-04-11",
+        "end_date": "2026-04-15",
+        "confidence": "high",
+        "source": "github",
+        "assignee_verified": "no",
+        "depends_on": "#10, #9"
+      }
+    },
+    {
+      "number": 12,
+      "title": "[P4.12] sync_issues.py",
+      "body": "...",
+      "labels": [{"name": "area:pipeline"}, {"name": "imp:baseline"}],
+      "milestone": null,
+      "assignees": [],
+      "state": "OPEN",
+      "url": "https://github.com/KKallas/Imp/issues/12",
+      "createdAt": "2026-04-12T08:00:00Z",
+      "updatedAt": "2026-04-12T08:00:00Z",
+      "fields": {
+        "end_date": "2026-04-13",
+        "depends_on": "#11"
+      }
+    },
+    {
+      "number": 13,
+      "title": "[P4.13] heuristics.py — fresh, no fields",
+      "body": "...",
+      "labels": [{"name": "area:pipeline"}],
+      "milestone": null,
+      "assignees": [],
+      "state": "OPEN",
+      "url": "https://github.com/KKallas/Imp/issues/13",
+      "createdAt": "2026-04-13T08:00:00Z",
+      "updatedAt": "2026-04-13T08:00:00Z",
+      "fields": {}
+    },
+    {
+      "number": 14,
+      "title": "Issue with messy depends_on",
+      "body": "...",
+      "labels": [{"name": "imp:baseline"}],
+      "milestone": null,
+      "assignees": [],
+      "state": "OPEN",
+      "url": "https://github.com/KKallas/Imp/issues/14",
+      "createdAt": "2026-04-14T08:00:00Z",
+      "updatedAt": "2026-04-14T08:00:00Z",
+      "fields": {
+        "depends_on": "#12, see also TBD-43, #garbage, 99"
+      }
+    },
+    {
+      "number": 15,
+      "title": "Closed past its end_date — NOT delayed",
+      "body": "...",
+      "labels": [{"name": "imp:baseline"}],
+      "milestone": null,
+      "assignees": [],
+      "state": "CLOSED",
+      "url": "https://github.com/KKallas/Imp/issues/15",
+      "createdAt": "2026-04-01T08:00:00Z",
+      "updatedAt": "2026-04-10T08:00:00Z",
+      "fields": {
+        "end_date": "2026-04-05"
+      }
+    },
+    {
+      "number": 16,
+      "title": "Open past end_date but no imp:baseline label — NOT delayed",
+      "body": "...",
+      "labels": [{"name": "area:pipeline"}],
+      "milestone": null,
+      "assignees": [],
+      "state": "OPEN",
+      "url": "https://github.com/KKallas/Imp/issues/16",
+      "createdAt": "2026-04-01T08:00:00Z",
+      "updatedAt": "2026-04-10T08:00:00Z",
+      "fields": {
+        "end_date": "2026-04-05"
+      }
+    }
+  ]
+}
