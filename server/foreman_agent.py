@@ -416,11 +416,79 @@ async def do_run_render_chart(
     template: str, *, user_intent: str
 ) -> dict[str, Any]:
     """pipeline/render_chart.py — renders gantt/kanban/burndown/comparison.
-    Blocked on KKallas/Imp#14 (P4.14)."""
+
+    On success, pushes a `chart_file` artifact into `_pending_artifacts`
+    so the chat layer can render the output inline. For `burndown` we
+    additionally build a Plotly figure from the same enriched data —
+    Chainlit can't render Chart.js/mermaid pages, but it *can* render
+    `cl.Plotly` natively, which gives users an actual chart in the
+    conversation rather than a download chip.
+    """
     argv = [sys.executable, "pipeline/render_chart.py", "--template", template]
-    return await do_run_shell(
+    result = await do_run_shell(
         argv, user_intent=user_intent, rationale=f"render {template} chart"
     )
+
+    if result.get("exit_code") == 0:
+        html_path = _extract_render_chart_path(result.get("output") or "")
+        plotly_figure = _build_plotly_for_chart_file(template)
+        artifact: dict[str, Any] = {
+            "type": "chart_file",
+            "template": template,
+            "path": str(html_path) if html_path else None,
+            "plotly_figure": plotly_figure,
+        }
+        _pending_artifacts.append(artifact)
+
+    return result
+
+
+def _extract_render_chart_path(output: str) -> Path | None:
+    """Find the rendered HTML path in `pipeline/render_chart.py`'s
+    output. It prints the path on the last line of stdout, and a
+    summary on stderr — but `intercept.execute_command` merges the two
+    streams, so a plain "last line" parse is fragile (stderr can
+    arrive after stdout). Scan every line and pick the last one that
+    looks like a real `.html` path on disk.
+    """
+    match: Path | None = None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or not stripped.endswith(".html"):
+            continue
+        candidate = Path(stripped)
+        if candidate.exists():
+            match = candidate
+    return match
+
+
+def _build_plotly_for_chart_file(template: str) -> dict[str, Any] | None:
+    """Build a Plotly figure dict for templates that have a native
+    Plotly equivalent. Burndown is the only one today — gantt/kanban/
+    comparison stay as HTML-only downloads until a Plotly port lands.
+
+    Returns None on any failure — missing enriched.json, import error,
+    unsupported template. Callers treat None as "no inline chart,
+    only the HTML file will be attached."
+    """
+    if template != "burndown":
+        return None
+    enriched_path = ROOT / ".imp" / "enriched.json"
+    if not enriched_path.exists():
+        return None
+    try:
+        from pipeline import render_chart
+
+        enriched = json.loads(enriched_path.read_text())
+        context = render_chart.build_context_for_burndown(enriched)
+        return render_chart.build_burndown_plotly_figure(context)
+    except Exception as exc:  # noqa: BLE001 — UI helper, never raise
+        print(
+            f"[foreman] _build_plotly_for_chart_file({template!r}) failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 # (`do_run_scenario` / `run_scenario_tool` removed — KKallas/Imp#16
