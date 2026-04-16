@@ -785,6 +785,39 @@ def load_enriched(path: Path = INPUT_FILE) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _apply_active_scenario_safe(enriched: dict[str, Any]) -> dict[str, Any]:
+    """Apply the committed scenario's transform to `enriched` if one
+    is active; otherwise pass through.
+
+    Import is lazy — `scenarios.py` pulls a chunk of AST / sandbox
+    machinery we don't want to load when no session is committed. If
+    the import or the apply step raises, we log and return baseline
+    so a broken scenario can't break chart rendering.
+    """
+    try:
+        try:
+            from pipeline import scenarios
+        except ImportError:
+            import scenarios  # type: ignore[no-redef]
+    except ImportError:
+        return enriched
+    try:
+        active = scenarios.active_session()
+    except Exception:  # noqa: BLE001
+        return enriched
+    if not active:
+        return enriched
+    try:
+        return scenarios.apply_active_scenario(enriched)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[render_chart] apply_active_scenario failed — rendering "
+            f"baseline: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return enriched
+
+
 def write_html(html: str, template_name: str, output_dir: Path = OUTPUT_DIR) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{template_name}.html"
@@ -843,6 +876,15 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(str(exc), file=sys.stderr)
         return 1
+
+    # Apply the active scenario (if one is committed) as a lens over
+    # the baseline payload — scenarios transform dates/issues and the
+    # chart should reflect the current commit. For comparison we
+    # deliberately keep the baseline untransformed on the left side so
+    # the user can see the scenario's delta; the right side gets the
+    # lensed payload via `variant = apply_active_scenario(baseline)`
+    # when the admin hasn't supplied --input-b explicitly.
+    enriched = _apply_active_scenario_safe(enriched)
 
     if args.template == "comparison":
         variant = None

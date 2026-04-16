@@ -1121,7 +1121,12 @@ def _find_output_value(scenario: dict, key: str) -> str:
 
 @cl.action_callback("scenario_commit")
 async def on_scenario_commit(action: cl.Action) -> None:
-    """Action callback: commit a scenario choice, unfreeze the chat."""
+    """Action callback: commit a scenario choice, unfreeze the chat,
+    and render a fresh gantt HTML for the committed scenario so the
+    admin sees the final "clean" view right where they confirmed the
+    choice — same inline Plotly + open-in-new-tab link the other
+    template renders use.
+    """
     payload = action.payload or {}
     session_id = payload.get("session_id")
     choice_index = payload.get("choice_index")
@@ -1146,17 +1151,67 @@ async def on_scenario_commit(action: cl.Action) -> None:
         return
 
     committed = result.get("committed") or {}
+    scenario_name = committed.get("choice_name", f"s{choice_index + 1}")
     await cl.Message(
         author="Foreman",
         content=(
-            f"**Committed.** Active scenario: "
-            f"`{committed.get('choice_name', f's{choice_index + 1}')}`\n\n"
-            f"Baseline data on disk is unchanged. Future gantt renders will "
-            f"compose this scenario as a lens. Say 'apply to project board' "
-            f"when you're ready to write it to GitHub (Stage 2, separate "
-            f"workflow — not yet implemented)."
+            f"**Committed.** Active scenario: `{scenario_name}`. "
+            f"Rendering the gantt for this scenario below — baseline data "
+            f"on disk is unchanged; this is the lensed view."
         ),
     ).send()
+
+    # Render the committed scenario's gantt as a chart_file artifact.
+    # `render_chart.py` picks up the active_scenario.json pointer on
+    # load and applies the lens, so the output reflects the commit
+    # we just made.
+    await _render_committed_scenario_gantt(scenario_name)
+
+
+async def _render_committed_scenario_gantt(scenario_name: str) -> None:
+    """Trigger `run_render_chart --template gantt` from outside the
+    normal `dispatch()` flow and render any chart_file artifacts it
+    pushes. Errors are logged but never break the commit confirmation
+    — a failed render shouldn't undo a successful commit."""
+    import sys
+
+    from server import foreman_agent
+
+    # Any artifacts already queued belong to a previous turn; clear so
+    # we don't re-render stale ones here.
+    foreman_agent._pending_artifacts.clear()
+
+    try:
+        await foreman_agent.do_run_render_chart(
+            template="gantt",
+            user_intent=f"render committed scenario '{scenario_name}'",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[main] render after commit failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"_(Chart render after commit failed — "
+                f"`{type(exc).__name__}`. Ask me to `show gantt` to retry.)_"
+            ),
+        ).send()
+        return
+
+    # Drain the queue manually since we're outside dispatch().
+    for artifact in list(foreman_agent._pending_artifacts):
+        try:
+            await _foreman_chart(artifact)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[main] _foreman_chart failed on commit-render: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+    foreman_agent._pending_artifacts.clear()
 
 
 @cl.action_callback("scenario_close")
