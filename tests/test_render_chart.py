@@ -684,6 +684,68 @@ def test_build_burndown_plotly_figure_title_mentions_excluded_when_nonzero() -> 
     print("test_build_burndown_plotly_figure_title_mentions_excluded_when_nonzero: OK")
 
 
+def test_apply_active_scenario_safe_passes_through_without_session() -> None:
+    """No committed scenario → the helper must return the input
+    unchanged (and importantly: not crash even if scenarios.py errors
+    during lookup)."""
+    enriched = {"repo": "t/r", "issues": []}
+    out = rc._apply_active_scenario_safe(enriched)
+    assert out is enriched  # passthrough identity
+    print("test_apply_active_scenario_safe_passes_through_without_session: OK")
+
+
+def test_apply_active_scenario_safe_uses_lens_when_session_active() -> None:
+    """When active_session returns a pointer, the helper should call
+    apply_active_scenario and surface its transformed payload."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "pipeline"))
+    import scenarios as sc
+
+    baseline = {"repo": "t/r", "issues": [{"number": 1}]}
+    transformed = {"repo": "t/r", "issues": [{"number": 1, "lensed": True}]}
+
+    orig_active = sc.active_session
+    orig_apply = sc.apply_active_scenario
+    sc.active_session = lambda: {"session_id": "fake", "choice_index": 0}
+    sc.apply_active_scenario = lambda b: transformed
+    try:
+        out = rc._apply_active_scenario_safe(baseline)
+    finally:
+        sc.active_session = orig_active
+        sc.apply_active_scenario = orig_apply
+
+    assert out is transformed
+    print("test_apply_active_scenario_safe_uses_lens_when_session_active: OK")
+
+
+def test_apply_active_scenario_safe_falls_back_when_apply_raises() -> None:
+    """A buggy scenario must not break chart rendering — the helper
+    should catch the exception and return the baseline."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "pipeline"))
+    import scenarios as sc
+
+    baseline = {"repo": "t/r", "issues": []}
+
+    def _boom(b: dict) -> dict:
+        raise RuntimeError("scenario crashed")
+
+    orig_active = sc.active_session
+    orig_apply = sc.apply_active_scenario
+    sc.active_session = lambda: {"session_id": "fake", "choice_index": 0}
+    sc.apply_active_scenario = _boom
+    try:
+        out = rc._apply_active_scenario_safe(baseline)
+    finally:
+        sc.active_session = orig_active
+        sc.apply_active_scenario = orig_apply
+
+    assert out is baseline  # fallback, no crash
+    print("test_apply_active_scenario_safe_falls_back_when_apply_raises: OK")
+
+
 def test_burndown_render_html_no_data_path() -> None:
     enriched = {
         "repo": "test/repo",
@@ -862,6 +924,9 @@ def main() -> None:
         test_build_burndown_plotly_figure_has_expected_traces,
         test_build_burndown_plotly_figure_returns_none_when_empty,
         test_build_burndown_plotly_figure_title_mentions_excluded_when_nonzero,
+        test_apply_active_scenario_safe_passes_through_without_session,
+        test_apply_active_scenario_safe_uses_lens_when_session_active,
+        test_apply_active_scenario_safe_falls_back_when_apply_raises,
         test_burndown_render_html_no_data_path,
         test_comparison_deltas_zero_when_variant_identical,
         test_comparison_detects_shifted_end_dates,
