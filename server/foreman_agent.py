@@ -412,6 +412,30 @@ async def do_run_heuristics(*, user_intent: str) -> dict[str, Any]:
     )
 
 
+async def do_run_estimate_dates(
+    *, user_intent: str, push: bool = False
+) -> dict[str, Any]:
+    """pipeline/estimate_dates.py — fills in missing `start_date` /
+    `end_date` by running `synthesize_dates` over the enriched payload.
+
+    Without `push`, the estimates stay local (updates `.imp/enriched.json`
+    only). With `push=True`, each newly-estimated issue also gets its
+    body updated with an `<!-- imp:dates -->` block via `gh issue edit`,
+    so the estimate survives the next sync and shows up on github.com.
+
+    This is Layer 1 of the gantt flow: estimate missing data first,
+    then call `run_render_chart('gantt')` to render from the now-
+    populated payload. For repos with a real GH Project attached, the
+    project-board `start_date` / `end_date` fields always win — this
+    pass only touches issues where they're absent.
+    """
+    argv = [sys.executable, "pipeline/estimate_dates.py"]
+    if push:
+        argv.append("--push")
+    rationale = "estimate missing dates" + (" (push to GH)" if push else "")
+    return await do_run_shell(argv, user_intent=user_intent, rationale=rationale)
+
+
 async def do_run_render_chart(
     template: str, *, user_intent: str
 ) -> dict[str, Any]:
@@ -751,6 +775,14 @@ more writes until the admin resolves it. Don't retry destructively.
 - `list_project_items(project_number, owner)` — `gh project item-list`
 - `run_sync_issues` / `run_heuristics` / `run_render_chart(template)` — \
 pipeline visibility scripts.
+- `run_estimate_dates(push=false)` — fills in missing `start_date` / \
+`end_date` by running `synthesize_dates`. **Call this before any gantt \
+render when the repo has no linked project board** (or when the gantt \
+produces 0 entries / a large "missing dates" list). With `push=true`, \
+the estimates are written back to each issue's body on GitHub inside \
+an `<!-- imp:dates -->` block so they survive the next sync. Default \
+to `push=false` unless the admin explicitly asks to persist the \
+estimates to github.com.
 
 ### PM writes (gated by checkpoint B, counts toward edit budget)
 - `comment_on_issue(number, body)` — `gh issue comment`
@@ -1037,6 +1069,25 @@ def _build_mcp_server(user_intent: str) -> Any:
     @tool("run_heuristics", "Infer durations / dependencies / delays (pipeline).", {})
     async def run_heuristics_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _wrap(await do_run_heuristics(user_intent=user_intent))
+
+    @tool(
+        "run_estimate_dates",
+        "Estimate missing start_date / end_date on every issue by "
+        "running synthesize_dates over the enriched payload. Pass "
+        "push=true to also persist the estimates to each issue's "
+        "body on GitHub (so the dates survive the next sync and show "
+        "on github.com). Layer 1 of the gantt flow — call this before "
+        "run_render_chart('gantt') whenever the baseline data lacks "
+        "project-board dates.",
+        {"push": bool},
+    )
+    async def run_estimate_dates_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(
+            await do_run_estimate_dates(
+                user_intent=user_intent,
+                push=bool(args.get("push", False)),
+            )
+        )
 
     @tool(
         "run_render_chart",

@@ -312,6 +312,28 @@ async def test_do_run_fix_prs() -> None:
 # ---------- pipeline: visibility scripts (stubs) ----------
 
 
+async def test_do_run_estimate_dates_default_no_push() -> None:
+    """Without push=True, the script is invoked without --push."""
+    _reset()
+    _FAKE.script([(0, '{"estimated": 2, "pushed": false}', FakeAction(classified_as="read"))])
+    await foreman_agent.do_run_estimate_dates(user_intent="u")
+    argv = _FAKE.calls[0]["argv"]
+    assert argv[1] == "pipeline/estimate_dates.py"
+    assert "--push" not in argv
+    print("test_do_run_estimate_dates_default_no_push: OK")
+
+
+async def test_do_run_estimate_dates_push_appends_flag() -> None:
+    """push=True flips the --push flag on, so the gh push layer runs."""
+    _reset()
+    _FAKE.script([(0, '{"estimated": 2, "pushed": true}', FakeAction(classified_as="write"))])
+    await foreman_agent.do_run_estimate_dates(user_intent="u", push=True)
+    argv = _FAKE.calls[0]["argv"]
+    assert argv[1] == "pipeline/estimate_dates.py"
+    assert "--push" in argv
+    print("test_do_run_estimate_dates_push_appends_flag: OK")
+
+
 async def test_do_run_render_chart_builds_argv() -> None:
     """run_render_chart forwards --template correctly."""
     _reset()
@@ -540,6 +562,8 @@ async def amain() -> None:
         test_do_run_moderate_issues,
         test_do_run_solve_issues,
         test_do_run_fix_prs,
+        test_do_run_estimate_dates_default_no_push,
+        test_do_run_estimate_dates_push_appends_flag,
         test_do_run_render_chart_builds_argv,
         test_do_run_render_chart_pushes_chart_file_artifact_on_success,
         test_do_run_render_chart_skips_artifact_on_failure,
