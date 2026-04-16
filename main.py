@@ -802,20 +802,116 @@ async def _foreman_thinking(label: str):
 async def _foreman_chart(artifact: dict) -> None:
     """Render an artifact produced by a Foreman tool call.
 
-    Today the only registered artifact type is `scenario_session` —
-    rendered as a side-by-side grid (Plotly subplot for charts +
-    Markdown table for metrics) with commit/switch/close buttons.
+    Registered artifact types:
+      - scenario_session : scenario-comparison grid (Plotly subplot
+        + metric table + commit/switch/close buttons).
+      - chart_file : `pipeline/render_chart.py` output. Renders the
+        Plotly figure inline when present (burndown) and always
+        attaches the HTML file as a download chip so the full
+        interactive page is one click away.
+
     Unknown types log a warning and are skipped — a single bad tool
     output shouldn't kill the turn.
     """
     artifact_type = artifact.get("type")
     if artifact_type == "scenario_session":
         await _render_scenario_grid(artifact)
+    elif artifact_type == "chart_file":
+        await _render_chart_file(artifact)
     else:
         await cl.Message(
             author="Foreman",
             content=f"_(Unknown artifact type `{artifact_type}` — skipped.)_",
         ).send()
+
+
+_PUBLIC_CHARTS_DIR = Path(__file__).resolve().parent / "public" / "charts"
+
+
+def _publish_chart_html(html_path: Path, template: str) -> str | None:
+    """Copy the rendered HTML into `public/charts/` so Chainlit's
+    built-in `GET /public/<filename>` route serves it, and return the
+    URL path. Markdown links in Chainlit get `target="_blank"` set on
+    the rendered `<a>` automatically — so a plain `[label](url)` opens
+    the full interactive page in a new browser tab rather than the
+    chat-embedded download chip.
+
+    Returns None when the copy fails — callers fall back to no link.
+    """
+    import shutil
+    import sys
+
+    try:
+        _PUBLIC_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+        dest = _PUBLIC_CHARTS_DIR / f"{template}.html"
+        shutil.copyfile(html_path, dest)
+    except OSError as exc:
+        print(
+            f"[main] _publish_chart_html({template!r}) failed: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return f"/public/charts/{template}.html"
+
+
+async def _render_chart_file(artifact: dict) -> None:
+    """Display a `pipeline/render_chart.py` output in the chat.
+
+    Layout: inline Plotly figure (when the template has a native
+    Plotly build — burndown does, the others don't yet) + a markdown
+    link that opens the full self-contained HTML page in a new tab.
+    The HTML is copied into `public/charts/` so Chainlit's `/public`
+    static route can serve it; the frontend auto-targets markdown
+    links with `target="_blank"`.
+    """
+    template = artifact.get("template") or "chart"
+    html_path = artifact.get("path")
+    plotly_figure = artifact.get("plotly_figure")
+
+    import sys
+
+    elements: list = []
+    if plotly_figure:
+        try:
+            elements.append(
+                cl.Plotly(
+                    name=f"{template}-chart",
+                    figure=plotly_figure,
+                    display="inline",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the turn
+            print(
+                f"[main] cl.Plotly failed for {template!r}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
+    public_url: str | None = None
+    if html_path and Path(html_path).exists():
+        public_url = _publish_chart_html(Path(html_path), template)
+
+    if not elements and not public_url:
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"_(Rendered `{template}` chart but the output file is missing "
+                f"and no inline figure is available — nothing to show.)_"
+            ),
+        ).send()
+        return
+
+    if public_url:
+        link_hint = f"[Open full {template} page in a new tab]({public_url})"
+    else:
+        link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
+    content = f"**{template.capitalize()} chart** — {link_hint}"
+
+    await cl.Message(
+        author="Foreman",
+        content=content,
+        elements=elements,
+    ).send()
 
 
 async def _render_scenario_grid(artifact: dict) -> None:
@@ -1025,7 +1121,12 @@ def _find_output_value(scenario: dict, key: str) -> str:
 
 @cl.action_callback("scenario_commit")
 async def on_scenario_commit(action: cl.Action) -> None:
-    """Action callback: commit a scenario choice, unfreeze the chat."""
+    """Action callback: commit a scenario choice, unfreeze the chat,
+    and render a fresh gantt HTML for the committed scenario so the
+    admin sees the final "clean" view right where they confirmed the
+    choice — same inline Plotly + open-in-new-tab link the other
+    template renders use.
+    """
     payload = action.payload or {}
     session_id = payload.get("session_id")
     choice_index = payload.get("choice_index")
@@ -1050,17 +1151,67 @@ async def on_scenario_commit(action: cl.Action) -> None:
         return
 
     committed = result.get("committed") or {}
+    scenario_name = committed.get("choice_name", f"s{choice_index + 1}")
     await cl.Message(
         author="Foreman",
         content=(
-            f"**Committed.** Active scenario: "
-            f"`{committed.get('choice_name', f's{choice_index + 1}')}`\n\n"
-            f"Baseline data on disk is unchanged. Future gantt renders will "
-            f"compose this scenario as a lens. Say 'apply to project board' "
-            f"when you're ready to write it to GitHub (Stage 2, separate "
-            f"workflow — not yet implemented)."
+            f"**Committed.** Active scenario: `{scenario_name}`. "
+            f"Rendering the gantt for this scenario below — baseline data "
+            f"on disk is unchanged; this is the lensed view."
         ),
     ).send()
+
+    # Render the committed scenario's gantt as a chart_file artifact.
+    # `render_chart.py` picks up the active_scenario.json pointer on
+    # load and applies the lens, so the output reflects the commit
+    # we just made.
+    await _render_committed_scenario_gantt(scenario_name)
+
+
+async def _render_committed_scenario_gantt(scenario_name: str) -> None:
+    """Trigger `run_render_chart --template gantt` from outside the
+    normal `dispatch()` flow and render any chart_file artifacts it
+    pushes. Errors are logged but never break the commit confirmation
+    — a failed render shouldn't undo a successful commit."""
+    import sys
+
+    from server import foreman_agent
+
+    # Any artifacts already queued belong to a previous turn; clear so
+    # we don't re-render stale ones here.
+    foreman_agent._pending_artifacts.clear()
+
+    try:
+        await foreman_agent.do_run_render_chart(
+            template="gantt",
+            user_intent=f"render committed scenario '{scenario_name}'",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[main] render after commit failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"_(Chart render after commit failed — "
+                f"`{type(exc).__name__}`. Ask me to `show gantt` to retry.)_"
+            ),
+        ).send()
+        return
+
+    # Drain the queue manually since we're outside dispatch().
+    for artifact in list(foreman_agent._pending_artifacts):
+        try:
+            await _foreman_chart(artifact)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[main] _foreman_chart failed on commit-render: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+    foreman_agent._pending_artifacts.clear()
 
 
 @cl.action_callback("scenario_close")
