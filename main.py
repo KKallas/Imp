@@ -50,7 +50,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from chainlit.input_widget import NumberInput, Select, Switch
 
-from server import budgets
+from server import budgets, chat_history
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
@@ -653,6 +653,280 @@ async def greet_foreman() -> None:
             "_(Stub spike: every response is faked. The point is the UX, not the data.)_"
         ),
     ).send()
+    # KKallas/Imp#45: start a fresh chat session for this browser tab.
+    # Saved to disk after every turn so refreshing the page won't lose
+    # the thread; rotated when the admin hits /new or the action button.
+    await _start_new_chat_session()
+
+
+# ---------- chat history (KKallas/Imp#45) ----------
+#
+# A `ChatSession` tracks the current in-memory turn list, its agent- or
+# user-picked title, and the path on disk where it's persisted after
+# every turn. The session lives in `cl.user_session` so each browser
+# tab gets its own thread. The header message is a separate pinned
+# `cl.Message` that shows the title + three action buttons; it's
+# updated in-place on rename / new-chat / load so the admin always
+# knows which chat they're in.
+
+
+def _current_session() -> chat_history.ChatSession | None:
+    return cl.user_session.get("chat_session")
+
+
+async def _start_new_chat_session() -> chat_history.ChatSession:
+    """Create a fresh session, save a stub file to disk, render the
+    header. Any previously-active session is left on disk under its
+    own filename — "new chat" means "rotate", not "discard"."""
+    cfg = load_config()
+    session = chat_history.ChatSession.new(repo=cfg.get("repo"))
+    cl.user_session.set("chat_session", session)
+    chat_history.save_session(session)
+    await _render_chat_header(session, fresh=True)
+    return session
+
+
+async def _render_chat_header(
+    session: chat_history.ChatSession, *, fresh: bool = False
+) -> None:
+    """Post (or update) the pinned chat-header message with the current
+    title + action buttons. `fresh=True` posts a new message and stores
+    a reference; subsequent updates edit the same message so the header
+    doesn't multiply as titles change.
+    """
+    content = _format_header_content(session)
+    actions = _chat_header_actions(session)
+
+    existing: cl.Message | None = cl.user_session.get("chat_header_msg")
+    if fresh or existing is None:
+        msg = cl.Message(
+            author="Foreman",
+            content=content,
+            actions=actions,
+        )
+        await msg.send()
+        cl.user_session.set("chat_header_msg", msg)
+        return
+
+    existing.content = content
+    # `actions` must be reset along with content; Chainlit doesn't diff
+    # them but a fresh list drawn on update keeps the button state
+    # consistent (e.g. "New chat" label never changes, but future
+    # variants could).
+    existing.actions = actions
+    try:
+        await existing.update()
+    except Exception as exc:  # noqa: BLE001 — header updates are cosmetic
+        import sys as _sys
+
+        print(
+            f"[chat-history] header update failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=_sys.stderr,
+        )
+
+
+def _format_header_content(session: chat_history.ChatSession) -> str:
+    badge = {
+        "user": "✏️",  # manual rename — don't auto-overwrite
+        "agent": "🤖",  # agent-titled
+        "fallback": "•",  # no real title yet
+    }.get(session.title_source, "•")
+    return (
+        f"**Chat:** {badge} {session.title}  \n"
+        f"_id: `{session.id}` · turns: {len(session.turns)}_"
+    )
+
+
+def _chat_header_actions(session: chat_history.ChatSession) -> list[cl.Action]:
+    return [
+        cl.Action(
+            name="chat_new",
+            payload={},
+            label="🆕 New chat",
+            tooltip="Archive this chat and start a fresh one.",
+        ),
+        cl.Action(
+            name="chat_rename",
+            payload={"session_id": session.id},
+            label="✏️ Rename",
+            tooltip="Rename this chat (locks it against agent re-titling).",
+        ),
+        cl.Action(
+            name="chat_recent",
+            payload={},
+            label="🗂 Recent chats",
+            tooltip="Pick a past chat to load into the next message.",
+        ),
+    ]
+
+
+async def _handle_new_chat_command() -> None:
+    """Archive the current session (already on disk) and start fresh.
+    Shared by the `/new` text command and the header action button so
+    both do exactly the same thing — the issue spec says they must."""
+    old = _current_session()
+    if old is not None:
+        # Persist one last time before rotating so any in-memory changes
+        # since the last turn (rename after typing /new, etc.) land.
+        try:
+            chat_history.save_session(old)
+        except Exception as exc:  # noqa: BLE001
+            import sys as _sys
+
+            print(
+                f"[chat-history] archive-on-rotate failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=_sys.stderr,
+            )
+    await _start_new_chat_session()
+    await cl.Message(
+        author="Foreman",
+        content=(
+            "Started a new chat. The previous conversation is saved and "
+            "reachable via **Recent chats**."
+        ),
+    ).send()
+
+
+async def _maybe_retitle_session(session: chat_history.ChatSession) -> None:
+    """After the first real assistant reply, pick an agent title.
+
+    Skips when the admin has manually renamed (title_source == "user")
+    or when there aren't enough turns yet. Failures here are silent —
+    a missing title is cosmetic, not a correctness bug.
+    """
+    if session.title_source == "user":
+        return
+    if not session.needs_agent_title():
+        return
+    # Only re-title on the transition from fallback → agent. Subsequent
+    # topic-shift re-titling is out of scope for P4.20; admin can
+    # manually rename.
+    if session.title_source == "agent":
+        return
+    new_title = await chat_history.generate_title(session)
+    if new_title:
+        chat_history.save_session(session)
+
+
+# ---------- chat header action callbacks (KKallas/Imp#45) ----------
+
+
+@cl.action_callback("chat_new")
+async def on_chat_new(action: cl.Action) -> None:
+    """Button-triggered version of the `/new` command. Identical effect."""
+    await _handle_new_chat_command()
+
+
+@cl.action_callback("chat_rename")
+async def on_chat_rename(action: cl.Action) -> None:
+    """Prompt the admin for a new title. Manual renames flip
+    `title_source` to "user" so the next agent-titling pass skips
+    this session."""
+    session = _current_session()
+    if session is None:
+        await cl.Message(
+            author="Foreman",
+            content="_(No active chat session to rename.)_",
+        ).send()
+        return
+    resp = await cl.AskUserMessage(
+        author="Foreman",
+        content=(
+            f"Current title: **{session.title}**\n\n"
+            f"Type a new title (3-6 words works best). Your title locks "
+            f"this chat against future agent re-titling."
+        ),
+        timeout=120,
+    ).send()
+    if not resp:
+        return
+    new = (resp.get("output") if isinstance(resp, dict) else None) or ""
+    new = new.strip()
+    if not new:
+        return
+    session.rename(new, by="user")
+    chat_history.save_session(session)
+    await _render_chat_header(session)
+
+
+@cl.action_callback("chat_recent")
+async def on_chat_recent(action: cl.Action) -> None:
+    """Show up to 20 recent chats as an AskActionMessage. Picking one
+    loads its turns into the current session (so the next dispatch
+    replays them) and sets it as active on disk.
+    """
+    rows = chat_history.list_sessions(limit=20)
+    # Exclude the currently-active session from the list — loading
+    # yourself is a no-op and just clutters the picker.
+    current = _current_session()
+    current_id = current.id if current else None
+    rows = [r for r in rows if r["id"] != current_id]
+
+    if not rows:
+        await cl.Message(
+            author="Foreman",
+            content="_(No other saved chats yet.)_",
+        ).send()
+        return
+
+    actions: list[cl.Action] = []
+    for r in rows:
+        # Friendly label: title — turn count — last active (date only)
+        date = r["last_active_at"].split("T")[0] if r["last_active_at"] else "?"
+        label = f"{r['title'][:40]} · {r['turn_count']} turns · {date}"
+        actions.append(
+            cl.Action(
+                name="chat_load",
+                payload={"chat_id": r["id"]},
+                label=label,
+                tooltip=f"Load chat {r['id']}",
+            )
+        )
+    # Cancel action lets the admin back out without picking.
+    actions.append(
+        cl.Action(
+            name="chat_load",
+            payload={"chat_id": ""},
+            label="Cancel",
+            tooltip="Keep the current chat.",
+        )
+    )
+
+    await cl.Message(
+        author="Foreman",
+        content=f"**Recent chats ({len(rows)})** — pick one to load:",
+        actions=actions,
+    ).send()
+
+
+@cl.action_callback("chat_load")
+async def on_chat_load(action: cl.Action) -> None:
+    """Load the picked chat as the new active session."""
+    payload = action.payload or {}
+    chat_id = str(payload.get("chat_id") or "").strip()
+    if not chat_id:
+        # Admin hit Cancel.
+        return
+    loaded = chat_history.load_session(chat_id)
+    if loaded is None:
+        await cl.Message(
+            author="Foreman",
+            content=f"_(Couldn't find chat `{chat_id}` on disk.)_",
+        ).send()
+        return
+    cl.user_session.set("chat_session", loaded)
+    # Header refreshes in-place so the admin sees the loaded title
+    # replace the previous one instead of a second header appearing.
+    await _render_chat_header(loaded)
+    await cl.Message(
+        author="Foreman",
+        content=(
+            f"Loaded chat **{loaded.title}** with {len(loaded.turns)} prior "
+            f"turns. Your next message continues this conversation."
+        ),
+    ).send()
 
 
 @cl.on_message
@@ -702,6 +976,14 @@ async def _on_message_body(msg: cl.Message) -> None:
 
     text = msg.content.lower().strip()
 
+    # KKallas/Imp#45: `/new` / "new chat" rotates the session. The
+    # current chat's file stays on disk; a fresh session takes over.
+    # This runs before guard checkpoint A because it's a local-only
+    # control command, not a message the worker needs to see.
+    if text in ("/new", "new chat", "/new chat"):
+        await _handle_new_chat_command()
+        return
+
     # Demo hook for P2.6: `run: <cmd>` runs the command through the real
     # server/intercept.py pipeline. See tests/test_intercept.py for the
     # underlying contract. This is how you'd exercise the interception
@@ -749,13 +1031,46 @@ async def _on_message_body(msg: cl.Message) -> None:
     # richer UX (verdict table, log sidebar).
     from server import foreman_agent
 
-    await foreman_agent.dispatch(
+    # KKallas/Imp#45: feed prior turns from the current session into
+    # dispatch so Foreman can reference earlier messages naturally
+    # ("now do the same for issue 43" after "moderate issue 42").
+    session = _current_session()
+    history_turns = list(session.turns) if session is not None else []
+
+    # Log the user's turn BEFORE the call so a mid-dispatch crash still
+    # leaves a record of what was asked.
+    if session is not None:
+        session.append_turn("user", msg.content)
+        session.truncate()
+        chat_history.save_session(session)
+
+    reply = await foreman_agent.dispatch(
         msg.content,
         say=_foreman_say,
         ask=_foreman_ask,
         thinking=_foreman_thinking,
         chart=_foreman_chart,
+        history=history_turns,
     )
+
+    # Record the assistant turn + persist + agent-title after the first
+    # real reply. All post-turn work is best-effort: a failure here
+    # should never undo the reply the admin already saw.
+    if session is not None:
+        try:
+            session.append_turn("assistant", reply)
+            session.truncate()
+            chat_history.save_session(session)
+            await _maybe_retitle_session(session)
+            await _render_chat_header(session)
+        except Exception as exc:  # noqa: BLE001 — don't crash the turn on post-save
+            import sys as _sys
+
+            print(
+                f"[chat-history] post-turn save failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=_sys.stderr,
+            )
 
 
 async def _foreman_say(text: str) -> None:

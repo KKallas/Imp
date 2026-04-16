@@ -1310,13 +1310,20 @@ async def dispatch(
     ask: AskFn,
     thinking: Optional[ThinkingFn] = None,
     chart: Optional[ChartFn] = None,
-) -> None:
+    history: Optional[list[Any]] = None,
+) -> str:
     """Run one Foreman conversation turn for `user_text`.
 
-    Each call is a fresh `ClaudeSDKClient` session — no memory across
-    user messages in this phase. Multi-turn conversation memory lands
-    with later phases; for now the LLM gets user_text + current state
-    (via tool calls) and produces a single-turn response.
+    Each call builds a fresh `ClaudeSDKClient` — we keep no persistent
+    client across turns — but `history` (a list of `chat_history.Turn`)
+    is flattened into a preamble and prepended to the user message so
+    the agent can reference earlier turns ("now do the same for issue
+    43" after "moderate issue 42"). The preamble is text-only; prior
+    tool calls are NOT re-executed on resume.
+
+    Returns the plain-prose assistant reply so the caller can append
+    it to the session history. Returns an empty string when the LLM
+    produced only tool calls / artifacts and no prose.
 
     The `thinking` seam brackets the SDK call with a cl.Step spinner
     in the UI layer (same pattern as dispatcher.py's synthesis turn).
@@ -1324,12 +1331,20 @@ async def dispatch(
     during the turn (currently scenario-session grids); main.py wires
     this to the appropriate Chainlit element constructors.
     """
+    from server import chat_history
+
     # Reset the per-turn artifact collector so this dispatch only
     # surfaces artifacts created by its own tool calls.
     _pending_artifacts.clear()
     import sys
 
     print(f"[foreman] dispatch called: user_text={user_text!r}", file=sys.stderr)
+
+    # Build the actual prompt: history preamble (if any) + user text.
+    # Empty / missing history → we send just user_text, matching the
+    # pre-P4.20 behavior exactly.
+    preamble = chat_history.history_preamble(history or [])
+    prompt_text = preamble + user_text if preamble else user_text
 
     from claude_agent_sdk import (  # type: ignore[import-not-found]
         AssistantMessage,
@@ -1395,7 +1410,7 @@ async def dispatch(
     try:
         async with cm_factory("Foreman is thinking…"):
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(user_text)
+                await client.query(prompt_text)
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
@@ -1427,7 +1442,7 @@ async def dispatch(
             file=sys.stderr,
         )
         await say(f"Foreman backend error: {exc}")
-        return
+        return ""
 
     reply = "".join(assistant_chunks).strip()
     if reply:
@@ -1459,3 +1474,4 @@ async def dispatch(
         f"reply_chars={len(reply)} artifacts={len(_pending_artifacts)}",
         file=sys.stderr,
     )
+    return reply
