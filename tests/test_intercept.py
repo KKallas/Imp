@@ -98,9 +98,6 @@ def test_classify_command() -> None:
         (["python", "99-tools/solve_issues.py", "--issue", "42"], "write"),
         (["python", "99-tools/moderate_issues.py"], "write"),
         (["python3", "pipeline/sync_issues.py"], "read"),
-        # estimate_dates.py is read by default, write when --push is set
-        (["python3", "pipeline/estimate_dates.py"], "read"),
-        (["python3", "pipeline/estimate_dates.py", "--push"], "write"),
         (["echo", "hello"], "read"),
         (["date"], "read"),
         (["rm", "-rf", "/"], "unknown"),

@@ -312,30 +312,9 @@ async def test_do_run_fix_prs() -> None:
 # ---------- pipeline: visibility scripts (stubs) ----------
 
 
-async def test_do_run_estimate_dates_default_no_push() -> None:
-    """Without push=True, the script is invoked without --push."""
-    _reset()
-    _FAKE.script([(0, '{"estimated": 2, "pushed": false}', FakeAction(classified_as="read"))])
-    await foreman_agent.do_run_estimate_dates(user_intent="u")
-    argv = _FAKE.calls[0]["argv"]
-    assert argv[1] == "pipeline/estimate_dates.py"
-    assert "--push" not in argv
-    print("test_do_run_estimate_dates_default_no_push: OK")
-
-
-async def test_do_run_estimate_dates_push_appends_flag() -> None:
-    """push=True flips the --push flag on, so the gh push layer runs."""
-    _reset()
-    _FAKE.script([(0, '{"estimated": 2, "pushed": true}', FakeAction(classified_as="write"))])
-    await foreman_agent.do_run_estimate_dates(user_intent="u", push=True)
-    argv = _FAKE.calls[0]["argv"]
-    assert argv[1] == "pipeline/estimate_dates.py"
-    assert "--push" in argv
-    print("test_do_run_estimate_dates_push_appends_flag: OK")
-
-
 async def test_do_run_render_chart_builds_argv() -> None:
-    """run_render_chart forwards --template correctly."""
+    """run_render_chart forwards --template correctly. The script itself
+    doesn't exist yet (P4.14), but the wiring must be right."""
     _reset()
     _FAKE.script([(0, "<html>", FakeAction(classified_as="read"))])
     await foreman_agent.do_run_render_chart(template="gantt", user_intent="u")
@@ -344,91 +323,6 @@ async def test_do_run_render_chart_builds_argv() -> None:
     assert "--template" in argv
     assert "gantt" in argv
     print("test_do_run_render_chart_builds_argv: OK")
-
-
-async def test_do_run_render_chart_pushes_chart_file_artifact_on_success() -> None:
-    """On a successful render, do_run_render_chart must push an artifact
-    into _pending_artifacts so the chat UI can render the HTML inline.
-    Without this, the LLM hallucinates 'chart attached' but the user
-    sees nothing — the bug that motivated this whole fix."""
-    _reset()
-    foreman_agent._pending_artifacts.clear()
-
-    # Create a fake rendered HTML file the artifact can point at.
-    fake_html = _TMP_DIR / "gantt.html"
-    fake_html.write_text("<!doctype html><html></html>")
-    # render_chart.py prints the path on its last stdout line.
-    _FAKE.script(
-        [(0, f"Rendered gantt chart → {fake_html}\n{fake_html}\n", FakeAction())]
-    )
-
-    await foreman_agent.do_run_render_chart(template="gantt", user_intent="u")
-
-    artifacts = foreman_agent._pending_artifacts
-    assert len(artifacts) == 1
-    art = artifacts[0]
-    assert art["type"] == "chart_file"
-    assert art["template"] == "gantt"
-    assert art["path"] == str(fake_html)
-    # gantt has no native Plotly builder yet — None is the expected value.
-    assert art["plotly_figure"] is None
-    foreman_agent._pending_artifacts.clear()
-    print("test_do_run_render_chart_pushes_chart_file_artifact_on_success: OK")
-
-
-async def test_do_run_render_chart_skips_artifact_on_failure() -> None:
-    """Non-zero rc from the render script means no artifact to push —
-    we shouldn't dress up a failed render as a viewable chart."""
-    _reset()
-    foreman_agent._pending_artifacts.clear()
-    _FAKE.script(
-        [
-            (
-                1,
-                "template foo not found",
-                FakeAction(verdict="approve", classified_as="read"),
-            )
-        ]
-    )
-    await foreman_agent.do_run_render_chart(template="foo", user_intent="u")
-    assert foreman_agent._pending_artifacts == []
-    print("test_do_run_render_chart_skips_artifact_on_failure: OK")
-
-
-async def test_extract_render_chart_path_finds_html_on_disk() -> None:
-    """intercept merges stderr into stdout, so the summary line (which
-    contains the path mid-string) can appear after the path on its
-    own line. The extractor must pick the standalone-path line."""
-    tmp = _TMP_DIR / "dummy-burndown.html"
-    tmp.write_text("<html/>")
-    # Typical merged output: summary line first, standalone path last.
-    output = (
-        f"Rendered burndown: 28 tracked, 7 out-scoped, 0 missing → {tmp}\n"
-        f"{tmp}\n"
-    )
-    path = foreman_agent._extract_render_chart_path(output)
-    assert path is not None
-    assert str(path) == str(tmp)
-
-    # Reversed order (summary after the path) should also work.
-    output2 = (
-        f"{tmp}\n"
-        f"Rendered burndown: 28 tracked, 7 out-scoped, 0 missing → {tmp}\n"
-    )
-    path2 = foreman_agent._extract_render_chart_path(output2)
-    assert path2 is not None
-    assert str(path2) == str(tmp)
-    print("test_extract_render_chart_path_finds_html_on_disk: OK")
-
-
-async def test_extract_render_chart_path_returns_none_when_no_html_path() -> None:
-    """No `.html` line that exists on disk → no path. Don't invent one."""
-    output = "Something went wrong: no template\n"
-    assert foreman_agent._extract_render_chart_path(output) is None
-    # A line that ends in .html but doesn't exist is rejected.
-    output2 = "/does/not/exist/ghost.html\n"
-    assert foreman_agent._extract_render_chart_path(output2) is None
-    print("test_extract_render_chart_path_returns_none_when_no_html_path: OK")
 
 
 # ---------- control tools (no intercept, pure config) ----------
@@ -562,13 +456,7 @@ async def amain() -> None:
         test_do_run_moderate_issues,
         test_do_run_solve_issues,
         test_do_run_fix_prs,
-        test_do_run_estimate_dates_default_no_push,
-        test_do_run_estimate_dates_push_appends_flag,
         test_do_run_render_chart_builds_argv,
-        test_do_run_render_chart_pushes_chart_file_artifact_on_success,
-        test_do_run_render_chart_skips_artifact_on_failure,
-        test_extract_render_chart_path_finds_html_on_disk,
-        test_extract_render_chart_path_returns_none_when_no_html_path,
         test_do_loop_pause_and_resume,
         test_do_loop_scope_accepts_only_issues,
         test_do_loop_scope_rejects_empty,

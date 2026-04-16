@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -78,13 +77,9 @@ DEFAULT_LIMIT = 1000
 # Fields we ask `gh issue list` to populate. Picked to match the AC
 # (number, title, body, labels, milestone, assignees, state) plus a
 # few extras (url + createdAt + updatedAt) that downstream scripts
-# need for chart rendering and stale-data detection. `closedAt` +
-# `stateReason` land here specifically so the burndown template (P4.19)
-# can anchor on real closure timestamps and exclude NOT_PLANNED
-# closures — i.e. out-scoped work that shouldn't count as "completed".
+# need for chart rendering and stale-data detection.
 ISSUE_JSON_FIELDS = (
-    "number,title,body,labels,milestone,assignees,state,stateReason,"
-    "url,createdAt,updatedAt,closedAt"
+    "number,title,body,labels,milestone,assignees,state,url,createdAt,updatedAt"
 )
 
 
@@ -244,58 +239,6 @@ def merge_issues_with_fields(
     return issues
 
 
-# ---------- imp:dates body-block parser ----------
-#
-# pipeline/estimate_dates.py writes synthesised date fields into each
-# issue's body, inside `<!-- imp:dates:begin -->` / `<!-- imp:dates:end -->`
-# markers. Here we read them back on every sync so the estimate
-# round-trips cleanly. Project-board values (if a project is linked)
-# always win over body-block values — project data is authoritative.
-
-_IMP_DATES_BLOCK_RE = re.compile(
-    r"<!--\s*imp:dates:begin\s*-->(.*?)<!--\s*imp:dates:end\s*-->",
-    re.DOTALL | re.IGNORECASE,
-)
-_IMP_DATES_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$")
-_IMP_DATES_FIELDS: frozenset[str] = frozenset(
-    {"start_date", "end_date", "duration_days"}
-)
-
-
-def parse_imp_dates_block(body: str) -> dict[str, Any]:
-    """Extract `start_date` / `end_date` / `duration_days` from an
-    imp:dates block inside `body`. Returns an empty dict when the
-    block is absent or malformed.
-
-    `duration_days` is coerced to int when it looks like one — other
-    fields pass through verbatim so downstream code can validate.
-    """
-    if not isinstance(body, str):
-        return {}
-    match = _IMP_DATES_BLOCK_RE.search(body)
-    if not match:
-        return {}
-    out: dict[str, Any] = {}
-    for line in match.group(1).splitlines():
-        line = line.strip()
-        if not line or line.startswith("<!--"):
-            continue
-        m = _IMP_DATES_LINE_RE.match(line)
-        if not m:
-            continue
-        key, value = m.group(1).strip(), m.group(2).strip()
-        if key not in _IMP_DATES_FIELDS:
-            continue
-        if key == "duration_days":
-            try:
-                out[key] = int(value)
-            except ValueError:
-                continue
-        else:
-            out[key] = value
-    return out
-
-
 # ---------- orchestration ----------
 
 
@@ -326,20 +269,6 @@ def sync(
         # fields dict so downstream scripts can rely on the key existing.
         for issue in issues:
             issue["fields"] = {}
-
-    # Merge any `<!-- imp:dates -->` block that estimate_dates.py
-    # pushed into the issue body on a previous run. Project-board
-    # values (if present) always win — only fill keys the board left
-    # unset — so the project remains the source of truth when both
-    # exist.
-    for issue in issues:
-        parsed = parse_imp_dates_block(issue.get("body") or "")
-        if not parsed:
-            continue
-        fields = issue.setdefault("fields", {})
-        for key, value in parsed.items():
-            if key not in fields or fields.get(key) in (None, ""):
-                fields[key] = value
 
     return {
         "synced_at": datetime.now(timezone.utc).isoformat(),

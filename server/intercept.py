@@ -121,10 +121,6 @@ PIPELINE_READ_SCRIPTS = {
     "pipeline/heuristics.py",
     "pipeline/render_chart.py",
     "pipeline/scenario.py",
-    # estimate_dates.py without --push is a pure local-file update;
-    # with --push it issues gh edits and is reclassified as write
-    # via the flag-aware special case below.
-    "pipeline/estimate_dates.py",
 }
 
 PIPELINE_WRITE_SCRIPTS = {
@@ -178,11 +174,6 @@ def classify_command(argv: list[str]) -> ClassifyResult:
         if len(argv) >= 3 and argv[1] == "-c":
             return "write"
         script = argv[1]
-        # Flag-aware: estimate_dates.py is local-only by default but
-        # writes to GH (via `gh issue edit`) when --push is set. We
-        # reclassify so the guard reviews the push path.
-        if script.endswith("pipeline/estimate_dates.py") and "--push" in argv:
-            return "write"
         for s in PIPELINE_READ_SCRIPTS:
             if script.endswith(s):
                 return "read"
