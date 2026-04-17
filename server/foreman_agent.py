@@ -446,9 +446,9 @@ async def do_run_render_chart(
     On success, pushes a `chart_file` artifact into `_pending_artifacts`
     so the chat layer can render the output inline. For `burndown` we
     additionally build a Plotly figure from the same enriched data —
-    Chainlit can't render Chart.js/mermaid pages, but it *can* render
-    `cl.Plotly` natively, which gives users an actual chart in the
-    conversation rather than a download chip.
+    The chat layer screenshots the HTML to an inline PNG image (with a
+    link to the interactive page), so the user sees the chart directly
+    in the conversation.
     """
     argv = [sys.executable, "pipeline/render_chart.py", "--template", template]
     result = await do_run_shell(
@@ -814,12 +814,12 @@ call it directly.
 - `list_scenario_sessions(limit)` — list recent saved sessions.
 
 **CRITICAL**: for any "compare / what-if / scenarios / A-vs-B" request, \
-use `start_scenario_session`. Do NOT fall back to shelling out, writing \
-mermaid blocks, or building the comparison by hand — Chainlit doesn't \
-render mermaid, and the scenario system gives you interactive Plotly + \
-commit/switch buttons for free. If `start_scenario_session` returns an \
-error (e.g. validation failure on the generated code), surface the error \
-to the admin and stop; do not retry with shell commands.
+use `start_scenario_session`. Do NOT fall back to shelling out or \
+building the comparison by hand — the scenario system gives you \
+interactive Plotly + commit/switch buttons for free. If \
+`start_scenario_session` returns an error (e.g. validation failure on \
+the generated code), surface the error to the admin and stop; do not \
+retry with shell commands.
 
 ### Control (local, no guard)
 - `loop_pause` / `loop_resume` / `loop_scope(only_issues, only_prs)` / \
@@ -836,18 +836,13 @@ give you structured data).
 
 ## How you respond
 
-Plain markdown. Mermaid code blocks WILL NOT RENDER in chat under any \
-circumstances. If you produce one anyway, an automated watchdog will \
-try to convert it to a Plotly chart and may fail — so the user could \
-end up seeing raw mermaid syntax or a parse-error note instead of a \
-chart. Use `run_render_chart` for canonical charts; for one-off or \
-custom data, write a `python -c` script that builds a Plotly figure \
-dict to `.imp/output/<name>.plotly.json` and call \
-`render_plotly_file(<path>)`. Don't paste mermaid into your prose. \
-Charts come from the named tools (`run_render_chart`, \
-`start_scenario_session`) as Plotly elements attached to your reply \
-by the UI layer. Your prose should describe what the charts show, \
-not try to draw them. Keep replies concise; the admin reads quickly.
+Plain markdown. You CAN use mermaid fenced code blocks in your replies \
+— an automated watchdog screenshots them to inline PNG images with a \
+link to the interactive viewer. For canonical project charts (gantt, \
+burndown, kanban, comparison) prefer `run_render_chart` which also \
+produces inline screenshots. For one-off or custom data, either use a \
+mermaid code block or write a `python -c` script that builds a Plotly \
+figure dict. Keep replies concise; the admin reads quickly.
 """
 
 

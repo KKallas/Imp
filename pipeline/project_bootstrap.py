@@ -58,7 +58,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
-FIELDS_TEMPLATE = ROOT / "templates" / "fields.json"
+FIELDS_TEMPLATE = ROOT / "renderers" / "fields.json"
 
 GH_PROJECT_LIST_LIMIT = 100
 GH_FIELD_LIST_LIMIT = 100

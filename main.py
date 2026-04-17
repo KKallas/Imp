@@ -52,6 +52,16 @@ from chainlit.input_widget import NumberInput, Select, Switch
 
 from server import budgets, chat_history
 
+# ── render server (P4.24 renderer plugin system) ───────────────────
+# Runs on a separate port (default 8421) so it has no auth middleware.
+_RENDER_BASE_URL: str = ""
+try:
+    from server.render_route import start_background as _start_render_server
+
+    _RENDER_BASE_URL = _start_render_server()
+except Exception:
+    pass  # render server unavailable — non-fatal
+
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
 
@@ -1043,47 +1053,16 @@ async def _foreman_say(text: str) -> None:
     """Post a `Foreman`-authored reply to the admin.
 
     Includes a **mermaid watchdog** (KKallas/Imp#52): scans the outbound
-    text for fenced mermaid blocks. Gantt blocks are converted to inline
-    ``cl.Plotly`` elements and stripped from the text. Other mermaid types
-    (flowchart, sequence, pie, …) are left in place with a note that
-    inline rendering isn't supported yet. Parse failures fall through
-    softly — the original block stays with an error annotation.
+    text for fenced mermaid blocks.  Each block is screenshotted to PNG
+    via the render server and shown inline as an image with a link to
+    the interactive viewer underneath.
     """
-    from pipeline.mermaid_to_plotly import extract_mermaid_blocks, mermaid_gantt_to_plotly
-
-    blocks = extract_mermaid_blocks(text)
-    plotly_elements: list = []
-    cleaned = text
-
-    for block in blocks:
-        content = block["content"]
-        first_word = content.lstrip().split()[0].lower() if content.strip() else ""
-
-        if first_word == "gantt":
-            try:
-                figure = mermaid_gantt_to_plotly(content)
-                plotly_elements.append(
-                    cl.Plotly(name="auto-gantt", figure=figure, display="inline")
-                )
-                cleaned = cleaned.replace(block["raw"], "")
-            except Exception as exc:  # noqa: BLE001
-                cleaned = cleaned.replace(
-                    block["raw"],
-                    block["raw"] + f"\n\n_(watchdog couldn't parse this gantt: {exc})_",
-                )
-        else:
-            # Non-gantt mermaid type — leave in place with a note.
-            mermaid_type = first_word or "unknown"
-            cleaned = cleaned.replace(
-                block["raw"],
-                block["raw"]
-                + f"\n\n_(mermaid `{mermaid_type}` isn't rendered inline yet)_",
-            )
+    cleaned, elements = await _apply_mermaid_watchdog(text)
 
     await cl.Message(
         author="Foreman",
         content=cleaned.strip(),
-        elements=plotly_elements if plotly_elements else None,
+        elements=elements if elements else None,
     ).send()
 
 
@@ -1123,44 +1102,106 @@ async def _foreman_thinking(label: str):
 # ---------- structured turn UI (KKallas/Imp#55) ----------
 
 
-def _apply_mermaid_watchdog(text: str) -> tuple[str, list]:
-    """Run the mermaid gantt→Plotly watchdog on *text*.
+_MERMAID_IMG_DIR = Path(__file__).resolve().parent / "public" / "images"
 
-    Returns ``(cleaned_text, plotly_elements)`` — the same logic as
-    ``_foreman_say`` but extracted so ``_ForemanTurnUI.stream_end`` can
-    reuse it without creating a second ``cl.Message``.
+
+async def _apply_mermaid_watchdog(text: str) -> tuple[str, list]:
+    """Screenshot mermaid blocks to PNG and return ``(cleaned_text, elements)``.
+
+    Each mermaid code block is:
+      1. Rendered to HTML via the mermaid template.
+      2. Screenshotted to PNG (5 s animation delay).
+      3. Replaced in the text with a viewer link.
+      4. Returned as a ``cl.Image`` element for inline display.
+
+    Falls back to the old Plotly conversion for gantt blocks when the
+    screenshot engine is unavailable.
     """
-    from pipeline.mermaid_to_plotly import extract_mermaid_blocks, mermaid_gantt_to_plotly
+    from hashlib import sha256
+    from urllib.parse import quote
+
+    from pipeline.mermaid_to_plotly import extract_mermaid_blocks
 
     blocks = extract_mermaid_blocks(text)
-    plotly_elements: list = []
+    elements: list = []
     cleaned = text
+
+    if not blocks:
+        return cleaned, elements
+
+    from server.render_route import _render_template
+    from server.screenshot import available as _ss_available
 
     for block in blocks:
         content = block["content"]
-        first_word = content.lstrip().split()[0].lower() if content.strip() else ""
+        viewer_url = ""
+        if _RENDER_BASE_URL:
+            viewer_url = (
+                f"{_RENDER_BASE_URL}/render/mermaid"
+                f"?diagram={quote(content)}&mode=viewer"
+            )
 
+        # Try screenshot → PNG inline image
+        if _ss_available():
+            try:
+                html = _render_template("mermaid", {"diagram": content})
+                from server.screenshot import screenshot
+
+                png = await screenshot(html)
+                _MERMAID_IMG_DIR.mkdir(parents=True, exist_ok=True)
+                slug = sha256(content.encode()).hexdigest()[:12]
+                img_name = f"mermaid_{slug}.png"
+                img_path = _MERMAID_IMG_DIR / img_name
+                img_path.write_bytes(png)
+
+                elements.append(
+                    cl.Image(
+                        name=img_name,
+                        path=str(img_path),
+                        display="inline",
+                        size="large",
+                    )
+                )
+                link = (
+                    f"[Open interactive viewer]({viewer_url})"
+                    if viewer_url
+                    else ""
+                )
+                cleaned = cleaned.replace(block["raw"], link)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                import sys
+
+                print(
+                    f"[mermaid-watchdog] screenshot failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
+        # Fallback: gantt → Plotly, others → viewer link only
+        first_word = content.lstrip().split()[0].lower() if content.strip() else ""
         if first_word == "gantt":
             try:
+                from pipeline.mermaid_to_plotly import mermaid_gantt_to_plotly
+
                 figure = mermaid_gantt_to_plotly(content)
-                plotly_elements.append(
+                elements.append(
                     cl.Plotly(name="auto-gantt", figure=figure, display="inline")
                 )
                 cleaned = cleaned.replace(block["raw"], "")
             except Exception as exc:  # noqa: BLE001
                 cleaned = cleaned.replace(
                     block["raw"],
-                    block["raw"] + f"\n\n_(watchdog couldn't parse this gantt: {exc})_",
+                    block["raw"]
+                    + f"\n\n_(couldn't render this gantt: {exc})_",
                 )
-        else:
-            mermaid_type = first_word or "unknown"
+        elif viewer_url:
             cleaned = cleaned.replace(
                 block["raw"],
-                block["raw"]
-                + f"\n\n_(mermaid `{mermaid_type}` isn't rendered inline yet)_",
+                f"[Open interactive viewer]({viewer_url})",
             )
 
-    return cleaned, plotly_elements
+    return cleaned, elements
 
 
 class _ForemanTurnUI:
@@ -1343,7 +1384,7 @@ class _ForemanTurnUI:
         await self._msg.stream_token(token)  # type: ignore[union-attr]
 
     async def stream_end(self, full_text: str) -> None:
-        cleaned, plotly_elements = _apply_mermaid_watchdog(full_text)
+        cleaned, elements = await _apply_mermaid_watchdog(full_text)
         self._answer_chunks = [cleaned.strip()] if cleaned.strip() else []
 
         base = self._render_structure()
@@ -1353,8 +1394,8 @@ class _ForemanTurnUI:
 
         msg = await self._ensure_msg()
         msg.content = content
-        if plotly_elements:
-            msg.elements = plotly_elements  # type: ignore[assignment]
+        if elements:
+            msg.elements = elements  # type: ignore[assignment]
         await msg.update()
 
     async def thinking_update(self, text: str) -> None:
@@ -1458,6 +1499,36 @@ async def _render_chart_file(artifact: dict) -> None:
     if html_path and Path(html_path).exists():
         public_url = _publish_chart_html(Path(html_path), template)
 
+    # Screenshot the chart HTML to PNG for inline display.
+    if html_path and Path(html_path).exists():
+        from server.screenshot import available as _ss_available
+
+        if _ss_available():
+            try:
+                from server.screenshot import screenshot
+
+                chart_html = Path(html_path).read_text()
+                png = await screenshot(chart_html)
+                _CHART_IMG_DIR = Path(__file__).resolve().parent / "public" / "images"
+                _CHART_IMG_DIR.mkdir(parents=True, exist_ok=True)
+                img_name = f"{template}_chart.png"
+                img_path = _CHART_IMG_DIR / img_name
+                img_path.write_bytes(png)
+                elements.append(
+                    cl.Image(
+                        name=img_name,
+                        path=str(img_path),
+                        display="inline",
+                        size="large",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[main] chart screenshot failed for {template!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
     if not elements and not public_url:
         await cl.Message(
             author="Foreman",
@@ -1468,11 +1539,10 @@ async def _render_chart_file(artifact: dict) -> None:
         ).send()
         return
 
+    parts: list[str] = [f"**{template.capitalize()} chart**"]
     if public_url:
-        link_hint = f"[Open full {template} page in a new tab]({public_url})"
-    else:
-        link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
-    content = f"**{template.capitalize()} chart** — {link_hint}"
+        parts.append(f"[Open full page in a new tab]({public_url})")
+    content = "\n\n".join(parts)
 
     await cl.Message(
         author="Foreman",

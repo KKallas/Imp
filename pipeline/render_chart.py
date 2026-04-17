@@ -23,7 +23,7 @@ is self-contained per the AC.
 
   - Input  : `.imp/enriched.json` (P4.13 heuristics output)
   - Output : `.imp/output/<template>.html`
-  - Template dir: `templates/<template>.html.j2`
+  - Template dir: `renderers/<template>/template.html.j2`
 
 ## Read-only
 
@@ -48,7 +48,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 ROOT = Path(__file__).resolve().parent.parent
 INPUT_FILE = ROOT / ".imp" / "enriched.json"
 OUTPUT_DIR = ROOT / ".imp" / "output"
-TEMPLATES_DIR = ROOT / "templates"
+RENDERERS_DIR = ROOT / "renderers"
 
 
 # ---------- field unwrapping ----------
@@ -287,9 +287,14 @@ def build_mermaid_gantt(
 # ---------- template rendering ----------
 
 
-def _jinja_env() -> Environment:
+def _jinja_env(template_name: str) -> Environment:
+    """Build a Jinja2 env whose loader points at the renderer's folder.
+
+    Templates now live at ``renderers/<name>/template.html.j2``.
+    """
+    template_dir = RENDERERS_DIR / template_name
     return Environment(
-        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        loader=FileSystemLoader(str(template_dir)),
         autoescape=select_autoescape(["html", "j2"]),
         undefined=StrictUndefined,
         trim_blocks=True,
@@ -300,8 +305,8 @@ def _jinja_env() -> Environment:
 def render_html(
     template_name: str, context: dict[str, Any]
 ) -> str:
-    env = _jinja_env()
-    template = env.get_template(f"{template_name}.html.j2")
+    env = _jinja_env(template_name)
+    template = env.get_template("template.html.j2")
     return template.render(**context)
 
 
@@ -830,7 +835,7 @@ def main() -> int:
     parser.add_argument(
         "--template",
         default="gantt",
-        help="Template name under templates/ (default: gantt)",
+        help="Template name under renderers/<name>/ (default: gantt)",
     )
     parser.add_argument(
         "--input",
@@ -864,7 +869,7 @@ def main() -> int:
         )
         return 1
 
-    template_path = TEMPLATES_DIR / f"{args.template}.html.j2"
+    template_path = RENDERERS_DIR / args.template / "template.html.j2"
     if not template_path.exists():
         print(
             f"template file {template_path} not found", file=sys.stderr
