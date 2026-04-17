@@ -1504,7 +1504,9 @@ async def _render_chart_file(artifact: dict) -> None:
         link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
     render_link = ""
     if _RENDER_BASE_URL:
-        render_link = f" · [Render view]({_RENDER_BASE_URL}/render/{template}?mode=viewer)"
+        png_url = f"{_RENDER_BASE_URL}/render/{template}"
+        viewer_url = f"{_RENDER_BASE_URL}/render/{template}?mode=viewer"
+        render_link = f" · [PNG]({png_url}) · [Interactive]({viewer_url})"
     content = f"**{template.capitalize()} chart** — {link_hint}{render_link}"
 
     await cl.Message(
