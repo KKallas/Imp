@@ -697,10 +697,10 @@ async def greet_foreman() -> None:
             "_(Stub spike: every response is faked. The point is the UX, not the data.)_"
         ),
     ).send()
-    # KKallas/Imp#45: start a fresh chat session for this browser tab.
-    # Saved to disk after every turn so refreshing the page won't lose
-    # the thread; rotated when the admin hits /new or the action button.
-    await _start_new_chat_session()
+    # KKallas/Imp#62: resume the most recent session on page load instead
+    # of creating a new stub every time. The admin creates new chats
+    # explicitly via /new or the "New Chat" button.
+    await _resume_or_start_session()
 
 
 # ---------- chat history (KKallas/Imp#45) ----------
@@ -740,6 +740,21 @@ async def _start_new_chat_session() -> chat_history.ChatSession:
     chat_history.save_session(session)
     await _render_chat_header(session, fresh=True)
     return session
+
+
+async def _resume_or_start_session() -> chat_history.ChatSession:
+    """Resume the most recent chat, or create a new one if none exist.
+
+    Also prunes orphaned stubs (zero-turn files older than 1 hour) on
+    every page load so the sidebar stays clean.
+    """
+    chat_history.prune_stubs()
+    existing = chat_history.latest_session()
+    if existing is not None:
+        cl.user_session.set("chat_session", existing)
+        await _render_chat_header(existing, fresh=True)
+        return existing
+    return await _start_new_chat_session()
 
 
 async def _render_chat_header(

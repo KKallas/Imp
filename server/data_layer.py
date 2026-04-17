@@ -106,11 +106,11 @@ class ImpDataLayer(BaseDataLayer):
     ) -> None:
         session = chat_history.load_session(thread_id)
         if session is None:
-            # Chainlit calls update_thread on every new chat start —
-            # if the session doesn't exist yet (hasn't been saved by our
-            # on_chat_start handler), create a stub so the thread is
-            # tracked from the start.
-            session = chat_history.ChatSession.new(id=thread_id)
+            # Don't create stubs — only _start_new_chat_session() in
+            # main.py should create session files.  Chainlit calls
+            # update_thread eagerly on every reconnect, which used to
+            # litter .imp/chats/ with empty 237-byte stubs.
+            return
         if name is not None:
             # Chainlit auto-renames threads to the first user message.
             # Don't let that overwrite an agent- or user-set title.

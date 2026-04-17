@@ -43,6 +43,9 @@ DEFAULT_MAX_CHARS = 80_000  # ~20k tokens, leaves headroom under the 200k cap.
 # Fallback title used before the agent-titled call runs.
 FALLBACK_TITLE = "New chat"
 
+# Stubs older than this (seconds) with zero turns are pruned on startup.
+_STUB_MAX_AGE_SECS = 3600  # 1 hour
+
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -143,6 +146,16 @@ class ChatSession:
             "turns": [t.to_dict() for t in self.turns],
         }
 
+    def sidebar_title(self) -> str:
+        """Title with a compact date prefix for sidebar display.
+
+        ``[Apr 17 14:32] Issue triage burndown``
+        """
+        prefix = date_prefix(self.created_at)
+        if prefix:
+            return f"{prefix} {self.title}"
+        return self.title
+
     def to_thread_dict(self, *, user_id: str = "admin") -> dict[str, Any]:
         """Convert to Chainlit's ThreadDict shape so our JSON-backed
         data layer can serve chat history in the native left sidebar."""
@@ -162,7 +175,7 @@ class ChatSession:
             })
         return {
             "id": self.id,
-            "name": self.title,
+            "name": self.sidebar_title(),
             "createdAt": self.created_at,
             "userId": user_id,
             "userIdentifier": "admin",
@@ -333,6 +346,61 @@ def list_sessions(
             )
     rows.sort(key=lambda r: r["last_active_at"], reverse=True)
     return rows[:limit]
+
+
+def latest_session(*, base: Optional[Path] = None) -> Optional[ChatSession]:
+    """Return the most-recently-active session, or None if no chats exist."""
+    rows = list_sessions(base=base, limit=1)
+    if not rows:
+        return None
+    return load_session(rows[0]["id"], base=base)
+
+
+def prune_stubs(*, base: Optional[Path] = None) -> int:
+    """Delete stub files (zero turns) older than ``_STUB_MAX_AGE_SECS``.
+
+    Returns the number of files deleted.
+    """
+    d = base or CHATS_DIR
+    if not d.exists():
+        return 0
+    now = datetime.now(timezone.utc)
+    pruned = 0
+    for path in list(d.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, KeyError):
+            continue
+        turns = data.get("turns") or []
+        if len(turns) > 0:
+            continue
+        created = data.get("created_at") or ""
+        try:
+            ts = datetime.fromisoformat(created)
+        except ValueError:
+            continue
+        age = (now - ts).total_seconds()
+        if age > _STUB_MAX_AGE_SECS:
+            try:
+                path.unlink()
+                pruned += 1
+            except OSError:
+                pass
+    if pruned:
+        print(f"[chat_history] pruned {pruned} orphaned stub(s)", file=sys.stderr)
+    return pruned
+
+
+def date_prefix(created_at_iso: str) -> str:
+    """Format a compact date prefix for sidebar display.
+
+    ``2026-04-17T14:32:05+00:00`` → ``[Apr 17 14:32]``
+    """
+    try:
+        dt = datetime.fromisoformat(created_at_iso)
+        return dt.strftime("[%b %d %H:%M]")
+    except (ValueError, TypeError):
+        return ""
 
 
 # ---------- preamble for dispatch() ----------
