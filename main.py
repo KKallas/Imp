@@ -1498,6 +1498,35 @@ async def _render_chart_file(artifact: dict) -> None:
     if html_path and Path(html_path).exists():
         public_url = _publish_chart_html(Path(html_path), template)
 
+    # Screenshot the chart HTML to PNG for inline display.
+    if html_path and Path(html_path).exists():
+        from server.screenshot import available as _ss_available
+
+        if _ss_available():
+            try:
+                from server.screenshot import screenshot
+
+                chart_html = Path(html_path).read_text()
+                png = await screenshot(chart_html)
+                _CHART_IMG_DIR = Path(__file__).resolve().parent / "public" / "images"
+                _CHART_IMG_DIR.mkdir(parents=True, exist_ok=True)
+                img_name = f"{template}_chart.png"
+                img_path = _CHART_IMG_DIR / img_name
+                img_path.write_bytes(png)
+                elements.append(
+                    cl.Image(
+                        name=img_name,
+                        path=str(img_path),
+                        display="inline",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[main] chart screenshot failed for {template!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
     if not elements and not public_url:
         await cl.Message(
             author="Foreman",
@@ -1511,13 +1540,8 @@ async def _render_chart_file(artifact: dict) -> None:
     if public_url:
         link_hint = f"[Open full {template} page in a new tab]({public_url})"
     else:
-        link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
-    render_link = ""
-    if _RENDER_BASE_URL:
-        png_url = f"{_RENDER_BASE_URL}/render/{template}"
-        viewer_url = f"{_RENDER_BASE_URL}/render/{template}?mode=viewer"
-        render_link = f" · [PNG]({png_url}) · [Interactive]({viewer_url})"
-    content = f"**{template.capitalize()} chart** — {link_hint}{render_link}"
+        link_hint = ""
+    content = f"**{template.capitalize()} chart**\n\n{link_hint}".strip()
 
     await cl.Message(
         author="Foreman",
