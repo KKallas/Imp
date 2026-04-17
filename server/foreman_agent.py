@@ -412,15 +412,107 @@ async def do_run_heuristics(*, user_intent: str) -> dict[str, Any]:
     )
 
 
+async def do_run_estimate_dates(
+    *, user_intent: str, push: bool = False
+) -> dict[str, Any]:
+    """pipeline/estimate_dates.py — fills in missing `start_date` /
+    `end_date` by running `synthesize_dates` over the enriched payload.
+
+    Without `push`, the estimates stay local (updates `.imp/enriched.json`
+    only). With `push=True`, each newly-estimated issue also gets its
+    body updated with an `<!-- imp:dates -->` block via `gh issue edit`,
+    so the estimate survives the next sync and shows up on github.com.
+
+    This is Layer 1 of the gantt flow: estimate missing data first,
+    then call `run_render_chart('gantt')` to render from the now-
+    populated payload. For repos with a real GH Project attached, the
+    project-board `start_date` / `end_date` fields always win — this
+    pass only touches issues where they're absent.
+    """
+    argv = [sys.executable, "pipeline/estimate_dates.py"]
+    if push:
+        argv.append("--push")
+    rationale = "estimate missing dates" + (" (push to GH)" if push else "")
+    return await do_run_shell(argv, user_intent=user_intent, rationale=rationale)
+
+
 async def do_run_render_chart(
     template: str, *, user_intent: str
 ) -> dict[str, Any]:
     """pipeline/render_chart.py — renders gantt/kanban/burndown/comparison.
-    Blocked on KKallas/Imp#14 (P4.14)."""
+
+    On success, pushes a `chart_file` artifact into `_pending_artifacts`
+    so the chat layer can render the output inline. For `burndown` we
+    additionally build a Plotly figure from the same enriched data —
+    Chainlit can't render Chart.js/mermaid pages, but it *can* render
+    `cl.Plotly` natively, which gives users an actual chart in the
+    conversation rather than a download chip.
+    """
     argv = [sys.executable, "pipeline/render_chart.py", "--template", template]
-    return await do_run_shell(
+    result = await do_run_shell(
         argv, user_intent=user_intent, rationale=f"render {template} chart"
     )
+
+    if result.get("exit_code") == 0:
+        html_path = _extract_render_chart_path(result.get("output") or "")
+        plotly_figure = _build_plotly_for_chart_file(template)
+        artifact: dict[str, Any] = {
+            "type": "chart_file",
+            "template": template,
+            "path": str(html_path) if html_path else None,
+            "plotly_figure": plotly_figure,
+        }
+        _pending_artifacts.append(artifact)
+
+    return result
+
+
+def _extract_render_chart_path(output: str) -> Path | None:
+    """Find the rendered HTML path in `pipeline/render_chart.py`'s
+    output. It prints the path on the last line of stdout, and a
+    summary on stderr — but `intercept.execute_command` merges the two
+    streams, so a plain "last line" parse is fragile (stderr can
+    arrive after stdout). Scan every line and pick the last one that
+    looks like a real `.html` path on disk.
+    """
+    match: Path | None = None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or not stripped.endswith(".html"):
+            continue
+        candidate = Path(stripped)
+        if candidate.exists():
+            match = candidate
+    return match
+
+
+def _build_plotly_for_chart_file(template: str) -> dict[str, Any] | None:
+    """Build a Plotly figure dict for templates that have a native
+    Plotly equivalent. Burndown is the only one today — gantt/kanban/
+    comparison stay as HTML-only downloads until a Plotly port lands.
+
+    Returns None on any failure — missing enriched.json, import error,
+    unsupported template. Callers treat None as "no inline chart,
+    only the HTML file will be attached."
+    """
+    if template != "burndown":
+        return None
+    enriched_path = ROOT / ".imp" / "enriched.json"
+    if not enriched_path.exists():
+        return None
+    try:
+        from pipeline import render_chart
+
+        enriched = json.loads(enriched_path.read_text())
+        context = render_chart.build_context_for_burndown(enriched)
+        return render_chart.build_burndown_plotly_figure(context)
+    except Exception as exc:  # noqa: BLE001 — UI helper, never raise
+        print(
+            f"[foreman] _build_plotly_for_chart_file({template!r}) failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 # (`do_run_scenario` / `run_scenario_tool` removed — KKallas/Imp#16
@@ -683,6 +775,14 @@ more writes until the admin resolves it. Don't retry destructively.
 - `list_project_items(project_number, owner)` — `gh project item-list`
 - `run_sync_issues` / `run_heuristics` / `run_render_chart(template)` — \
 pipeline visibility scripts.
+- `run_estimate_dates(push=false)` — fills in missing `start_date` / \
+`end_date` by running `synthesize_dates`. **Call this before any gantt \
+render when the repo has no linked project board** (or when the gantt \
+produces 0 entries / a large "missing dates" list). With `push=true`, \
+the estimates are written back to each issue's body on GitHub inside \
+an `<!-- imp:dates -->` block so they survive the next sync. Default \
+to `push=false` unless the admin explicitly asks to persist the \
+estimates to github.com.
 
 ### PM writes (gated by checkpoint B, counts toward edit budget)
 - `comment_on_issue(number, body)` — `gh issue comment`
@@ -971,6 +1071,25 @@ def _build_mcp_server(user_intent: str) -> Any:
         return _wrap(await do_run_heuristics(user_intent=user_intent))
 
     @tool(
+        "run_estimate_dates",
+        "Estimate missing start_date / end_date on every issue by "
+        "running synthesize_dates over the enriched payload. Pass "
+        "push=true to also persist the estimates to each issue's "
+        "body on GitHub (so the dates survive the next sync and show "
+        "on github.com). Layer 1 of the gantt flow — call this before "
+        "run_render_chart('gantt') whenever the baseline data lacks "
+        "project-board dates.",
+        {"push": bool},
+    )
+    async def run_estimate_dates_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return _wrap(
+            await do_run_estimate_dates(
+                user_intent=user_intent,
+                push=bool(args.get("push", False)),
+            )
+        )
+
+    @tool(
         "run_render_chart",
         "Render a chart template (gantt / kanban / burndown / comparison).",
         {"template": str},
@@ -1191,13 +1310,20 @@ async def dispatch(
     ask: AskFn,
     thinking: Optional[ThinkingFn] = None,
     chart: Optional[ChartFn] = None,
-) -> None:
+    history: Optional[list[Any]] = None,
+) -> str:
     """Run one Foreman conversation turn for `user_text`.
 
-    Each call is a fresh `ClaudeSDKClient` session — no memory across
-    user messages in this phase. Multi-turn conversation memory lands
-    with later phases; for now the LLM gets user_text + current state
-    (via tool calls) and produces a single-turn response.
+    Each call builds a fresh `ClaudeSDKClient` — we keep no persistent
+    client across turns — but `history` (a list of `chat_history.Turn`)
+    is flattened into a preamble and prepended to the user message so
+    the agent can reference earlier turns ("now do the same for issue
+    43" after "moderate issue 42"). The preamble is text-only; prior
+    tool calls are NOT re-executed on resume.
+
+    Returns the plain-prose assistant reply so the caller can append
+    it to the session history. Returns an empty string when the LLM
+    produced only tool calls / artifacts and no prose.
 
     The `thinking` seam brackets the SDK call with a cl.Step spinner
     in the UI layer (same pattern as dispatcher.py's synthesis turn).
@@ -1205,12 +1331,20 @@ async def dispatch(
     during the turn (currently scenario-session grids); main.py wires
     this to the appropriate Chainlit element constructors.
     """
+    from server import chat_history
+
     # Reset the per-turn artifact collector so this dispatch only
     # surfaces artifacts created by its own tool calls.
     _pending_artifacts.clear()
     import sys
 
     print(f"[foreman] dispatch called: user_text={user_text!r}", file=sys.stderr)
+
+    # Build the actual prompt: history preamble (if any) + user text.
+    # Empty / missing history → we send just user_text, matching the
+    # pre-P4.20 behavior exactly.
+    preamble = chat_history.history_preamble(history or [])
+    prompt_text = preamble + user_text if preamble else user_text
 
     from claude_agent_sdk import (  # type: ignore[import-not-found]
         AssistantMessage,
@@ -1276,7 +1410,7 @@ async def dispatch(
     try:
         async with cm_factory("Foreman is thinking…"):
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(user_text)
+                await client.query(prompt_text)
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
@@ -1308,7 +1442,7 @@ async def dispatch(
             file=sys.stderr,
         )
         await say(f"Foreman backend error: {exc}")
-        return
+        return ""
 
     reply = "".join(assistant_chunks).strip()
     if reply:
@@ -1340,3 +1474,4 @@ async def dispatch(
         f"reply_chars={len(reply)} artifacts={len(_pending_artifacts)}",
         file=sys.stderr,
     )
+    return reply

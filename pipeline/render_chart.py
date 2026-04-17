@@ -5,9 +5,10 @@ Reads heuristics output, builds a chart-specific context, renders the
 matching Jinja2 template, and writes self-contained HTML to
 `.imp/output/<template>.html`.
 
-P4.14 ships the **gantt** template only; kanban / burndown / comparison
-land in P4.16 (scenario.py) and P4.19 (extra templates) — but the
-plumbing handles them as soon as their `.j2` files exist.
+P4.14 ships the **gantt** template. P4.19 adds **kanban**, **burndown**,
+and **comparison** — all consuming the same enriched.json schema.
+Comparison additionally accepts `--input-b` for the variant payload;
+when omitted, both sides show the same baseline.
 
 ## Charting choice — Mermaid
 
@@ -319,10 +320,457 @@ def build_context_for_gantt(enriched: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# Per-template context builders. Add new entries as kanban /
-# burndown / comparison templates land in later phases.
+# ---------- kanban ----------
+#
+# Status triage rules (first match wins):
+#   1. fields.status — project-board status string ("Todo", "In Progress",
+#      "Done", or close variants). Normalized by `_normalize_status`.
+#   2. state == CLOSED → Done
+#   3. state == OPEN + assignees present → In Progress
+#   4. otherwise → Open
+#
+# `_KANBAN_COLUMNS` defines the display order and is also the contract
+# the template renders against — (slug, label, matcher) triples.
+
+
+def _normalize_status(raw: Any) -> str | None:
+    """Map a project-board status string to a kanban column slug."""
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    if not s:
+        return None
+    if s in {"done", "closed", "completed", "complete"}:
+        return "done"
+    if s in {"in progress", "in-progress", "doing", "active", "wip"}:
+        return "in-progress"
+    if s in {"todo", "to do", "open", "backlog", "triage", "ready"}:
+        return "open"
+    return None
+
+
+def _kanban_status(issue: dict[str, Any]) -> str:
+    field = _normalize_status(field_value(issue, "status"))
+    if field:
+        return field
+    if str(issue.get("state") or "").upper() == "CLOSED":
+        return "done"
+    if issue.get("assignees"):
+        return "in-progress"
+    return "open"
+
+
+def _assignee_names(issue: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for a in issue.get("assignees") or []:
+        if isinstance(a, dict):
+            name = a.get("login") or a.get("name")
+            if isinstance(name, str) and name.strip():
+                out.append(name.strip())
+        elif isinstance(a, str) and a.strip():
+            out.append(a.strip())
+    return out
+
+
+def build_context_for_kanban(enriched: dict[str, Any]) -> dict[str, Any]:
+    issues = enriched.get("issues") or []
+    columns: dict[str, dict[str, Any]] = {
+        "open": {"slug": "open", "label": "Open", "cards": []},
+        "in-progress": {"slug": "in-progress", "label": "In Progress", "cards": []},
+        "done": {"slug": "done", "label": "Done", "cards": []},
+    }
+    for issue in issues:
+        number = issue.get("number")
+        if not isinstance(number, int):
+            continue
+        card = {
+            "number": number,
+            "title": str(issue.get("title") or f"Issue #{number}"),
+            "assignees": _assignee_names(issue),
+            "delayed": bool(issue.get("delay")),
+        }
+        columns[_kanban_status(issue)]["cards"].append(card)
+
+    return {
+        "title": enriched.get("repo", "Project"),
+        "synced_at": enriched.get("synced_at"),
+        "enriched_at": enriched.get("enriched_at"),
+        "issue_count": enriched.get("issue_count", len(issues)),
+        "columns": [columns["open"], columns["in-progress"], columns["done"]],
+        "rendered_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ---------- burndown ----------
+#
+# Burndown chart semantics (updated P4.19 follow-up):
+#
+# A burndown measures how much real work remains open on each day. We
+# anchor on GH timestamps because they represent actual lifecycle
+# events (issue filed, issue closed) — project-board start/end dates
+# are *planned* dates and aren't what burndown is measuring.
+#
+# Per-issue resolution:
+#   start    = createdAt (date portion); fallback to fields.start_date
+#              only for fixtures / synthetic data without timestamps.
+#   resolved = closedAt; fallback to fields.end_date, then updatedAt;
+#              None for still-open issues (so they keep counting
+#              toward "remaining" across the whole span).
+#
+# Exclusions: closed issues with stateReason == NOT_PLANNED are
+# out-scoped, not completed. They don't enter scope and don't count
+# as "burned down" — they're tallied separately as `excluded_count`
+# so the reader can see *why* the numbers might differ from
+# `gh issue list --state closed` counts.
+#
+# For each day in the span, remaining = count of tracked issues where
+# start <= d AND (resolved is None OR resolved > d). Scope can grow
+# mid-project (new issues filed), so the line is NOT strictly
+# monotonic; the reference "ideal" line descends linearly from day-0
+# scope to 0 over the span, as a visual benchmark only.
+
+
+def _iso_date_from_raw(raw: Any) -> date | None:
+    """Parse `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ` (gh timestamp) into
+    a `date`. Returns None for unparseable / non-string input."""
+    if not isinstance(raw, str) or len(raw) < 10:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+@dataclass
+class _BurndownIssue:
+    number: int | None
+    title: str | None
+    start: date
+    resolved: date | None  # None = still open at end of span
+
+
+# GH stateReason values that indicate the issue was closed *without*
+# being completed — we treat these as out-of-scope work for burndown.
+# Compared case-insensitively against issue["stateReason"].
+_OUT_OF_SCOPE_STATE_REASONS: frozenset[str] = frozenset({"NOT_PLANNED"})
+
+
+def _resolve_burndown_issue(
+    issue: dict[str, Any],
+) -> tuple[_BurndownIssue | None, str | None, str | None]:
+    """Classify an enriched issue for burndown plotting.
+
+    Returns `(tracked, excluded_reason, missing_reason)` — exactly one
+    non-None. Excluded issues are tallied but omitted from scope and
+    the missing list. Missing issues had no parseable creation date.
+    """
+    state = str(issue.get("state") or "").upper()
+    state_reason = str(issue.get("stateReason") or "").upper()
+    if state == "CLOSED" and state_reason in _OUT_OF_SCOPE_STATE_REASONS:
+        return (None, f"closed as {state_reason}", None)
+
+    start = _iso_date_from_raw(issue.get("createdAt"))
+    if start is None:
+        start = _iso_date_from_raw(field_value(issue, "start_date"))
+    if start is None:
+        return (None, None, "no createdAt or start_date")
+
+    resolved: date | None = None
+    if state == "CLOSED":
+        resolved = (
+            _iso_date_from_raw(issue.get("closedAt"))
+            or _iso_date_from_raw(field_value(issue, "end_date"))
+            or _iso_date_from_raw(issue.get("updatedAt"))
+        )
+        if resolved is None:
+            # Closed but no timestamp anywhere — collapse to start so
+            # it contributes to scope but resolves immediately. Rare.
+            resolved = start
+        elif resolved < start:
+            resolved = start
+
+    number = issue.get("number") if isinstance(issue.get("number"), int) else None
+    return (
+        _BurndownIssue(
+            number=number,
+            title=issue.get("title"),
+            start=start,
+            resolved=resolved,
+        ),
+        None,
+        None,
+    )
+
+
+def _burndown_series(
+    enriched: dict[str, Any], *, today: date | None = None
+) -> tuple[
+    list[str], list[int], list[float], int, int, int, int, list[dict[str, Any]]
+]:
+    """Return (labels, remaining, ideal, tracked, open_today, span_days,
+    excluded, missing).
+
+    `labels[i]` is an ISO date per day of the span (inclusive);
+    `remaining[i]` is the count of tracked issues open at end of day
+    `labels[i]`; `ideal[i]` is the straight-line reference burndown.
+    `excluded` counts NOT_PLANNED closures (not plotted). `missing`
+    lists issues with no usable creation timestamp.
+    """
+    issues = enriched.get("issues") or []
+    tracked: list[_BurndownIssue] = []
+    missing: list[dict[str, Any]] = []
+    excluded = 0
+
+    for issue in issues:
+        meta, excluded_reason, missing_reason = _resolve_burndown_issue(issue)
+        if excluded_reason:
+            excluded += 1
+            continue
+        if missing_reason:
+            missing.append(
+                {
+                    "number": issue.get("number"),
+                    "title": issue.get("title"),
+                    "reason": missing_reason,
+                }
+            )
+            continue
+        assert meta is not None
+        tracked.append(meta)
+
+    if not tracked:
+        return ([], [], [], 0, 0, 0, excluded, missing)
+
+    today = today or datetime.now(timezone.utc).date()
+    project_start = min(t.start for t in tracked)
+    resolved_dates = [t.resolved for t in tracked if t.resolved is not None]
+    last_resolved = max(resolved_dates) if resolved_dates else project_start
+    project_end = max(project_start, last_resolved, today)
+    span_days = (project_end - project_start).days + 1
+
+    labels: list[str] = []
+    remaining: list[int] = []
+    open_today = 0
+
+    for offset in range(span_days):
+        d = project_start + timedelta(days=offset)
+        labels.append(d.isoformat())
+        count = sum(
+            1
+            for t in tracked
+            if t.start <= d and (t.resolved is None or t.resolved > d)
+        )
+        remaining.append(count)
+        if d == today:
+            open_today = count
+
+    # If today falls before the span started (no issues yet),
+    # open_today stays 0 by construction. The common case (today
+    # inside or past the span) is handled by the loop above.
+
+    # Ideal line: straight descent from initial in-scope count to 0.
+    initial_scope = remaining[0] if remaining else 0
+    if span_days > 1 and initial_scope > 0:
+        step = initial_scope / (span_days - 1)
+        ideal = [
+            round(max(0.0, initial_scope - step * i), 2) for i in range(span_days)
+        ]
+    else:
+        ideal = [float(initial_scope)] * span_days
+
+    return (
+        labels,
+        remaining,
+        ideal,
+        len(tracked),
+        open_today,
+        span_days,
+        excluded,
+        missing,
+    )
+
+
+def build_context_for_burndown(enriched: dict[str, Any]) -> dict[str, Any]:
+    (
+        labels,
+        remaining,
+        ideal,
+        tracked,
+        open_today,
+        span_days,
+        excluded,
+        missing,
+    ) = _burndown_series(enriched)
+    return {
+        "title": enriched.get("repo", "Project"),
+        "synced_at": enriched.get("synced_at"),
+        "enriched_at": enriched.get("enriched_at"),
+        "labels": labels,
+        "remaining": remaining,
+        "ideal": ideal,
+        "tracked_count": tracked,
+        "open_today": open_today,
+        "span_days": span_days,
+        "excluded_count": excluded,
+        "missing_issues": missing,
+        "rendered_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_burndown_plotly_figure(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a Plotly JSON figure for the burndown context.
+
+    Used by the Foreman chat UI to render the chart inline (Chainlit
+    can't render HTML/Chart.js pages, but does render Plotly figures
+    natively). Returns None when the context has no plottable data,
+    so the caller can decide whether to skip the inline chart.
+    """
+    labels = context.get("labels") or []
+    if not labels:
+        return None
+    remaining = context.get("remaining") or []
+    ideal = context.get("ideal") or []
+    excluded = context.get("excluded_count") or 0
+    title = context.get("title") or "Project"
+    title_suffix = f" — {excluded} out-scoped excluded" if excluded else ""
+
+    return {
+        "data": [
+            {
+                "x": labels,
+                "y": remaining,
+                "type": "scatter",
+                "mode": "lines+markers",
+                "name": "Remaining (actual)",
+                "line": {"color": "#2563eb", "width": 3},
+                "marker": {"size": 7},
+            },
+            {
+                "x": labels,
+                "y": ideal,
+                "type": "scatter",
+                "mode": "lines",
+                "name": "Ideal",
+                "line": {"color": "#9ca3af", "width": 1, "dash": "dash"},
+            },
+        ],
+        "layout": {
+            "title": {
+                "text": f"Burndown — {title}{title_suffix}",
+                "font": {"size": 15},
+            },
+            "xaxis": {"title": "Date", "type": "date"},
+            "yaxis": {
+                "title": "Open issues",
+                "rangemode": "tozero",
+                "dtick": 1,
+            },
+            "legend": {"orientation": "h", "y": -0.2},
+            "template": "plotly_white",
+            "margin": {"l": 40, "r": 20, "t": 60, "b": 60},
+        },
+    }
+
+
+# ---------- comparison ----------
+#
+# Renders TWO enriched payloads side-by-side: a mermaid gantt for each
+# plus a per-issue delta table (variant end_date − baseline end_date,
+# in days). Issues present in only one side are flagged via `only_in`.
+
+
+def _gantt_end_by_number(
+    mermaid_meta: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    return {
+        int(m["number"]): m
+        for m in mermaid_meta
+        if isinstance(m.get("number"), int)
+    }
+
+
+def _delta_days(baseline_end: str | None, variant_end: str | None) -> int | None:
+    if not baseline_end or not variant_end:
+        return None
+    try:
+        b = date.fromisoformat(baseline_end)
+        v = date.fromisoformat(variant_end)
+    except ValueError:
+        return None
+    return (v - b).days
+
+
+def build_context_for_comparison(
+    baseline: dict[str, Any],
+    variant: dict[str, Any] | None = None,
+    *,
+    baseline_label: str = "Baseline",
+    variant_label: str = "Variant",
+) -> dict[str, Any]:
+    """Build a side-by-side comparison context. Falls back to baseline-only
+    when `variant` is None (deltas are all 0 in that case)."""
+    if variant is None:
+        variant = baseline
+
+    b_mermaid, b_meta, _ = build_mermaid_gantt(baseline)
+    v_mermaid, v_meta, _ = build_mermaid_gantt(variant)
+
+    b_by_num = _gantt_end_by_number(b_meta)
+    v_by_num = _gantt_end_by_number(v_meta)
+
+    all_numbers = sorted(set(b_by_num) | set(v_by_num))
+    deltas: list[dict[str, Any]] = []
+    for n in all_numbers:
+        b = b_by_num.get(n)
+        v = v_by_num.get(n)
+        only_in: str | None = None
+        if b and not v:
+            only_in = "baseline"
+        elif v and not b:
+            only_in = "variant"
+        title = (v or b or {}).get("title") or f"Issue #{n}"
+        deltas.append(
+            {
+                "number": n,
+                "title": title,
+                "baseline_end": (b or {}).get("end"),
+                "variant_end": (v or {}).get("end"),
+                "delta_days": _delta_days(
+                    (b or {}).get("end"), (v or {}).get("end")
+                ),
+                "only_in": only_in,
+            }
+        )
+
+    title = baseline.get("repo") or variant.get("repo") or "Project"
+    return {
+        "title": title,
+        "baseline_label": baseline_label,
+        "variant_label": variant_label,
+        "baseline_mermaid": b_mermaid if b_meta else "",
+        "variant_mermaid": v_mermaid if v_meta else "",
+        "baseline_count": baseline.get(
+            "issue_count", len(baseline.get("issues") or [])
+        ),
+        "variant_count": variant.get(
+            "issue_count", len(variant.get("issues") or [])
+        ),
+        "baseline_renderable": len(b_meta),
+        "variant_renderable": len(v_meta),
+        "deltas": deltas,
+        "rendered_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# Per-template context builders. Comparison is wrapped to adapt
+# the two-argument signature to the single-payload CLI surface;
+# `main()` detects the comparison template and supplies --input-b
+# separately.
 CONTEXT_BUILDERS: dict[str, Any] = {
     "gantt": build_context_for_gantt,
+    "kanban": build_context_for_kanban,
+    "burndown": build_context_for_burndown,
+    "comparison": build_context_for_comparison,
 }
 
 
@@ -335,6 +783,39 @@ def load_enriched(path: Path = INPUT_FILE) -> dict[str, Any]:
             f"{path} not found — run `pipeline/heuristics.py` first"
         )
     return json.loads(path.read_text())
+
+
+def _apply_active_scenario_safe(enriched: dict[str, Any]) -> dict[str, Any]:
+    """Apply the committed scenario's transform to `enriched` if one
+    is active; otherwise pass through.
+
+    Import is lazy — `scenarios.py` pulls a chunk of AST / sandbox
+    machinery we don't want to load when no session is committed. If
+    the import or the apply step raises, we log and return baseline
+    so a broken scenario can't break chart rendering.
+    """
+    try:
+        try:
+            from pipeline import scenarios
+        except ImportError:
+            import scenarios  # type: ignore[no-redef]
+    except ImportError:
+        return enriched
+    try:
+        active = scenarios.active_session()
+    except Exception:  # noqa: BLE001
+        return enriched
+    if not active:
+        return enriched
+    try:
+        return scenarios.apply_active_scenario(enriched)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[render_chart] apply_active_scenario failed — rendering "
+            f"baseline: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return enriched
 
 
 def write_html(html: str, template_name: str, output_dir: Path = OUTPUT_DIR) -> Path:
@@ -363,6 +844,15 @@ def main() -> int:
         default=OUTPUT_DIR,
         help=f"Directory for the rendered HTML (default {OUTPUT_DIR})",
     )
+    parser.add_argument(
+        "--input-b",
+        type=Path,
+        default=None,
+        help=(
+            "Second enriched.json for --template comparison (variant side). "
+            "If omitted, both panels show the baseline."
+        ),
+    )
     args = parser.parse_args()
 
     builder = CONTEXT_BUILDERS.get(args.template)
@@ -387,16 +877,64 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    context = builder(enriched)
+    # Apply the active scenario (if one is committed) as a lens over
+    # the baseline payload — scenarios transform dates/issues and the
+    # chart should reflect the current commit. For comparison we
+    # deliberately keep the baseline untransformed on the left side so
+    # the user can see the scenario's delta; the right side gets the
+    # lensed payload via `variant = apply_active_scenario(baseline)`
+    # when the admin hasn't supplied --input-b explicitly.
+    enriched = _apply_active_scenario_safe(enriched)
+
+    if args.template == "comparison":
+        variant = None
+        if args.input_b is not None:
+            try:
+                variant = load_enriched(args.input_b)
+            except Exception as exc:  # noqa: BLE001
+                print(str(exc), file=sys.stderr)
+                return 1
+        context = build_context_for_comparison(enriched, variant)
+    else:
+        context = builder(enriched)
+
     html = render_html(args.template, context)
     out = write_html(html, args.template, args.output_dir)
 
-    print(
-        f"Rendered {args.template} chart with {len(context.get('renderable_issues') or [])} "
-        f"issues, {len(context.get('missing_issues') or [])} missing dates "
-        f"→ {out}",
-        file=sys.stderr,
-    )
+    # Per-template summary line — gantt reports renderable/missing;
+    # burndown reports tracked/excluded/missing; kanban reports per-
+    # column counts; comparison reports delta count.
+    if args.template == "gantt":
+        print(
+            f"Rendered gantt chart with "
+            f"{len(context.get('renderable_issues') or [])} issues, "
+            f"{len(context.get('missing_issues') or [])} missing dates "
+            f"→ {out}",
+            file=sys.stderr,
+        )
+    elif args.template == "burndown":
+        print(
+            f"Rendered burndown: {context.get('tracked_count', 0)} tracked, "
+            f"{context.get('excluded_count', 0)} out-scoped, "
+            f"{len(context.get('missing_issues') or [])} missing → {out}",
+            file=sys.stderr,
+        )
+    elif args.template == "kanban":
+        counts = ", ".join(
+            f"{c['label']}={len(c['cards'])}" for c in context.get("columns", [])
+        )
+        print(
+            f"Rendered kanban: {counts} → {out}",
+            file=sys.stderr,
+        )
+    elif args.template == "comparison":
+        print(
+            f"Rendered comparison: {len(context.get('deltas') or [])} issues "
+            f"→ {out}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Rendered {args.template} → {out}", file=sys.stderr)
     print(str(out))
     return 0
 

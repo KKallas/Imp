@@ -139,6 +139,12 @@ def test_fetch_issues_builds_argv_and_parses_json() -> None:
     assert "--state" in call and "open" in call
     assert "--limit" in call and "500" in call
     assert "--json" in call
+    # P4.19: burndown needs closedAt + stateReason from gh (actual
+    # closure time; NOT_PLANNED vs COMPLETED distinction). They must
+    # be in the --json field list we hand to `gh issue list`.
+    json_arg = call[call.index("--json") + 1]
+    assert "closedAt" in json_arg, json_arg
+    assert "stateReason" in json_arg, json_arg
     print("test_fetch_issues_builds_argv_and_parses_json: OK")
 
 
@@ -382,6 +388,117 @@ def test_write_output_creates_imp_dir_and_writes_json() -> None:
     print("test_write_output_creates_imp_dir_and_writes_json: OK")
 
 
+# ---------- imp:dates body-block parser ----------
+
+
+def test_parse_imp_dates_block_roundtrips_written_block() -> None:
+    body = (
+        "Original body.\n\n"
+        "<!-- imp:dates:begin -->\n"
+        "<!-- Managed by ... -->\n"
+        "start_date: 2026-04-11\n"
+        "end_date: 2026-04-14\n"
+        "duration_days: 3\n"
+        "<!-- imp:dates:end -->\n"
+    )
+    parsed = si.parse_imp_dates_block(body)
+    assert parsed == {
+        "start_date": "2026-04-11",
+        "end_date": "2026-04-14",
+        "duration_days": 3,
+    }
+    print("test_parse_imp_dates_block_roundtrips_written_block: OK")
+
+
+def test_parse_imp_dates_block_empty_when_absent() -> None:
+    assert si.parse_imp_dates_block("Nothing to see here.") == {}
+    assert si.parse_imp_dates_block("") == {}
+    assert si.parse_imp_dates_block(None) == {}  # defensive
+    print("test_parse_imp_dates_block_empty_when_absent: OK")
+
+
+def test_parse_imp_dates_block_ignores_unknown_keys() -> None:
+    """We only round-trip a known allowlist — arbitrary keys in the
+    block shouldn't sneak into the fields dict."""
+    body = (
+        "<!-- imp:dates:begin -->\n"
+        "start_date: 2026-04-11\n"
+        "random_key: something\n"
+        "<!-- imp:dates:end -->"
+    )
+    assert si.parse_imp_dates_block(body) == {"start_date": "2026-04-11"}
+    print("test_parse_imp_dates_block_ignores_unknown_keys: OK")
+
+
+def test_parse_imp_dates_block_skips_malformed_lines() -> None:
+    body = (
+        "<!-- imp:dates:begin -->\n"
+        "start_date: 2026-04-11\n"
+        "this line has no colon\n"
+        "  \n"  # whitespace only
+        "end_date: 2026-04-14\n"
+        "<!-- imp:dates:end -->"
+    )
+    assert si.parse_imp_dates_block(body) == {
+        "start_date": "2026-04-11",
+        "end_date": "2026-04-14",
+    }
+    print("test_parse_imp_dates_block_skips_malformed_lines: OK")
+
+
+def test_parse_imp_dates_block_duration_days_coerced_to_int() -> None:
+    body = (
+        "<!-- imp:dates:begin -->\n"
+        "duration_days: 7\n"
+        "<!-- imp:dates:end -->"
+    )
+    assert si.parse_imp_dates_block(body) == {"duration_days": 7}
+    # Non-integer value is dropped, not kept as a string.
+    body_bad = (
+        "<!-- imp:dates:begin -->\n"
+        "duration_days: seven\n"
+        "<!-- imp:dates:end -->"
+    )
+    assert si.parse_imp_dates_block(body_bad) == {}
+    print("test_parse_imp_dates_block_duration_days_coerced_to_int: OK")
+
+
+def test_sync_merges_imp_dates_block_when_no_project() -> None:
+    """End-to-end: when there's no project board, body-block dates
+    land in `fields` so downstream render_chart sees them."""
+    _reset()
+    _write_config({"repo": "o/r"})  # project_number absent → no fetch
+    payload = json.dumps(
+        [
+            {
+                "number": 42,
+                "title": "t",
+                "body": (
+                    "<!-- imp:dates:begin -->\n"
+                    "start_date: 2026-04-11\n"
+                    "end_date: 2026-04-14\n"
+                    "<!-- imp:dates:end -->"
+                ),
+                "labels": [],
+                "milestone": None,
+                "assignees": [],
+                "state": "OPEN",
+                "url": "u",
+                "createdAt": "2026-04-11T00:00:00Z",
+                "updatedAt": "2026-04-11T00:00:00Z",
+            }
+        ]
+    )
+    fake = FakeGh([(["gh", "issue", "list"], 0, payload, "")])
+    si.run_gh = fake
+
+    out = si.sync()
+    issue = out["issues"][0]
+    assert issue["fields"].get("start_date") == "2026-04-11"
+    assert issue["fields"].get("end_date") == "2026-04-14"
+    print("test_sync_merges_imp_dates_block_when_no_project: OK")
+
+
 # ---------- runner ----------
 
 
@@ -402,6 +519,12 @@ def main() -> None:
         test_sync_falls_back_to_owner_from_repo,
         test_sync_errors_when_no_repo_in_config,
         test_write_output_creates_imp_dir_and_writes_json,
+        test_parse_imp_dates_block_roundtrips_written_block,
+        test_parse_imp_dates_block_empty_when_absent,
+        test_parse_imp_dates_block_ignores_unknown_keys,
+        test_parse_imp_dates_block_skips_malformed_lines,
+        test_parse_imp_dates_block_duration_days_coerced_to_int,
+        test_sync_merges_imp_dates_block_when_no_project,
     ]
     for t in tests:
         t()

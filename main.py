@@ -50,12 +50,24 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from chainlit.input_widget import NumberInput, Select, Switch
 
-from server import budgets
+from server import budgets, chat_history
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
 
 _hasher = PasswordHasher()
+
+
+# ---------- Chainlit data layer (KKallas/Imp#45) ----------
+# Registers our JSON-backed data layer so Chainlit's native left sidebar
+# shows past chats with click-to-resume, rename, and delete.
+
+
+@cl.data_layer
+def _imp_data_layer():
+    from server.data_layer import ImpDataLayer
+
+    return ImpDataLayer()
 
 
 # ---------- git / gh helpers ----------
@@ -459,6 +471,28 @@ async def on_start() -> None:
     await refresh_budget_bar()
 
 
+@cl.on_chat_resume
+async def on_resume(thread: dict) -> None:
+    """Restore a past chat session when the admin clicks it in the
+    sidebar. Loads the ChatSession from disk (not from `thread`, which
+    only has Chainlit's view of the steps) so we get our full Turn
+    list with tool_calls and title_source."""
+    thread_id = thread.get("id") or ""
+    session = chat_history.load_session(thread_id)
+    if session is None:
+        # Thread exists in Chainlit's view but we have no JSON for it.
+        # Create a fresh session so the rest of the handlers work.
+        cfg = load_config()
+        session = chat_history.ChatSession.new(
+            repo=cfg.get("repo"), id=thread_id
+        )
+        session.rename(thread.get("name") or chat_history.FALLBACK_TITLE, by="fallback")
+    cl.user_session.set("chat_session", session)
+    await _render_chat_header(session, fresh=True)
+    await register_budget_settings()
+    await refresh_budget_bar()
+
+
 def _foreman_say_as(author: str):
     """Build a `say` coroutine whose messages are attributed to `author`."""
 
@@ -653,6 +687,211 @@ async def greet_foreman() -> None:
             "_(Stub spike: every response is faked. The point is the UX, not the data.)_"
         ),
     ).send()
+    # KKallas/Imp#45: start a fresh chat session for this browser tab.
+    # Saved to disk after every turn so refreshing the page won't lose
+    # the thread; rotated when the admin hits /new or the action button.
+    await _start_new_chat_session()
+
+
+# ---------- chat history (KKallas/Imp#45) ----------
+#
+# A `ChatSession` tracks the current in-memory turn list, its agent- or
+# user-picked title, and the path on disk where it's persisted after
+# every turn. The session lives in `cl.user_session` so each browser
+# tab gets its own thread. The header message is a separate pinned
+# `cl.Message` that shows the title + three action buttons; it's
+# updated in-place on rename / new-chat / load so the admin always
+# knows which chat they're in.
+
+
+def _current_session() -> chat_history.ChatSession | None:
+    return cl.user_session.get("chat_session")
+
+
+async def _start_new_chat_session() -> chat_history.ChatSession:
+    """Create a fresh session, save a stub file to disk, render the
+    header. Any previously-active session is left on disk under its
+    own filename — "new chat" means "rotate", not "discard".
+
+    Uses Chainlit's `thread_id` as the session id so the data layer
+    and the sidebar always agree on which thread is which.
+    """
+    cfg = load_config()
+    # Use Chainlit's thread_id so the data layer's list_threads maps 1:1.
+    thread_id: str | None = None
+    try:
+        thread_id = cl.context.session.thread_id
+    except Exception:
+        pass
+    session = chat_history.ChatSession.new(
+        repo=cfg.get("repo"), id=thread_id
+    )
+    cl.user_session.set("chat_session", session)
+    chat_history.save_session(session)
+    await _render_chat_header(session, fresh=True)
+    return session
+
+
+async def _render_chat_header(
+    session: chat_history.ChatSession, *, fresh: bool = False
+) -> None:
+    """Post (or update) the pinned chat-header message with the current
+    title + action buttons. `fresh=True` posts a new message and stores
+    a reference; subsequent updates edit the same message so the header
+    doesn't multiply as titles change.
+    """
+    content = _format_header_content(session)
+    actions = _chat_header_actions(session)
+
+    existing: cl.Message | None = cl.user_session.get("chat_header_msg")
+    if fresh or existing is None:
+        msg = cl.Message(
+            author="Foreman",
+            content=content,
+            actions=actions,
+        )
+        await msg.send()
+        cl.user_session.set("chat_header_msg", msg)
+        return
+
+    existing.content = content
+    # `actions` must be reset along with content; Chainlit doesn't diff
+    # them but a fresh list drawn on update keeps the button state
+    # consistent (e.g. "New chat" label never changes, but future
+    # variants could).
+    existing.actions = actions
+    try:
+        await existing.update()
+    except Exception as exc:  # noqa: BLE001 — header updates are cosmetic
+        import sys as _sys
+
+        print(
+            f"[chat-history] header update failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=_sys.stderr,
+        )
+
+
+def _format_header_content(session: chat_history.ChatSession) -> str:
+    badge = {
+        "user": "✏️",  # manual rename — don't auto-overwrite
+        "agent": "🤖",  # agent-titled
+        "fallback": "•",  # no real title yet
+    }.get(session.title_source, "•")
+    return (
+        f"**Chat:** {badge} {session.title}  \n"
+        f"_id: `{session.id}` · turns: {len(session.turns)}_"
+    )
+
+
+def _chat_header_actions(session: chat_history.ChatSession) -> list[cl.Action]:
+    # "Recent chats" is handled natively by Chainlit's left sidebar
+    # (via our data layer), so it's omitted here. "New chat" is also
+    # in the sidebar but duplicated here for discoverability.
+    return [
+        cl.Action(
+            name="chat_new",
+            payload={},
+            label="🆕 New chat",
+            tooltip="Archive this chat and start a fresh one.",
+        ),
+        cl.Action(
+            name="chat_rename",
+            payload={"session_id": session.id},
+            label="✏️ Rename",
+            tooltip="Rename this chat (locks it against agent re-titling).",
+        ),
+    ]
+
+
+async def _handle_new_chat_command() -> None:
+    """Archive the current session (already on disk) and start fresh.
+    Shared by the `/new` text command and the header action button so
+    both do exactly the same thing — the issue spec says they must."""
+    old = _current_session()
+    if old is not None:
+        # Persist one last time before rotating so any in-memory changes
+        # since the last turn (rename after typing /new, etc.) land.
+        try:
+            chat_history.save_session(old)
+        except Exception as exc:  # noqa: BLE001
+            import sys as _sys
+
+            print(
+                f"[chat-history] archive-on-rotate failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=_sys.stderr,
+            )
+    await _start_new_chat_session()
+    await cl.Message(
+        author="Foreman",
+        content=(
+            "Started a new chat. The previous conversation is saved "
+            "and visible in the sidebar."
+        ),
+    ).send()
+
+
+async def _maybe_retitle_session(session: chat_history.ChatSession) -> None:
+    """After the first real assistant reply, pick an agent title.
+
+    Skips when the admin has manually renamed (title_source == "user")
+    or when there aren't enough turns yet. Failures here are silent —
+    a missing title is cosmetic, not a correctness bug.
+    """
+    if session.title_source == "user":
+        return
+    if not session.needs_agent_title():
+        return
+    # Only re-title on the transition from fallback → agent. Subsequent
+    # topic-shift re-titling is out of scope for P4.20; admin can
+    # manually rename.
+    if session.title_source == "agent":
+        return
+    new_title = await chat_history.generate_title(session)
+    if new_title:
+        chat_history.save_session(session)
+
+
+# ---------- chat header action callbacks (KKallas/Imp#45) ----------
+
+
+@cl.action_callback("chat_new")
+async def on_chat_new(action: cl.Action) -> None:
+    """Button-triggered version of the `/new` command. Identical effect."""
+    await _handle_new_chat_command()
+
+
+@cl.action_callback("chat_rename")
+async def on_chat_rename(action: cl.Action) -> None:
+    """Prompt the admin for a new title. Manual renames flip
+    `title_source` to "user" so the next agent-titling pass skips
+    this session."""
+    session = _current_session()
+    if session is None:
+        await cl.Message(
+            author="Foreman",
+            content="_(No active chat session to rename.)_",
+        ).send()
+        return
+    resp = await cl.AskUserMessage(
+        author="Foreman",
+        content=(
+            f"Current title: **{session.title}**\n\n"
+            f"Type a new title (3-6 words works best). Your title locks "
+            f"this chat against future agent re-titling."
+        ),
+        timeout=120,
+    ).send()
+    if not resp:
+        return
+    new = (resp.get("output") if isinstance(resp, dict) else None) or ""
+    new = new.strip()
+    if not new:
+        return
+    session.rename(new, by="user")
+    chat_history.save_session(session)
+    await _render_chat_header(session)
 
 
 @cl.on_message
@@ -702,6 +941,14 @@ async def _on_message_body(msg: cl.Message) -> None:
 
     text = msg.content.lower().strip()
 
+    # KKallas/Imp#45: `/new` / "new chat" rotates the session. The
+    # current chat's file stays on disk; a fresh session takes over.
+    # This runs before guard checkpoint A because it's a local-only
+    # control command, not a message the worker needs to see.
+    if text in ("/new", "new chat", "/new chat"):
+        await _handle_new_chat_command()
+        return
+
     # Demo hook for P2.6: `run: <cmd>` runs the command through the real
     # server/intercept.py pipeline. See tests/test_intercept.py for the
     # underlying contract. This is how you'd exercise the interception
@@ -749,13 +996,46 @@ async def _on_message_body(msg: cl.Message) -> None:
     # richer UX (verdict table, log sidebar).
     from server import foreman_agent
 
-    await foreman_agent.dispatch(
+    # KKallas/Imp#45: feed prior turns from the current session into
+    # dispatch so Foreman can reference earlier messages naturally
+    # ("now do the same for issue 43" after "moderate issue 42").
+    session = _current_session()
+    history_turns = list(session.turns) if session is not None else []
+
+    # Log the user's turn BEFORE the call so a mid-dispatch crash still
+    # leaves a record of what was asked.
+    if session is not None:
+        session.append_turn("user", msg.content)
+        session.truncate()
+        chat_history.save_session(session)
+
+    reply = await foreman_agent.dispatch(
         msg.content,
         say=_foreman_say,
         ask=_foreman_ask,
         thinking=_foreman_thinking,
         chart=_foreman_chart,
+        history=history_turns,
     )
+
+    # Record the assistant turn + persist + agent-title after the first
+    # real reply. All post-turn work is best-effort: a failure here
+    # should never undo the reply the admin already saw.
+    if session is not None:
+        try:
+            session.append_turn("assistant", reply)
+            session.truncate()
+            chat_history.save_session(session)
+            await _maybe_retitle_session(session)
+            await _render_chat_header(session)
+        except Exception as exc:  # noqa: BLE001 — don't crash the turn on post-save
+            import sys as _sys
+
+            print(
+                f"[chat-history] post-turn save failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=_sys.stderr,
+            )
 
 
 async def _foreman_say(text: str) -> None:
@@ -802,20 +1082,116 @@ async def _foreman_thinking(label: str):
 async def _foreman_chart(artifact: dict) -> None:
     """Render an artifact produced by a Foreman tool call.
 
-    Today the only registered artifact type is `scenario_session` —
-    rendered as a side-by-side grid (Plotly subplot for charts +
-    Markdown table for metrics) with commit/switch/close buttons.
+    Registered artifact types:
+      - scenario_session : scenario-comparison grid (Plotly subplot
+        + metric table + commit/switch/close buttons).
+      - chart_file : `pipeline/render_chart.py` output. Renders the
+        Plotly figure inline when present (burndown) and always
+        attaches the HTML file as a download chip so the full
+        interactive page is one click away.
+
     Unknown types log a warning and are skipped — a single bad tool
     output shouldn't kill the turn.
     """
     artifact_type = artifact.get("type")
     if artifact_type == "scenario_session":
         await _render_scenario_grid(artifact)
+    elif artifact_type == "chart_file":
+        await _render_chart_file(artifact)
     else:
         await cl.Message(
             author="Foreman",
             content=f"_(Unknown artifact type `{artifact_type}` — skipped.)_",
         ).send()
+
+
+_PUBLIC_CHARTS_DIR = Path(__file__).resolve().parent / "public" / "charts"
+
+
+def _publish_chart_html(html_path: Path, template: str) -> str | None:
+    """Copy the rendered HTML into `public/charts/` so Chainlit's
+    built-in `GET /public/<filename>` route serves it, and return the
+    URL path. Markdown links in Chainlit get `target="_blank"` set on
+    the rendered `<a>` automatically — so a plain `[label](url)` opens
+    the full interactive page in a new browser tab rather than the
+    chat-embedded download chip.
+
+    Returns None when the copy fails — callers fall back to no link.
+    """
+    import shutil
+    import sys
+
+    try:
+        _PUBLIC_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+        dest = _PUBLIC_CHARTS_DIR / f"{template}.html"
+        shutil.copyfile(html_path, dest)
+    except OSError as exc:
+        print(
+            f"[main] _publish_chart_html({template!r}) failed: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return f"/public/charts/{template}.html"
+
+
+async def _render_chart_file(artifact: dict) -> None:
+    """Display a `pipeline/render_chart.py` output in the chat.
+
+    Layout: inline Plotly figure (when the template has a native
+    Plotly build — burndown does, the others don't yet) + a markdown
+    link that opens the full self-contained HTML page in a new tab.
+    The HTML is copied into `public/charts/` so Chainlit's `/public`
+    static route can serve it; the frontend auto-targets markdown
+    links with `target="_blank"`.
+    """
+    template = artifact.get("template") or "chart"
+    html_path = artifact.get("path")
+    plotly_figure = artifact.get("plotly_figure")
+
+    import sys
+
+    elements: list = []
+    if plotly_figure:
+        try:
+            elements.append(
+                cl.Plotly(
+                    name=f"{template}-chart",
+                    figure=plotly_figure,
+                    display="inline",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the turn
+            print(
+                f"[main] cl.Plotly failed for {template!r}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
+    public_url: str | None = None
+    if html_path and Path(html_path).exists():
+        public_url = _publish_chart_html(Path(html_path), template)
+
+    if not elements and not public_url:
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"_(Rendered `{template}` chart but the output file is missing "
+                f"and no inline figure is available — nothing to show.)_"
+            ),
+        ).send()
+        return
+
+    if public_url:
+        link_hint = f"[Open full {template} page in a new tab]({public_url})"
+    else:
+        link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
+    content = f"**{template.capitalize()} chart** — {link_hint}"
+
+    await cl.Message(
+        author="Foreman",
+        content=content,
+        elements=elements,
+    ).send()
 
 
 async def _render_scenario_grid(artifact: dict) -> None:
@@ -1025,7 +1401,12 @@ def _find_output_value(scenario: dict, key: str) -> str:
 
 @cl.action_callback("scenario_commit")
 async def on_scenario_commit(action: cl.Action) -> None:
-    """Action callback: commit a scenario choice, unfreeze the chat."""
+    """Action callback: commit a scenario choice, unfreeze the chat,
+    and render a fresh gantt HTML for the committed scenario so the
+    admin sees the final "clean" view right where they confirmed the
+    choice — same inline Plotly + open-in-new-tab link the other
+    template renders use.
+    """
     payload = action.payload or {}
     session_id = payload.get("session_id")
     choice_index = payload.get("choice_index")
@@ -1050,17 +1431,67 @@ async def on_scenario_commit(action: cl.Action) -> None:
         return
 
     committed = result.get("committed") or {}
+    scenario_name = committed.get("choice_name", f"s{choice_index + 1}")
     await cl.Message(
         author="Foreman",
         content=(
-            f"**Committed.** Active scenario: "
-            f"`{committed.get('choice_name', f's{choice_index + 1}')}`\n\n"
-            f"Baseline data on disk is unchanged. Future gantt renders will "
-            f"compose this scenario as a lens. Say 'apply to project board' "
-            f"when you're ready to write it to GitHub (Stage 2, separate "
-            f"workflow — not yet implemented)."
+            f"**Committed.** Active scenario: `{scenario_name}`. "
+            f"Rendering the gantt for this scenario below — baseline data "
+            f"on disk is unchanged; this is the lensed view."
         ),
     ).send()
+
+    # Render the committed scenario's gantt as a chart_file artifact.
+    # `render_chart.py` picks up the active_scenario.json pointer on
+    # load and applies the lens, so the output reflects the commit
+    # we just made.
+    await _render_committed_scenario_gantt(scenario_name)
+
+
+async def _render_committed_scenario_gantt(scenario_name: str) -> None:
+    """Trigger `run_render_chart --template gantt` from outside the
+    normal `dispatch()` flow and render any chart_file artifacts it
+    pushes. Errors are logged but never break the commit confirmation
+    — a failed render shouldn't undo a successful commit."""
+    import sys
+
+    from server import foreman_agent
+
+    # Any artifacts already queued belong to a previous turn; clear so
+    # we don't re-render stale ones here.
+    foreman_agent._pending_artifacts.clear()
+
+    try:
+        await foreman_agent.do_run_render_chart(
+            template="gantt",
+            user_intent=f"render committed scenario '{scenario_name}'",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[main] render after commit failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        await cl.Message(
+            author="Foreman",
+            content=(
+                f"_(Chart render after commit failed — "
+                f"`{type(exc).__name__}`. Ask me to `show gantt` to retry.)_"
+            ),
+        ).send()
+        return
+
+    # Drain the queue manually since we're outside dispatch().
+    for artifact in list(foreman_agent._pending_artifacts):
+        try:
+            await _foreman_chart(artifact)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[main] _foreman_chart failed on commit-render: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+    foreman_agent._pending_artifacts.clear()
 
 
 @cl.action_callback("scenario_close")
