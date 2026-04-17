@@ -1159,10 +1159,11 @@ async def _apply_mermaid_watchdog(text: str) -> tuple[str, list]:
                         name=img_name,
                         path=str(img_path),
                         display="inline",
+                        size="large",
                     )
                 )
                 link = (
-                    f"\n\n[Open interactive viewer]({viewer_url})"
+                    f"[Open interactive viewer]({viewer_url})"
                     if viewer_url
                     else ""
                 )
@@ -1518,6 +1519,7 @@ async def _render_chart_file(artifact: dict) -> None:
                         name=img_name,
                         path=str(img_path),
                         display="inline",
+                        size="large",
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1537,11 +1539,10 @@ async def _render_chart_file(artifact: dict) -> None:
         ).send()
         return
 
+    parts: list[str] = [f"**{template.capitalize()} chart**"]
     if public_url:
-        link_hint = f"[Open full {template} page in a new tab]({public_url})"
-    else:
-        link_hint = ""
-    content = f"**{template.capitalize()} chart**\n\n{link_hint}".strip()
+        parts.append(f"[Open full page in a new tab]({public_url})")
+    content = "\n\n".join(parts)
 
     await cl.Message(
         author="Foreman",
