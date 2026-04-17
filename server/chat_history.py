@@ -115,8 +115,8 @@ class ChatSession:
     # ---- factories ----
 
     @classmethod
-    def new(cls, *, repo: Optional[str] = None) -> "ChatSession":
-        return cls(id=_new_chat_id(), repo=repo)
+    def new(cls, *, repo: Optional[str] = None, id: Optional[str] = None) -> "ChatSession":
+        return cls(id=id or _new_chat_id(), repo=repo)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChatSession":
@@ -141,6 +141,36 @@ class ChatSession:
             "last_active_at": self.last_active_at,
             "repo": self.repo,
             "turns": [t.to_dict() for t in self.turns],
+        }
+
+    def to_thread_dict(self, *, user_id: str = "admin") -> dict[str, Any]:
+        """Convert to Chainlit's ThreadDict shape so our JSON-backed
+        data layer can serve chat history in the native left sidebar."""
+        steps: list[dict[str, Any]] = []
+        for i, t in enumerate(self.turns):
+            step_type = "user_message" if t.role == "user" else "assistant_message"
+            steps.append({
+                "id": f"{self.id}_step_{i}",
+                "threadId": self.id,
+                "name": t.role,
+                "type": step_type,
+                "output": t.content,
+                "createdAt": t.timestamp,
+                "input": "",
+                "metadata": {},
+                "streaming": False,
+            })
+        return {
+            "id": self.id,
+            "name": self.title,
+            "createdAt": self.created_at,
+            "userId": user_id,
+            "userIdentifier": "admin",
+            "steps": steps,
+            "metadata": {
+                "title_source": self.title_source,
+                "repo": self.repo,
+            },
         }
 
     def filename(self) -> str:
@@ -247,6 +277,25 @@ def load_session(chat_id: str, *, base: Optional[Path] = None) -> Optional[ChatS
             )
             return None
     return None
+
+
+def delete_session(chat_id: str, *, base: Optional[Path] = None) -> bool:
+    """Delete a session file by id. Returns True if found and deleted."""
+    d = base or CHATS_DIR
+    if not d.exists():
+        return False
+    for path in d.glob(f"*_{chat_id}.json"):
+        try:
+            path.unlink()
+            return True
+        except OSError as exc:
+            print(
+                f"[chat_history] delete failed for {path.name}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return False
+    return False
 
 
 def list_sessions(

@@ -58,6 +58,18 @@ CONFIG_FILE = ROOT / ".imp" / "config.json"
 _hasher = PasswordHasher()
 
 
+# ---------- Chainlit data layer (KKallas/Imp#45) ----------
+# Registers our JSON-backed data layer so Chainlit's native left sidebar
+# shows past chats with click-to-resume, rename, and delete.
+
+
+@cl.data_layer
+def _imp_data_layer():
+    from server.data_layer import ImpDataLayer
+
+    return ImpDataLayer()
+
+
 # ---------- git / gh helpers ----------
 
 
@@ -459,6 +471,28 @@ async def on_start() -> None:
     await refresh_budget_bar()
 
 
+@cl.on_chat_resume
+async def on_resume(thread: dict) -> None:
+    """Restore a past chat session when the admin clicks it in the
+    sidebar. Loads the ChatSession from disk (not from `thread`, which
+    only has Chainlit's view of the steps) so we get our full Turn
+    list with tool_calls and title_source."""
+    thread_id = thread.get("id") or ""
+    session = chat_history.load_session(thread_id)
+    if session is None:
+        # Thread exists in Chainlit's view but we have no JSON for it.
+        # Create a fresh session so the rest of the handlers work.
+        cfg = load_config()
+        session = chat_history.ChatSession.new(
+            repo=cfg.get("repo"), id=thread_id
+        )
+        session.rename(thread.get("name") or chat_history.FALLBACK_TITLE, by="fallback")
+    cl.user_session.set("chat_session", session)
+    await _render_chat_header(session, fresh=True)
+    await register_budget_settings()
+    await refresh_budget_bar()
+
+
 def _foreman_say_as(author: str):
     """Build a `say` coroutine whose messages are attributed to `author`."""
 
@@ -677,9 +711,21 @@ def _current_session() -> chat_history.ChatSession | None:
 async def _start_new_chat_session() -> chat_history.ChatSession:
     """Create a fresh session, save a stub file to disk, render the
     header. Any previously-active session is left on disk under its
-    own filename — "new chat" means "rotate", not "discard"."""
+    own filename — "new chat" means "rotate", not "discard".
+
+    Uses Chainlit's `thread_id` as the session id so the data layer
+    and the sidebar always agree on which thread is which.
+    """
     cfg = load_config()
-    session = chat_history.ChatSession.new(repo=cfg.get("repo"))
+    # Use Chainlit's thread_id so the data layer's list_threads maps 1:1.
+    thread_id: str | None = None
+    try:
+        thread_id = cl.context.session.thread_id
+    except Exception:
+        pass
+    session = chat_history.ChatSession.new(
+        repo=cfg.get("repo"), id=thread_id
+    )
     cl.user_session.set("chat_session", session)
     chat_history.save_session(session)
     await _render_chat_header(session, fresh=True)
@@ -739,6 +785,9 @@ def _format_header_content(session: chat_history.ChatSession) -> str:
 
 
 def _chat_header_actions(session: chat_history.ChatSession) -> list[cl.Action]:
+    # "Recent chats" is handled natively by Chainlit's left sidebar
+    # (via our data layer), so it's omitted here. "New chat" is also
+    # in the sidebar but duplicated here for discoverability.
     return [
         cl.Action(
             name="chat_new",
@@ -751,12 +800,6 @@ def _chat_header_actions(session: chat_history.ChatSession) -> list[cl.Action]:
             payload={"session_id": session.id},
             label="✏️ Rename",
             tooltip="Rename this chat (locks it against agent re-titling).",
-        ),
-        cl.Action(
-            name="chat_recent",
-            payload={},
-            label="🗂 Recent chats",
-            tooltip="Pick a past chat to load into the next message.",
         ),
     ]
 
@@ -783,8 +826,8 @@ async def _handle_new_chat_command() -> None:
     await cl.Message(
         author="Foreman",
         content=(
-            "Started a new chat. The previous conversation is saved and "
-            "reachable via **Recent chats**."
+            "Started a new chat. The previous conversation is saved "
+            "and visible in the sidebar."
         ),
     ).send()
 
@@ -849,84 +892,6 @@ async def on_chat_rename(action: cl.Action) -> None:
     session.rename(new, by="user")
     chat_history.save_session(session)
     await _render_chat_header(session)
-
-
-@cl.action_callback("chat_recent")
-async def on_chat_recent(action: cl.Action) -> None:
-    """Show up to 20 recent chats as an AskActionMessage. Picking one
-    loads its turns into the current session (so the next dispatch
-    replays them) and sets it as active on disk.
-    """
-    rows = chat_history.list_sessions(limit=20)
-    # Exclude the currently-active session from the list — loading
-    # yourself is a no-op and just clutters the picker.
-    current = _current_session()
-    current_id = current.id if current else None
-    rows = [r for r in rows if r["id"] != current_id]
-
-    if not rows:
-        await cl.Message(
-            author="Foreman",
-            content="_(No other saved chats yet.)_",
-        ).send()
-        return
-
-    actions: list[cl.Action] = []
-    for r in rows:
-        # Friendly label: title — turn count — last active (date only)
-        date = r["last_active_at"].split("T")[0] if r["last_active_at"] else "?"
-        label = f"{r['title'][:40]} · {r['turn_count']} turns · {date}"
-        actions.append(
-            cl.Action(
-                name="chat_load",
-                payload={"chat_id": r["id"]},
-                label=label,
-                tooltip=f"Load chat {r['id']}",
-            )
-        )
-    # Cancel action lets the admin back out without picking.
-    actions.append(
-        cl.Action(
-            name="chat_load",
-            payload={"chat_id": ""},
-            label="Cancel",
-            tooltip="Keep the current chat.",
-        )
-    )
-
-    await cl.Message(
-        author="Foreman",
-        content=f"**Recent chats ({len(rows)})** — pick one to load:",
-        actions=actions,
-    ).send()
-
-
-@cl.action_callback("chat_load")
-async def on_chat_load(action: cl.Action) -> None:
-    """Load the picked chat as the new active session."""
-    payload = action.payload or {}
-    chat_id = str(payload.get("chat_id") or "").strip()
-    if not chat_id:
-        # Admin hit Cancel.
-        return
-    loaded = chat_history.load_session(chat_id)
-    if loaded is None:
-        await cl.Message(
-            author="Foreman",
-            content=f"_(Couldn't find chat `{chat_id}` on disk.)_",
-        ).send()
-        return
-    cl.user_session.set("chat_session", loaded)
-    # Header refreshes in-place so the admin sees the loaded title
-    # replace the previous one instead of a second header appearing.
-    await _render_chat_header(loaded)
-    await cl.Message(
-        author="Foreman",
-        content=(
-            f"Loaded chat **{loaded.title}** with {len(loaded.turns)} prior "
-            f"turns. Your next message continues this conversation."
-        ),
-    ).send()
 
 
 @cl.on_message
