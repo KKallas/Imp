@@ -5,8 +5,10 @@ Runs on its own port (default 8421) alongside Chainlit.
 
 URL contract::
 
-    GET /render/<type>?var1=val&var2=val             → image/png
-    GET /render/<type>?var1=val&var2=val&mode=viewer  → text/html
+    GET /render/<type>?var1=val&var2=val               → image/png (5 s animation delay)
+    GET /render/<type>?var1=val&var2=val&delay=0        → image/png (immediate)
+    GET /render/<type>?var1=val&var2=val&delay=10000    → image/png (10 s delay)
+    GET /render/<type>?var1=val&var2=val&mode=viewer    → text/html (interactive)
     GET /health                                       → 200 OK
 
 Start standalone::
@@ -89,6 +91,7 @@ async def handle_render(request: Request, renderer_name: str) -> Response:
 
     params: dict[str, Any] = dict(request.query_params)
     params.pop("mode", None)
+    delay_ms = int(params.pop("delay", 5000))  # animation wait (ms)
 
     for key in ("data", "figure", "figure_json"):
         if key in params:
@@ -130,7 +133,7 @@ async def handle_render(request: Request, renderer_name: str) -> Response:
         )
 
     try:
-        png = await screenshot(html)
+        png = await screenshot(html, delay_ms=delay_ms)
     except Exception as exc:
         print(
             f"[render] screenshot failed for {renderer_name!r}: "

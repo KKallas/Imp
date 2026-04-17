@@ -52,13 +52,21 @@ def _store(key: str, png: bytes) -> Path:
 
 # ── public API ──────────────────────────────────────────────────────
 
+_DEFAULT_DELAY_MS = 5000  # 5 s — enough for mermaid / Chart.js / Plotly animations
+
+
 async def screenshot(
     html: str,
     *,
     width: int = 1200,
     height: int = 800,
+    delay_ms: int = _DEFAULT_DELAY_MS,
 ) -> bytes:
     """Render *html* in headless Chrome and return PNG bytes.
+
+    *delay_ms* controls how long Chrome waits for JS animations to
+    finish before capturing (via ``--virtual-time-budget``).  Default
+    is 5 000 ms.  Set to 0 to screenshot immediately.
 
     Results are cached by content hash — identical HTML always
     returns the cached image without a browser round-trip.
@@ -70,8 +78,16 @@ async def screenshot(
 
     from html2image import Html2Image
 
+    flags: list[str] = []
+    if delay_ms > 0:
+        flags.append(f"--virtual-time-budget={delay_ms}")
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        hti = Html2Image(output_path=tmpdir, size=(width, height))
+        hti = Html2Image(
+            output_path=tmpdir,
+            size=(width, height),
+            custom_flags=flags or None,
+        )
         paths = hti.screenshot(html_str=html, save_as="shot.png")
         png = Path(paths[0]).read_bytes()
 
@@ -85,9 +101,10 @@ async def screenshot_to_file(
     *,
     width: int = 1200,
     height: int = 800,
+    delay_ms: int = _DEFAULT_DELAY_MS,
 ) -> Path:
     """Like ``screenshot`` but writes to *dest* and returns the path."""
-    png = await screenshot(html, width=width, height=height)
+    png = await screenshot(html, width=width, height=height, delay_ms=delay_ms)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(png)
