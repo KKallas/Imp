@@ -751,11 +751,8 @@ async def _resume_or_start_session() -> chat_history.ChatSession:
       - **unknown thread_id + existing chats** → "New Chat" click → create new
       - **no chats at all** → first run → create new
 
-    Also prunes orphaned stubs (zero-turn files older than 1 hour) on
-    every page load so the sidebar stays clean.
+    Also prunes empty stubs so the sidebar stays clean.
     """
-    chat_history.prune_stubs()
-
     # Check if Chainlit gave us a thread_id that we already know about.
     thread_id: str | None = None
     try:
@@ -769,10 +766,15 @@ async def _resume_or_start_session() -> chat_history.ChatSession:
             # Page refresh — resume this exact session.
             cl.user_session.set("chat_session", on_disk)
             await _render_chat_header(on_disk, fresh=True)
+            chat_history.prune_stubs()
             return on_disk
 
     # thread_id is new (New Chat click) or no chats exist — create fresh.
-    return await _start_new_chat_session()
+    session = await _start_new_chat_session()
+    # Prune AFTER creating, so the new stub is the "keep" and all
+    # older empties are deleted.
+    chat_history.prune_stubs()
+    return session
 
 
 async def _render_chat_header(
