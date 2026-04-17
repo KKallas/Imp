@@ -697,10 +697,10 @@ async def greet_foreman() -> None:
             "_(Stub spike: every response is faked. The point is the UX, not the data.)_"
         ),
     ).send()
-    # KKallas/Imp#45: start a fresh chat session for this browser tab.
-    # Saved to disk after every turn so refreshing the page won't lose
-    # the thread; rotated when the admin hits /new or the action button.
-    await _start_new_chat_session()
+    # KKallas/Imp#62: resume the most recent session on page load instead
+    # of creating a new stub every time. The admin creates new chats
+    # explicitly via /new or the "New Chat" button.
+    await _resume_or_start_session()
 
 
 # ---------- chat history (KKallas/Imp#45) ----------
@@ -739,6 +739,41 @@ async def _start_new_chat_session() -> chat_history.ChatSession:
     cl.user_session.set("chat_session", session)
     chat_history.save_session(session)
     await _render_chat_header(session, fresh=True)
+    return session
+
+
+async def _resume_or_start_session() -> chat_history.ChatSession:
+    """Resume the most recent chat, or create a new one if none exist.
+
+    Distinguishes page-refresh from "New Chat" click by checking whether
+    Chainlit's ``thread_id`` already has a session on disk:
+      - **known thread_id** → page refresh → resume that session
+      - **unknown thread_id + existing chats** → "New Chat" click → create new
+      - **no chats at all** → first run → create new
+
+    Also prunes empty stubs so the sidebar stays clean.
+    """
+    # Check if Chainlit gave us a thread_id that we already know about.
+    thread_id: str | None = None
+    try:
+        thread_id = cl.context.session.thread_id
+    except Exception:
+        pass
+
+    if thread_id:
+        on_disk = chat_history.load_session(thread_id)
+        if on_disk is not None:
+            # Page refresh — resume this exact session.
+            cl.user_session.set("chat_session", on_disk)
+            await _render_chat_header(on_disk, fresh=True)
+            chat_history.prune_stubs()
+            return on_disk
+
+    # thread_id is new (New Chat click) or no chats exist — create fresh.
+    session = await _start_new_chat_session()
+    # Prune AFTER creating, so the new stub is the "keep" and all
+    # older empties are deleted.
+    chat_history.prune_stubs()
     return session
 
 

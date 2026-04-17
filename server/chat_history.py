@@ -43,6 +43,9 @@ DEFAULT_MAX_CHARS = 80_000  # ~20k tokens, leaves headroom under the 200k cap.
 # Fallback title used before the agent-titled call runs.
 FALLBACK_TITLE = "New chat"
 
+# Stubs older than this (seconds) with zero turns are pruned on startup.
+_STUB_MAX_AGE_SECS = 3600  # 1 hour
+
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -120,9 +123,10 @@ class ChatSession:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChatSession":
+        raw_title = str(data.get("title") or FALLBACK_TITLE)
         return cls(
             id=str(data["id"]),
-            title=str(data.get("title") or FALLBACK_TITLE),
+            title=_strip_date_prefix(raw_title) or FALLBACK_TITLE,
             title_source=str(data.get("title_source") or "fallback"),
             created_at=str(data.get("created_at") or _utcnow_iso()),
             last_active_at=str(data.get("last_active_at") or _utcnow_iso()),
@@ -143,6 +147,16 @@ class ChatSession:
             "turns": [t.to_dict() for t in self.turns],
         }
 
+    def sidebar_title(self) -> str:
+        """Title with a compact date prefix for sidebar display.
+
+        ``[Apr 17 14:32] Issue triage burndown``
+        """
+        prefix = date_prefix(self.created_at)
+        if prefix:
+            return f"{prefix} {self.title}"
+        return self.title
+
     def to_thread_dict(self, *, user_id: str = "admin") -> dict[str, Any]:
         """Convert to Chainlit's ThreadDict shape so our JSON-backed
         data layer can serve chat history in the native left sidebar."""
@@ -162,7 +176,7 @@ class ChatSession:
             })
         return {
             "id": self.id,
-            "name": self.title,
+            "name": self.sidebar_title(),
             "createdAt": self.created_at,
             "userId": user_id,
             "userIdentifier": "admin",
@@ -216,7 +230,7 @@ class ChatSession:
         """Set a new title. `by` controls `title_source`:
         "user" locks the title against future agent re-titling;
         "agent" or "fallback" leave it soft."""
-        self.title = title.strip() or FALLBACK_TITLE
+        self.title = _strip_date_prefix(title.strip()) or FALLBACK_TITLE
         self.title_source = by
 
     def needs_agent_title(self) -> bool:
@@ -230,6 +244,20 @@ class ChatSession:
 
 def _total_chars(turns: Iterable[Turn]) -> int:
     return sum(len(t.content) for t in turns)
+
+
+import re as _re
+
+_DATE_PREFIX_RE = _re.compile(r"^\[[\w\s:]+\]\s*")
+
+
+def _strip_date_prefix(title: str) -> str:
+    """Remove all ``[Apr 17 14:32]`` prefixes, avoiding double-prefix
+    when Chainlit round-trips the sidebar title back through ``rename``."""
+    result = title
+    while _DATE_PREFIX_RE.match(result):
+        result = _DATE_PREFIX_RE.sub("", result, count=1).strip()
+    return result
 
 
 def _new_chat_id() -> str:
@@ -333,6 +361,70 @@ def list_sessions(
             )
     rows.sort(key=lambda r: r["last_active_at"], reverse=True)
     return rows[:limit]
+
+
+def latest_session(*, base: Optional[Path] = None) -> Optional[ChatSession]:
+    """Return the most-recently-active session that has at least one turn.
+
+    Empty stubs (from ``/new`` with no messages sent yet) are skipped so
+    a page refresh reopens the last real conversation, not a blank chat.
+    """
+    for row in list_sessions(base=base, limit=20):
+        if row.get("turn_count", 0) > 0:
+            return load_session(row["id"], base=base)
+    return None
+
+
+def prune_stubs(*, base: Optional[Path] = None) -> int:
+    """Delete all empty stubs except the most recent one.
+
+    Every server restart creates a new empty stub (Chainlit assigns a
+    fresh ``thread_id`` that doesn't match anything on disk).  Keeping
+    only the newest prevents the sidebar from filling up with blank
+    "New chat" entries.
+
+    Returns the number of files deleted.
+    """
+    d = base or CHATS_DIR
+    if not d.exists():
+        return 0
+    stubs: list[tuple[str, Path]] = []  # (created_at, path)
+    for path in list(d.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, KeyError):
+            continue
+        turns = data.get("turns") or []
+        if len(turns) > 0:
+            continue
+        created = data.get("created_at") or ""
+        stubs.append((created, path))
+    if len(stubs) <= 1:
+        return 0
+    # Sort newest-first, keep only the first, delete the rest.
+    stubs.sort(key=lambda s: s[0], reverse=True)
+    pruned = 0
+    for _, path in stubs[1:]:
+        try:
+            path.unlink()
+            pruned += 1
+        except OSError:
+            pass
+    if pruned:
+        print(f"[chat_history] pruned {pruned} empty stub(s)", file=sys.stderr)
+    return pruned
+
+
+def date_prefix(created_at_iso: str) -> str:
+    """Format a compact date prefix for sidebar display.
+
+    ``2026-04-17T14:32:05+00:00`` → ``[Apr 17 14:32]``
+    """
+    try:
+        dt = datetime.fromisoformat(created_at_iso)
+        return dt.strftime("[%b %d %H:%M]")
+    except (ValueError, TypeError):
+        return ""
 
 
 # ---------- preamble for dispatch() ----------
