@@ -1,75 +1,33 @@
-"""server/screenshot.py — headless browser screenshot engine.
+"""server/screenshot.py — HTML → PNG screenshot engine.
 
-Renders an HTML page via Playwright and returns PNG bytes.  The browser
-instance is pooled: one Chromium process stays warm across calls so
-repeated screenshots don't pay a cold-launch penalty.
+Uses ``html2image`` which leverages the system Chrome/Chromium already
+installed on the machine — no separate browser download required.
 
-Screenshots are cached by a SHA-256 content hash of the rendered HTML —
-identical content always returns the cached PNG without re-launching a
-browser tab.
+Screenshots are cached by SHA-256 content hash so identical HTML always
+returns the cached PNG without a browser round-trip.
 
 Dependencies
 ------------
-``playwright`` must be installed (``pip install playwright``) **and**
-its Chromium browser downloaded (``playwright install chromium``).
-When Playwright is missing the module degrades gracefully — the
-``available()`` helper returns ``False`` and ``screenshot()`` raises
-``RuntimeError`` with install instructions.
+``pip install html2image``
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import sys
+import tempfile
 from pathlib import Path
-from typing import Any
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CACHE_DIR = _ROOT / ".imp" / "output" / "screenshots"
 
-# ── browser pool ────────────────────────────────────────────────────
-_pw: Any = None
-_browser: Any = None
-_lock = asyncio.Lock()
-
 
 def available() -> bool:
-    """Return True when Playwright is importable."""
+    """Return True when html2image is importable."""
     try:
-        import playwright  # noqa: F401
+        import html2image  # noqa: F401
         return True
     except ImportError:
         return False
-
-
-async def _ensure_browser() -> Any:
-    """Start (or reuse) a headless Chromium instance."""
-    global _pw, _browser  # noqa: PLW0603
-    async with _lock:
-        if _browser is not None and _browser.is_connected():
-            return _browser
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            raise RuntimeError(
-                "Playwright is not installed.  Run:\n"
-                "  pip install playwright && playwright install chromium"
-            ) from None
-        _pw = await async_playwright().__aenter__()
-        _browser = await _pw.chromium.launch()
-        return _browser
-
-
-async def shutdown() -> None:
-    """Close the pooled browser (call on app teardown)."""
-    global _pw, _browser  # noqa: PLW0603
-    if _browser is not None:
-        await _browser.close()
-        _browser = None
-    if _pw is not None:
-        await _pw.__aexit__(None, None, None)
-        _pw = None
 
 
 # ── cache helpers ───────────────────────────────────────────────────
@@ -100,7 +58,7 @@ async def screenshot(
     width: int = 1200,
     height: int = 800,
 ) -> bytes:
-    """Render *html* in headless Chromium and return PNG bytes.
+    """Render *html* in headless Chrome and return PNG bytes.
 
     Results are cached by content hash — identical HTML always
     returns the cached image without a browser round-trip.
@@ -110,13 +68,12 @@ async def screenshot(
     if hit is not None:
         return hit
 
-    browser = await _ensure_browser()
-    page = await browser.new_page(viewport={"width": width, "height": height})
-    try:
-        await page.set_content(html, wait_until="networkidle")
-        png = await page.screenshot(full_page=True)
-    finally:
-        await page.close()
+    from html2image import Html2Image
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hti = Html2Image(output_path=tmpdir, size=(width, height))
+        paths = hti.screenshot(html_str=html, save_as="shot.png")
+        png = Path(paths[0]).read_bytes()
 
     _store(key, png)
     return png
