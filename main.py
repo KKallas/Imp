@@ -745,15 +745,33 @@ async def _start_new_chat_session() -> chat_history.ChatSession:
 async def _resume_or_start_session() -> chat_history.ChatSession:
     """Resume the most recent chat, or create a new one if none exist.
 
+    Distinguishes page-refresh from "New Chat" click by checking whether
+    Chainlit's ``thread_id`` already has a session on disk:
+      - **known thread_id** → page refresh → resume that session
+      - **unknown thread_id + existing chats** → "New Chat" click → create new
+      - **no chats at all** → first run → create new
+
     Also prunes orphaned stubs (zero-turn files older than 1 hour) on
     every page load so the sidebar stays clean.
     """
     chat_history.prune_stubs()
-    existing = chat_history.latest_session()
-    if existing is not None:
-        cl.user_session.set("chat_session", existing)
-        await _render_chat_header(existing, fresh=True)
-        return existing
+
+    # Check if Chainlit gave us a thread_id that we already know about.
+    thread_id: str | None = None
+    try:
+        thread_id = cl.context.session.thread_id
+    except Exception:
+        pass
+
+    if thread_id:
+        on_disk = chat_history.load_session(thread_id)
+        if on_disk is not None:
+            # Page refresh — resume this exact session.
+            cl.user_session.set("chat_session", on_disk)
+            await _render_chat_header(on_disk, fresh=True)
+            return on_disk
+
+    # thread_id is new (New Chat click) or no chats exist — create fresh.
     return await _start_new_chat_session()
 
 
