@@ -52,14 +52,15 @@ from chainlit.input_widget import NumberInput, Select, Switch
 
 from server import budgets, chat_history
 
-# ── mount /render/<type> route (P4.24 renderer plugin system) ───────
+# ── render server (P4.24 renderer plugin system) ───────────────────
+# Runs on a separate port (default 8421) so it has no auth middleware.
+_RENDER_BASE_URL: str = ""
 try:
-    from chainlit.server import app as _chainlit_app
-    from server.render_route import mount as _mount_render_route
+    from server.render_route import start_background as _start_render_server
 
-    _mount_render_route(_chainlit_app)
+    _RENDER_BASE_URL = _start_render_server()
 except Exception:
-    pass  # render route unavailable — non-fatal
+    pass  # render server unavailable — non-fatal
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / ".imp" / "config.json"
@@ -1081,15 +1082,23 @@ async def _foreman_say(text: str) -> None:
                     block["raw"] + f"\n\n_(watchdog couldn't parse this gantt: {exc})_",
                 )
         else:
-            # Non-gantt mermaid type — link to the interactive viewer.
+            # Non-gantt mermaid type — link to the render server viewer.
             from urllib.parse import quote
 
-            viewer_url = f"/render/mermaid?diagram={quote(content)}&mode=viewer"
-            cleaned = cleaned.replace(
-                block["raw"],
-                block["raw"]
-                + f"\n\n[Open interactive mermaid viewer]({viewer_url})",
-            )
+            if _RENDER_BASE_URL:
+                viewer_url = f"{_RENDER_BASE_URL}/render/mermaid?diagram={quote(content)}&mode=viewer"
+                cleaned = cleaned.replace(
+                    block["raw"],
+                    block["raw"]
+                    + f"\n\n[Open interactive mermaid viewer]({viewer_url})",
+                )
+            else:
+                cleaned = cleaned.replace(
+                    block["raw"],
+                    block["raw"]
+                    + "\n\n_(render server not running — start with "
+                    "`python -m server.render_route`)_",
+                )
 
     await cl.Message(
         author="Foreman",
@@ -1166,12 +1175,20 @@ def _apply_mermaid_watchdog(text: str) -> tuple[str, list]:
         else:
             from urllib.parse import quote
 
-            viewer_url = f"/render/mermaid?diagram={quote(content)}&mode=viewer"
-            cleaned = cleaned.replace(
-                block["raw"],
-                block["raw"]
-                + f"\n\n[Open interactive mermaid viewer]({viewer_url})",
-            )
+            if _RENDER_BASE_URL:
+                viewer_url = f"{_RENDER_BASE_URL}/render/mermaid?diagram={quote(content)}&mode=viewer"
+                cleaned = cleaned.replace(
+                    block["raw"],
+                    block["raw"]
+                    + f"\n\n[Open interactive mermaid viewer]({viewer_url})",
+                )
+            else:
+                cleaned = cleaned.replace(
+                    block["raw"],
+                    block["raw"]
+                    + "\n\n_(render server not running — start with "
+                    "`python -m server.render_route`)_",
+                )
 
     return cleaned, plotly_elements
 
@@ -1485,7 +1502,9 @@ async def _render_chart_file(artifact: dict) -> None:
         link_hint = f"[Open full {template} page in a new tab]({public_url})"
     else:
         link_hint = "_(couldn't publish the HTML page — inline chart only.)_"
-    render_link = f" · [Render view](/render/{template}?mode=viewer)"
+    render_link = ""
+    if _RENDER_BASE_URL:
+        render_link = f" · [Render view]({_RENDER_BASE_URL}/render/{template}?mode=viewer)"
     content = f"**{template.capitalize()} chart** — {link_hint}{render_link}"
 
     await cl.Message(
