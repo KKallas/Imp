@@ -376,15 +376,19 @@ def latest_session(*, base: Optional[Path] = None) -> Optional[ChatSession]:
 
 
 def prune_stubs(*, base: Optional[Path] = None) -> int:
-    """Delete stub files (zero turns) older than ``_STUB_MAX_AGE_SECS``.
+    """Delete all empty stubs except the most recent one.
+
+    Every server restart creates a new empty stub (Chainlit assigns a
+    fresh ``thread_id`` that doesn't match anything on disk).  Keeping
+    only the newest prevents the sidebar from filling up with blank
+    "New chat" entries.
 
     Returns the number of files deleted.
     """
     d = base or CHATS_DIR
     if not d.exists():
         return 0
-    now = datetime.now(timezone.utc)
-    pruned = 0
+    stubs: list[tuple[str, Path]] = []  # (created_at, path)
     for path in list(d.glob("*.json")):
         try:
             data = json.loads(path.read_text())
@@ -394,19 +398,20 @@ def prune_stubs(*, base: Optional[Path] = None) -> int:
         if len(turns) > 0:
             continue
         created = data.get("created_at") or ""
+        stubs.append((created, path))
+    if len(stubs) <= 1:
+        return 0
+    # Sort newest-first, keep only the first, delete the rest.
+    stubs.sort(key=lambda s: s[0], reverse=True)
+    pruned = 0
+    for _, path in stubs[1:]:
         try:
-            ts = datetime.fromisoformat(created)
-        except ValueError:
-            continue
-        age = (now - ts).total_seconds()
-        if age > _STUB_MAX_AGE_SECS:
-            try:
-                path.unlink()
-                pruned += 1
-            except OSError:
-                pass
+            path.unlink()
+            pruned += 1
+        except OSError:
+            pass
     if pruned:
-        print(f"[chat_history] pruned {pruned} orphaned stub(s)", file=sys.stderr)
+        print(f"[chat_history] pruned {pruned} empty stub(s)", file=sys.stderr)
     return pruned
 
 
