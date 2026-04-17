@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -852,8 +854,14 @@ not try to draw them. Keep replies concise; the admin reads quickly.
 # ---------- MCP server factory ----------
 
 
-def _build_mcp_server(user_intent: str) -> Any:
+def _build_mcp_server(
+    user_intent: str, tracker: Optional[_ToolTracker] = None
+) -> Any:
     """Build a fresh MCP server whose tool closures capture `user_intent`.
+
+    When *tracker* is provided, each tool handler is wrapped so the
+    tracker emits ``tool_started`` / ``tool_finished`` events to the
+    ``TurnUI``.
 
     The user's current-turn text feeds `intercept.execute_command(user_intent=...)`
     — which the guard uses to judge whether proposed writes actually
@@ -1235,40 +1243,72 @@ def _build_mcp_server(user_intent: str) -> Any:
             )
         )
 
-    return create_sdk_mcp_server(
-        name="imp_foreman",
-        tools=[
-            list_issues_tool,
-            view_issue_tool,
-            list_prs_tool,
-            view_pr_tool,
-            list_project_items_tool,
-            comment_on_issue_tool,
-            edit_issue_tool,
-            close_issue_tool,
-            reopen_issue_tool,
-            create_issue_tool,
-            edit_project_field_tool,
-            run_moderate_tool,
-            run_solve_tool,
-            run_fix_tool,
-            run_sync_tool,
-            run_heuristics_tool,
-            run_render_tool,
-            loop_pause_tool,
-            loop_resume_tool,
-            loop_scope_tool,
-            loop_clear_tool,
-            get_budgets_tool,
-            start_scenario_tool,
-            commit_scenario_tool,
-            switch_scenario_tool,
-            close_scenario_tool,
-            open_scenario_tool,
-            list_scenarios_tool,
-            run_shell_tool,
-        ],
-    )
+    all_tools = [
+        list_issues_tool,
+        view_issue_tool,
+        list_prs_tool,
+        view_pr_tool,
+        list_project_items_tool,
+        comment_on_issue_tool,
+        edit_issue_tool,
+        close_issue_tool,
+        reopen_issue_tool,
+        create_issue_tool,
+        edit_project_field_tool,
+        run_moderate_tool,
+        run_solve_tool,
+        run_fix_tool,
+        run_sync_tool,
+        run_heuristics_tool,
+        run_render_tool,
+        loop_pause_tool,
+        loop_resume_tool,
+        loop_scope_tool,
+        loop_clear_tool,
+        get_budgets_tool,
+        start_scenario_tool,
+        commit_scenario_tool,
+        switch_scenario_tool,
+        close_scenario_tool,
+        open_scenario_tool,
+        list_scenarios_tool,
+        run_shell_tool,
+    ]
+
+    # Wrap every handler so the tracker can emit per-tool events.
+    if tracker is not None:
+        for t in all_tools:
+            _orig = t.handler
+            _name = t.name
+
+            async def _instrumented(
+                args: dict[str, Any],
+                *,
+                _h: Any = _orig,
+                _n: str = _name,
+            ) -> dict[str, Any]:
+                await tracker._on_start(_n)
+                t0 = time.monotonic()
+                try:
+                    result = await _h(args)
+                    is_err = result.get("is_error", False)
+                    out_text = ""
+                    for item in result.get("content", []):
+                        if item.get("type") == "text":
+                            out_text += item.get("text", "")
+                    await tracker._on_done(
+                        _n, not is_err, time.monotonic() - t0, out_text
+                    )
+                    return result
+                except Exception as exc:
+                    await tracker._on_done(
+                        _n, False, time.monotonic() - t0, str(exc)
+                    )
+                    raise
+
+            t.handler = _instrumented
+
+    return create_sdk_mcp_server(name="imp_foreman", tools=all_tools)
 
 
 # Belt-and-suspenders: if the SDK ever defaults a tool to allowed, this
@@ -1286,6 +1326,122 @@ _DISALLOWED_TOOLS: tuple[str, ...] = (
     "Task",
     "TodoWrite",
 )
+
+
+# ---------- structured turn UI (KKallas/Imp#55) ----------
+
+# MCP tool names are prefixed by the SDK; strip for display.
+_MCP_PREFIX = "mcp__imp_foreman__"
+
+
+def _clean_tool_name(name: str) -> str:
+    """Strip the MCP server prefix from a tool name."""
+    return name[len(_MCP_PREFIX) :] if name.startswith(_MCP_PREFIX) else name
+
+
+def _format_tool_sig(name: str, args: dict[str, Any]) -> str:
+    """Format a tool call as a readable function signature."""
+    if not args:
+        return f"`{name}()`"
+    parts = []
+    for k, v in args.items():
+        if isinstance(v, str):
+            parts.append(f'{k}="{v}"')
+        else:
+            parts.append(f"{k}={v}")
+    return f"`{name}({', '.join(parts)})`"
+
+
+@dataclass
+class PlanItem:
+    """One tool call in a turn's plan checklist."""
+
+    name: str  # clean name (no MCP prefix)
+    args: dict[str, Any]
+    status: str = "pending"  # pending | running | ok | error
+    duration_s: float = 0.0
+    output: str = ""
+
+
+class TurnUI:
+    """Callback interface for structured tool-call rendering.
+
+    Base class provides no-op methods so ``dispatch`` can call them
+    unconditionally.  ``main.py`` subclasses this to implement
+    Chainlit rendering (plan checklist, tool steps, streaming text,
+    foldable thinking).
+    """
+
+    async def show_plan(self, items: list[PlanItem]) -> None:
+        """Display the initial plan checklist (⏳ for every item)."""
+
+    async def append_plan(self, items: list[PlanItem]) -> None:
+        """Add follow-up-wave items to an existing plan."""
+
+    async def tool_started(self, index: int, item: PlanItem) -> None:
+        """A tool started executing (index into the plan list)."""
+
+    async def tool_finished(self, index: int, item: PlanItem) -> None:
+        """A tool finished (ok or error)."""
+
+    async def stream_token(self, token: str) -> None:
+        """Append one token of assistant prose."""
+
+    async def stream_end(self, full_text: str) -> None:
+        """Finalise streamed text (post-processing, mermaid, etc.)."""
+
+    async def thinking_update(self, text: str) -> None:
+        """Append to the foldable thinking step."""
+
+
+class _ToolTracker:
+    """Wraps MCP tool handlers to emit per-tool start/finish events.
+
+    Created per-dispatch.  ``_build_mcp_server`` injects the tracker
+    into every tool handler so status updates flow to ``TurnUI``
+    without the tool bodies knowing about the UI.
+    """
+
+    def __init__(self, turn_ui: TurnUI) -> None:
+        self.turn_ui = turn_ui
+        self.plan_items: list[PlanItem] = []
+        # Queue of plan-list indices per clean tool name so we can
+        # match the (name-only) MCP callback to the right row when
+        # the same tool is called multiple times in one batch.
+        self._pending: dict[str, list[int]] = {}
+
+    def register_batch(self, tool_blocks: list[Any]) -> list[PlanItem]:
+        """Register a batch of ``ToolUseBlock``s, return new items."""
+        new_items: list[PlanItem] = []
+        for block in tool_blocks:
+            clean = _clean_tool_name(block.name)
+            item = PlanItem(name=clean, args=block.input or {})
+            idx = len(self.plan_items)
+            self.plan_items.append(item)
+            self._pending.setdefault(clean, []).append(idx)
+            new_items.append(item)
+        return new_items
+
+    async def _on_start(self, tool_name: str) -> None:
+        indices = self._pending.get(tool_name, [])
+        if not indices:
+            return
+        idx = indices[0]  # peek — pop on done
+        self.plan_items[idx].status = "running"
+        await self.turn_ui.tool_started(idx, self.plan_items[idx])
+
+    async def _on_done(
+        self, tool_name: str, ok: bool, duration: float, output: str
+    ) -> None:
+        indices = self._pending.get(tool_name, [])
+        if not indices:
+            return
+        idx = indices.pop(0)
+        item = self.plan_items[idx]
+        item.status = "ok" if ok else "error"
+        item.duration_s = duration
+        item.output = output
+        await self.turn_ui.tool_finished(idx, item)
 
 
 # ---------- dispatch driver ----------
@@ -1317,38 +1473,31 @@ async def dispatch(
     thinking: Optional[ThinkingFn] = None,
     chart: Optional[ChartFn] = None,
     history: Optional[list[Any]] = None,
+    turn_ui: Optional[TurnUI] = None,
 ) -> str:
-    """Run one Foreman conversation turn for `user_text`.
+    """Run one Foreman conversation turn for ``user_text``.
 
-    Each call builds a fresh `ClaudeSDKClient` — we keep no persistent
-    client across turns — but `history` (a list of `chat_history.Turn`)
+    Each call builds a fresh ``ClaudeSDKClient`` — we keep no persistent
+    client across turns — but *history* (a list of ``chat_history.Turn``)
     is flattened into a preamble and prepended to the user message so
-    the agent can reference earlier turns ("now do the same for issue
-    43" after "moderate issue 42"). The preamble is text-only; prior
-    tool calls are NOT re-executed on resume.
+    the agent can reference earlier turns.
 
     Returns the plain-prose assistant reply so the caller can append
-    it to the session history. Returns an empty string when the LLM
+    it to the session history.  Returns an empty string when the LLM
     produced only tool calls / artifacts and no prose.
 
-    The `thinking` seam brackets the SDK call with a cl.Step spinner
-    in the UI layer (same pattern as dispatcher.py's synthesis turn).
-    The `chart` seam receives any artifacts collected by tool calls
-    during the turn (currently scenario-session grids); main.py wires
-    this to the appropriate Chainlit element constructors.
+    When *turn_ui* is provided the structured plan→execute→reason flow
+    is used (KKallas/Imp#55): tool calls are rendered as a checklist
+    with per-tool status, text is streamed token-by-token, and thinking
+    blocks feed a foldable step.  When ``None``, the legacy per-tool
+    ``say()`` behaviour is preserved (tests / headless).
     """
     from server import chat_history
 
-    # Reset the per-turn artifact collector so this dispatch only
-    # surfaces artifacts created by its own tool calls.
     _pending_artifacts.clear()
-    import sys
 
     print(f"[foreman] dispatch called: user_text={user_text!r}", file=sys.stderr)
 
-    # Build the actual prompt: history preamble (if any) + user text.
-    # Empty / missing history → we send just user_text, matching the
-    # pre-P4.20 behavior exactly.
     preamble = chat_history.history_preamble(history or [])
     prompt_text = preamble + user_text if preamble else user_text
 
@@ -1358,12 +1507,15 @@ async def dispatch(
         ClaudeSDKClient,
         ResultMessage,
         TextBlock,
+        ThinkingBlock,
         ToolUseBlock,
     )
 
-    mcp_server = _build_mcp_server(user_intent=user_text)
+    # Set up the tool tracker when the structured UI is active.
+    ui = turn_ui or TurnUI()  # base TurnUI = no-ops
+    tracker = _ToolTracker(ui) if turn_ui is not None else None
+    mcp_server = _build_mcp_server(user_intent=user_text, tracker=tracker)
 
-    # `allowed_tools` uses the SDK's mcp__<server>__<tool> convention.
     allowed_tool_names = [
         f"mcp__imp_foreman__{name}"
         for name in (
@@ -1389,7 +1541,6 @@ async def dispatch(
             "loop_scope",
             "loop_clear_scope",
             "get_budgets",
-            # KKallas/Imp#16 scenario session tools
             "start_scenario_session",
             "commit_scenario",
             "switch_scenario",
@@ -1412,6 +1563,7 @@ async def dispatch(
 
     assistant_chunks: list[str] = []
     tool_calls_seen: list[str] = []
+    has_plan = False
 
     try:
         async with cm_factory("Foreman is thinking…"):
@@ -1419,14 +1571,37 @@ async def dispatch(
                 await client.query(prompt_text)
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
+                        # Collect blocks by type first, then process in
+                        # the right visual order: thinking → plan → text.
+                        # This prevents preamble text ("Sure, let me…")
+                        # from creating an answer message before the plan.
+                        msg_thinking: list[Any] = []
+                        msg_tools: list[Any] = []
+                        msg_text: list[Any] = []
                         for block in message.content:
-                            if isinstance(block, TextBlock):
-                                assistant_chunks.append(block.text)
+                            if isinstance(block, ThinkingBlock):
+                                msg_thinking.append(block)
                             elif isinstance(block, ToolUseBlock):
                                 tool_calls_seen.append(block.name)
-                                # Mirror tool calls into the chat so the
-                                # admin sees what Foreman is doing before
-                                # the final reply.
+                                if block.name.startswith(_MCP_PREFIX):
+                                    msg_tools.append(block)
+                            elif isinstance(block, TextBlock):
+                                msg_text.append(block)
+
+                        # 1. Thinking (buffered in UI until answer)
+                        for b in msg_thinking:
+                            await ui.thinking_update(b.thinking)
+
+                        # 2. Plan checklist
+                        if msg_tools and tracker is not None:
+                            new_items = tracker.register_batch(msg_tools)
+                            if not has_plan:
+                                await ui.show_plan(tracker.plan_items)
+                                has_plan = True
+                            else:
+                                await ui.append_plan(new_items)
+                        elif msg_tools and turn_ui is None:
+                            for block in msg_tools:
                                 args_preview = (
                                     json.dumps(block.input, indent=2)
                                     if block.input
@@ -1436,12 +1611,24 @@ async def dispatch(
                                     f"_Using tool:_ `{block.name}`\n"
                                     f"```json\n{args_preview}\n```"
                                 )
+
+                        # 3. Text — always accumulate for the final
+                        #    reply, but only stream if this message has
+                        #    no tool calls (preamble text in a tool-
+                        #    bearing message is deferred so the plan
+                        #    and tool steps appear first in the chat).
+                        for b in msg_text:
+                            assistant_chunks.append(b.text)
+                            if not msg_tools:
+                                await ui.stream_token(b.text)
+
                     elif isinstance(message, ResultMessage):
                         usage = getattr(message, "usage", None) or {}
                         in_tok = int(usage.get("input_tokens", 0) or 0)
                         out_tok = int(usage.get("output_tokens", 0) or 0)
                         if in_tok > 0 or out_tok > 0:
                             budgets.add_tokens(in_tok, out_tok)
+
     except Exception as exc:  # noqa: BLE001 — surface backend errors
         print(
             f"[foreman] backend error: {type(exc).__name__}: {exc}",
@@ -1451,19 +1638,27 @@ async def dispatch(
         return ""
 
     reply = "".join(assistant_chunks).strip()
-    if reply:
-        await say(reply)
+
+    if turn_ui is not None:
+        # Structured UI handled text streaming — finalise it.
+        if reply:
+            await ui.stream_end(reply)
+        elif tool_calls_seen:
+            await say(
+                f"_(Foreman used {len(tool_calls_seen)} tool call(s) "
+                f"but produced no prose reply. Ask a follow-up for a summary.)_"
+            )
     else:
-        # A turn that produced only tool calls with no prose — tell the
-        # admin something landed so they aren't staring at silence.
-        if tool_calls_seen:
+        # Legacy: post the buffered reply as a single message.
+        if reply:
+            await say(reply)
+        elif tool_calls_seen:
             await say(
                 f"_(Foreman used {len(tool_calls_seen)} tool call(s) "
                 f"but produced no prose reply. Ask a follow-up for a summary.)_"
             )
 
-    # Drain pending artifacts (scenario grids, etc.) — emit each via
-    # the chart UI seam so main.py can render them as Chainlit elements.
+    # Drain pending artifacts (scenario grids, etc.).
     if chart is not None and _pending_artifacts:
         for artifact in list(_pending_artifacts):
             try:
