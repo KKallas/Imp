@@ -1039,8 +1039,51 @@ async def _on_message_body(msg: cl.Message) -> None:
 
 
 async def _foreman_say(text: str) -> None:
-    """Post a `Foreman`-authored reply to the admin."""
-    await cl.Message(author="Foreman", content=text).send()
+    """Post a `Foreman`-authored reply to the admin.
+
+    Includes a **mermaid watchdog** (KKallas/Imp#52): scans the outbound
+    text for fenced mermaid blocks. Gantt blocks are converted to inline
+    ``cl.Plotly`` elements and stripped from the text. Other mermaid types
+    (flowchart, sequence, pie, …) are left in place with a note that
+    inline rendering isn't supported yet. Parse failures fall through
+    softly — the original block stays with an error annotation.
+    """
+    from pipeline.mermaid_to_plotly import extract_mermaid_blocks, mermaid_gantt_to_plotly
+
+    blocks = extract_mermaid_blocks(text)
+    plotly_elements: list = []
+    cleaned = text
+
+    for block in blocks:
+        content = block["content"]
+        first_word = content.lstrip().split()[0].lower() if content.strip() else ""
+
+        if first_word == "gantt":
+            try:
+                figure = mermaid_gantt_to_plotly(content)
+                plotly_elements.append(
+                    cl.Plotly(name="auto-gantt", figure=figure, display="inline")
+                )
+                cleaned = cleaned.replace(block["raw"], "")
+            except Exception as exc:  # noqa: BLE001
+                cleaned = cleaned.replace(
+                    block["raw"],
+                    block["raw"] + f"\n\n_(watchdog couldn't parse this gantt: {exc})_",
+                )
+        else:
+            # Non-gantt mermaid type — leave in place with a note.
+            mermaid_type = first_word or "unknown"
+            cleaned = cleaned.replace(
+                block["raw"],
+                block["raw"]
+                + f"\n\n_(mermaid `{mermaid_type}` isn't rendered inline yet)_",
+            )
+
+    await cl.Message(
+        author="Foreman",
+        content=cleaned.strip(),
+        elements=plotly_elements if plotly_elements else None,
+    ).send()
 
 
 async def _foreman_ask(question: str) -> str | None:

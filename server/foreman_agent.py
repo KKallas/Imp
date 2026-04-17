@@ -834,12 +834,18 @@ give you structured data).
 
 ## How you respond
 
-Plain markdown. Do NOT emit mermaid fenced code blocks — Chainlit 2.x \
-does not render mermaid. Charts come from the named tools \
-(`run_render_chart`, `start_scenario_session`) as Plotly elements \
-attached to your reply by the UI layer. Your prose should describe what \
-the charts show, not try to draw them. Keep replies concise; the admin \
-reads quickly.
+Plain markdown. Mermaid code blocks WILL NOT RENDER in chat under any \
+circumstances. If you produce one anyway, an automated watchdog will \
+try to convert it to a Plotly chart and may fail — so the user could \
+end up seeing raw mermaid syntax or a parse-error note instead of a \
+chart. Use `run_render_chart` for canonical charts; for one-off or \
+custom data, write a `python -c` script that builds a Plotly figure \
+dict to `.imp/output/<name>.plotly.json` and call \
+`render_plotly_file(<path>)`. Don't paste mermaid into your prose. \
+Charts come from the named tools (`run_render_chart`, \
+`start_scenario_session`) as Plotly elements attached to your reply \
+by the UI layer. Your prose should describe what the charts show, \
+not try to draw them. Keep replies concise; the admin reads quickly.
 """
 
 
