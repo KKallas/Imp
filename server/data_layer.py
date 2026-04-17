@@ -156,6 +156,14 @@ class ImpDataLayer(BaseDataLayer):
     async def delete_feedback(self, feedback_id: str) -> bool:
         return True
 
+    # ---- favorites (no-op) ----
+
+    async def get_favorite_steps(self, user_id: str) -> List[StepDict]:
+        return []
+
+    async def set_step_favorite(self, step_id: str, user_id: str, favorite: bool) -> None:
+        pass
+
     # ---- misc ----
 
     async def build_debug_url(self) -> str:
