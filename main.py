@@ -1016,6 +1016,7 @@ async def _on_message_body(msg: cl.Message) -> None:
         thinking=_foreman_thinking,
         chart=_foreman_chart,
         history=history_turns,
+        turn_ui=_ForemanTurnUI(),
     )
 
     # Record the assistant turn + persist + agent-title after the first
@@ -1117,6 +1118,249 @@ async def _foreman_thinking(label: str):
     """
     async with cl.Step(name=label, type="run") as step:
         yield step
+
+
+# ---------- structured turn UI (KKallas/Imp#55) ----------
+
+
+def _apply_mermaid_watchdog(text: str) -> tuple[str, list]:
+    """Run the mermaid gantt→Plotly watchdog on *text*.
+
+    Returns ``(cleaned_text, plotly_elements)`` — the same logic as
+    ``_foreman_say`` but extracted so ``_ForemanTurnUI.stream_end`` can
+    reuse it without creating a second ``cl.Message``.
+    """
+    from pipeline.mermaid_to_plotly import extract_mermaid_blocks, mermaid_gantt_to_plotly
+
+    blocks = extract_mermaid_blocks(text)
+    plotly_elements: list = []
+    cleaned = text
+
+    for block in blocks:
+        content = block["content"]
+        first_word = content.lstrip().split()[0].lower() if content.strip() else ""
+
+        if first_word == "gantt":
+            try:
+                figure = mermaid_gantt_to_plotly(content)
+                plotly_elements.append(
+                    cl.Plotly(name="auto-gantt", figure=figure, display="inline")
+                )
+                cleaned = cleaned.replace(block["raw"], "")
+            except Exception as exc:  # noqa: BLE001
+                cleaned = cleaned.replace(
+                    block["raw"],
+                    block["raw"] + f"\n\n_(watchdog couldn't parse this gantt: {exc})_",
+                )
+        else:
+            mermaid_type = first_word or "unknown"
+            cleaned = cleaned.replace(
+                block["raw"],
+                block["raw"]
+                + f"\n\n_(mermaid `{mermaid_type}` isn't rendered inline yet)_",
+            )
+
+    return cleaned, plotly_elements
+
+
+class _ForemanTurnUI:
+    """Chainlit implementation of the structured turn UI (KKallas/Imp#55).
+
+    Everything renders inside **one** ``cl.Message`` that is updated in
+    place — no separate ``cl.Step`` objects, so Chainlit's inter-element
+    ordering quirks are eliminated.  The visual layout (top → bottom):
+
+    1. **Plan checklist** — ⏳/✅/❌ per tool with timing
+    2. **Thinking**      — blockquote with model's chain-of-thought
+    3. **Answer**        — streamed prose (appended via ``stream_token``)
+
+    Structure sections (1–2) are rebuilt via ``msg.update()`` whenever
+    state changes.  The answer (3) is appended with ``msg.stream_token``
+    for efficient incremental rendering.  Pure markdown — no HTML tags.
+    """
+
+    _LOGS_DIR = Path(__file__).resolve().parent / "public" / "logs"
+
+    def __init__(self) -> None:
+        self._msg: cl.Message | None = None
+        self._plan_items: list | None = None
+        self._thinking_chunks: list[str] = []
+        self._answer_chunks: list[str] = []
+        self._answer_started: bool = False
+        self._tool_logs: dict[int, str] = {}  # index → "/public/logs/..." URL
+        # Unique prefix so concurrent turns don't collide.
+        import uuid
+        self._log_prefix = uuid.uuid4().hex[:8]
+
+    # -- helpers ------------------------------------------------------
+
+    @staticmethod
+    def _status_icon(status: str) -> str:
+        return {
+            "pending": "\u23f3",
+            "running": "\U0001f504",
+            "ok": "\u2705",
+            "error": "\u274c",
+        }.get(status, "\u23f3")
+
+    def _render_structure(self) -> str:
+        """Render plan + thinking — everything above the answer."""
+        from server.foreman_agent import _format_tool_sig
+
+        parts: list[str] = []
+
+        # Plan checklist — each tool on its own line with a log link
+        if self._plan_items:
+            lines = ["**Foreman's plan:**\n"]
+            for i, item in enumerate(self._plan_items):
+                icon = self._status_icon(item.status)
+                sig = _format_tool_sig(item.name, item.args)
+                timing = (
+                    f" \u00b7 {item.duration_s:.1f}s"
+                    if item.status in ("ok", "error")
+                    else ""
+                )
+                log_link = ""
+                if i in self._tool_logs:
+                    log_link = f"  \u2014 [log]({self._tool_logs[i]})"
+                lines.append(f"{icon} {sig}{timing}{log_link}")
+            parts.append("\n".join(lines))
+
+        # Thinking (blockquote)
+        if self._thinking_chunks:
+            thinking_text = "\n\n".join(self._thinking_chunks)
+            quoted = "\n".join(
+                f"> {line}" if line.strip() else ">"
+                for line in thinking_text.splitlines()
+            )
+            parts.append(f"> **Foreman's thinking**\n>\n{quoted}")
+
+        return "\n\n".join(parts)
+
+    async def _ensure_msg(self) -> cl.Message:
+        if self._msg is None:
+            self._msg = cl.Message(author="Foreman", content="")
+            await self._msg.send()
+        return self._msg
+
+    async def _update_structure(self) -> None:
+        """Rebuild the message from structure + accumulated answer text."""
+        base = self._render_structure()
+        msg = await self._ensure_msg()
+        content = base
+        if self._answer_chunks:
+            content += "\n\n" + "".join(self._answer_chunks)
+        msg.content = content
+        await msg.update()
+
+    # -- TurnUI interface ---------------------------------------------
+
+    async def show_plan(self, items: list) -> None:
+        self._plan_items = items
+        await self._update_structure()
+
+    async def append_plan(self, items: list) -> None:
+        await self._update_structure()
+
+    async def tool_started(self, index: int, item: object) -> None:
+        await self._update_structure()
+
+    @staticmethod
+    def _format_tool_log(name: str, args: dict, output: str) -> str:
+        """Build a human-readable log body for a tool call."""
+        lines = [f"Tool: {name}", ""]
+
+        # Input
+        lines.append("── Input ──")
+        lines.append(json.dumps(args, indent=2))
+        lines.append("")
+
+        # Output — try to pretty-print the intercept JSON
+        lines.append("── Output ──")
+        try:
+            data = json.loads(output)
+            if isinstance(data, dict):
+                meta: list[str] = []
+                if "exit_code" in data:
+                    meta.append(f"rc={data['exit_code']}")
+                if data.get("verdict"):
+                    meta.append(data["verdict"])
+                if data.get("classified_as"):
+                    meta.append(data["classified_as"])
+                if meta:
+                    lines.append(" · ".join(meta))
+                if data.get("verdict_reason"):
+                    lines.append(f"({data['verdict_reason']})")
+                payload = data.get("output", "")
+                if payload:
+                    lines.append("")
+                    lines.append(payload.replace("\t", "  |  "))
+                remaining = {
+                    k: v for k, v in data.items()
+                    if k not in ("exit_code", "output", "action_id",
+                                 "verdict", "verdict_reason", "classified_as")
+                }
+                if remaining:
+                    lines.append("")
+                    lines.append(json.dumps(remaining, indent=2))
+            else:
+                lines.append(json.dumps(data, indent=2))
+        except (json.JSONDecodeError, TypeError):
+            lines.append(output)
+
+        return "\n".join(lines)
+
+    async def tool_finished(self, index: int, item: object) -> None:
+        from server.foreman_agent import PlanItem
+
+        assert isinstance(item, PlanItem)
+
+        # Write a log file for this tool call.
+        try:
+            self._LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            filename = f"{self._log_prefix}_{index}_{item.name}.txt"
+            log_path = self._LOGS_DIR / filename
+            log_body = self._format_tool_log(item.name, item.args, item.output)
+            log_path.write_text(log_body, encoding="utf-8")
+            self._tool_logs[index] = f"/public/logs/{filename}"
+        except OSError as exc:
+            print(
+                f"[turn-ui] log write failed: {exc}",
+                file=__import__("sys").stderr,
+            )
+
+        await self._update_structure()
+
+    async def stream_token(self, token: str) -> None:
+        self._answer_chunks.append(token)
+        if not self._answer_started:
+            self._answer_started = True
+            # Refresh structure (includes thinking) right before answer
+            base = self._render_structure()
+            msg = await self._ensure_msg()
+            msg.content = base
+            await msg.update()
+        await self._msg.stream_token(token)  # type: ignore[union-attr]
+
+    async def stream_end(self, full_text: str) -> None:
+        cleaned, plotly_elements = _apply_mermaid_watchdog(full_text)
+        self._answer_chunks = [cleaned.strip()] if cleaned.strip() else []
+
+        base = self._render_structure()
+        content = base
+        if self._answer_chunks:
+            content += "\n\n" + self._answer_chunks[0]
+
+        msg = await self._ensure_msg()
+        msg.content = content
+        if plotly_elements:
+            msg.elements = plotly_elements  # type: ignore[assignment]
+        await msg.update()
+
+    async def thinking_update(self, text: str) -> None:
+        self._thinking_chunks.append(text)
+        # Don't rebuild yet — thinking is included when the structure
+        # is next refreshed (on stream start or stream_end).
 
 
 # ---------- scenario session UI (KKallas/Imp#16) ----------
