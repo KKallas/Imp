@@ -112,9 +112,10 @@ class ImpDataLayer(BaseDataLayer):
             # litter .imp/chats/ with empty 237-byte stubs.
             return
         if name is not None:
-            # Chainlit auto-renames threads to the first user message.
-            # Don't let that overwrite an agent- or user-set title.
-            if session.title_source == "fallback":
+            # Only allow rename if the title is still the default
+            # placeholder. Any other title (agent-generated, user-set,
+            # or even a previous fallback rename) is kept as-is.
+            if session.title == chat_history.FALLBACK_TITLE:
                 session.rename(name, by="fallback")
         chat_history.save_session(session)
 
