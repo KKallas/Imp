@@ -349,11 +349,15 @@ def list_sessions(
 
 
 def latest_session(*, base: Optional[Path] = None) -> Optional[ChatSession]:
-    """Return the most-recently-active session, or None if no chats exist."""
-    rows = list_sessions(base=base, limit=1)
-    if not rows:
-        return None
-    return load_session(rows[0]["id"], base=base)
+    """Return the most-recently-active session that has at least one turn.
+
+    Empty stubs (from ``/new`` with no messages sent yet) are skipped so
+    a page refresh reopens the last real conversation, not a blank chat.
+    """
+    for row in list_sessions(base=base, limit=20):
+        if row.get("turn_count", 0) > 0:
+            return load_session(row["id"], base=base)
+    return None
 
 
 def prune_stubs(*, base: Optional[Path] = None) -> int:
