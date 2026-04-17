@@ -75,7 +75,7 @@ def _reset_config() -> None:
 
 
 def test_fields_template_has_all_seven() -> None:
-    """Sanity check: templates/fields.json declares the 7 fields from v0.1.md."""
+    """Sanity check: renderers/fields.json declares the 7 fields from v0.1.md."""
     _reset_config()
     fields = pb.load_fields_template()
     names = [f["name"] for f in fields]

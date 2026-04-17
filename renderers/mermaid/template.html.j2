@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mermaid Diagram</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --fg: #1f2933;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                         Roboto, Oxygen, Ubuntu, sans-serif;
+            color: var(--fg);
+            margin: 0;
+            padding: 24px;
+            max-width: 1400px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .chart-wrap {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            background: #fff;
+            overflow-x: auto;
+        }
+        .mermaid { font-size: 13px; }
+        footer {
+            margin-top: 48px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 12px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="chart-wrap">
+        <pre class="mermaid">
+{{ diagram }}
+        </pre>
+    </div>
+
+    <footer>
+        Rendered by <code>renderers/mermaid</code>
+    </footer>
+
+    <script>
+        mermaid.initialize({ startOnLoad: true, theme: "default" });
+    </script>
+</body>
+</html>
