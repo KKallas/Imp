@@ -1339,9 +1339,12 @@ class _ForemanTurnUI:
 
         return "\n\n".join(parts)
 
-    def _status_line(self) -> str:
-        """A one-line indicator appended AFTER everything else so it's
-        always the very last visible thing in the chat window."""
+    # -- status message (separate from main content) --------------------
+
+    _status_msg: cl.Message | None = None
+
+    def _status_text(self) -> str:
+        """Current status — shown as a separate message below everything."""
         if self._answer_started:
             return ""
         if self._plan_items:
@@ -1353,10 +1356,32 @@ class _ForemanTurnUI:
                 return "_Foreman is working..._"
         return "_Foreman is thinking..._"
 
+    async def _refresh_status(self) -> None:
+        """Show/update/remove the status message below the main content."""
+        text = self._status_text()
+        if not text:
+            # Done — remove status message.
+            if self._status_msg is not None:
+                try:
+                    await self._status_msg.remove()
+                except Exception:
+                    pass
+                self._status_msg = None
+            return
+        if self._status_msg is not None:
+            # Update in place.
+            self._status_msg.content = text
+            await self._status_msg.update()
+        else:
+            # Create new status message below main content.
+            self._status_msg = cl.Message(author="Foreman", content=text)
+            await self._status_msg.send()
+
     async def _ensure_msg(self) -> cl.Message:
         if self._msg is None:
             self._msg = cl.Message(author="Foreman", content="")
             await self._msg.send()
+            await self._refresh_status()
         return self._msg
 
     async def _update_structure(self) -> None:
@@ -1366,11 +1391,9 @@ class _ForemanTurnUI:
         content = base
         if self._answer_chunks:
             content += "\n\n" + "".join(self._answer_chunks)
-        status = self._status_line()
-        if status:
-            content += "\n\n" + status
         msg.content = content
         await msg.update()
+        await self._refresh_status()
 
     # -- TurnUI interface ---------------------------------------------
 
@@ -1459,6 +1482,8 @@ class _ForemanTurnUI:
             msg = await self._ensure_msg()
             msg.content = base
             await msg.update()
+            # Remove status message — streaming text is now the indicator.
+            await self._refresh_status()
         await self._msg.stream_token(token)  # type: ignore[union-attr]
 
     async def stream_end(self, full_text: str) -> None:
