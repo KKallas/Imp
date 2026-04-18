@@ -45,7 +45,7 @@ import renderers as _renderers
 DEFAULT_PORT = int(os.environ.get("RENDER_PORT", "8421"))
 
 app = FastAPI(title="Imp Render Server", docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"])
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -146,6 +146,67 @@ async def handle_render(request: Request, renderer_name: str) -> Response:
         )
 
     return Response(png, media_type="image/png")
+
+
+# ── chat UI routes ──────────────────────────────────────────────────
+
+from starlette.responses import FileResponse
+from starlette.websockets import WebSocket
+
+_CHAT_HTML = _ROOT / "chat.html"
+
+
+@app.get("/")
+async def serve_chat_ui():
+    """Serve the single-file chat UI."""
+    if _CHAT_HTML.exists():
+        return FileResponse(_CHAT_HTML, media_type="text/html")
+    return Response("chat.html not found", status_code=404)
+
+
+@app.websocket("/ws/chat")
+async def ws_chat(ws: WebSocket):
+    from server.chat_ws import handle_ws_chat
+    await handle_ws_chat(ws)
+
+
+@app.get("/api/chats")
+async def list_chats():
+    from server import chat_history
+    rows = chat_history.list_sessions(limit=50)
+    return [
+        {
+            "id": r["id"],
+            "title": r.get("title", "New chat"),
+            "created_at": r.get("created_at", ""),
+            "turn_count": r.get("turn_count", 0),
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/chats")
+async def create_chat():
+    from server import chat_history
+    session = chat_history.ChatSession.new()
+    chat_history.save_session(session)
+    return {"id": session.id, "title": session.title}
+
+
+@app.get("/api/chats/{chat_id}")
+async def get_chat(chat_id: str):
+    from server import chat_history
+    session = chat_history.load_session(chat_id)
+    if session is None:
+        return Response("not found", status_code=404)
+    return session.to_dict()
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(chat_id: str):
+    from server import chat_history
+    ok = chat_history.delete_session(chat_id)
+    return {"deleted": ok}
 
 
 # ── subprocess helper (called from main.py) ─────────────────────────
