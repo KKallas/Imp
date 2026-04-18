@@ -1054,6 +1054,9 @@ async def _on_message_body(msg: cl.Message) -> None:
         session.truncate()
         chat_history.save_session(session)
 
+    turn_ui = _ForemanTurnUI()
+    await turn_ui._ensure_msg()  # show "thinking" status immediately
+
     reply = await foreman_agent.dispatch(
         msg.content,
         say=_foreman_say,
@@ -1061,7 +1064,7 @@ async def _on_message_body(msg: cl.Message) -> None:
         thinking=_foreman_thinking,
         chart=_foreman_chart,
         history=history_turns,
-        turn_ui=_ForemanTurnUI(),
+        turn_ui=turn_ui,
     )
 
     # Record the assistant turn + persist + agent-title after the first
