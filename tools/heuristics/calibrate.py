@@ -25,7 +25,10 @@ CALIBRATION_FILE = ROOT / ".imp" / "calibration.json"
 ENRICHED_FILE = ROOT / ".imp" / "enriched.json"
 
 # Defaults when no closed-issue data is available.
-DEFAULT_DURATIONS = {"small": 1, "medium": 2, "large": 3}
+# Baselines from the Imp project itself (Apr 11-17, 2026):
+#   small ~0.3 days (sub-day tasks), medium ~1 day, large ~3 days.
+# Gantt charts need integer days, so small clamps to 1 day minimum.
+DEFAULT_DURATIONS = {"small": 1, "medium": 1, "large": 3}
 
 # Cache staleness threshold (seconds).
 _STALE_SECS = 86400  # 24 hours
