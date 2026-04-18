@@ -1337,21 +1337,21 @@ class _ForemanTurnUI:
             )
             parts.append(f"> **Foreman's thinking**\n>\n{quoted}")
 
-        # Status line — always the LAST visible thing so the user sees
-        # activity at the bottom of the chat window.
-        if not self._answer_started:
-            if self._plan_items:
-                # Check if any tool is still running
-                running = [
-                    it for it in self._plan_items
-                    if getattr(it, "status", "") in ("pending", "running")
-                ]
-                if running:
-                    parts.append("_Foreman is working..._")
-            else:
-                parts.append("_Foreman is thinking..._")
-
         return "\n\n".join(parts)
+
+    def _status_line(self) -> str:
+        """A one-line indicator appended AFTER everything else so it's
+        always the very last visible thing in the chat window."""
+        if self._answer_started:
+            return ""
+        if self._plan_items:
+            running = [
+                it for it in self._plan_items
+                if getattr(it, "status", "") in ("pending", "running")
+            ]
+            if running:
+                return "_Foreman is working..._"
+        return "_Foreman is thinking..._"
 
     async def _ensure_msg(self) -> cl.Message:
         if self._msg is None:
@@ -1366,6 +1366,9 @@ class _ForemanTurnUI:
         content = base
         if self._answer_chunks:
             content += "\n\n" + "".join(self._answer_chunks)
+        status = self._status_line()
+        if status:
+            content += "\n\n" + status
         msg.content = content
         await msg.update()
 
