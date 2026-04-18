@@ -1283,7 +1283,6 @@ class _ForemanTurnUI:
 
     def __init__(self) -> None:
         self._msg: cl.Message | None = None
-        self._status_msg: cl.Message | None = None
         self._plan_items: list | None = None
         self._thinking_chunks: list[str] = []
         self._answer_chunks: list[str] = []
@@ -1338,10 +1337,10 @@ class _ForemanTurnUI:
 
         return "\n\n".join(parts)
 
-    # -- status message (separate from main content) --------------------
+    # -- status line (appended to main message content) -----------------
 
-    def _status_text(self) -> str:
-        """Current status — shown as a separate message below everything."""
+    def _status_line(self) -> str:
+        """Status text appended to the END of the main message content."""
         if self._answer_started:
             return ""
         if self._plan_items:
@@ -1350,29 +1349,8 @@ class _ForemanTurnUI:
                 if getattr(it, "status", "") in ("pending", "running")
             ]
             if running:
-                return "_Foreman is working..._"
-        return "_Foreman is thinking..._"
-
-    async def _refresh_status(self) -> None:
-        """Show/update/remove the status message below the main content."""
-        text = self._status_text()
-        if not text:
-            # Done — remove status message.
-            if self._status_msg is not None:
-                try:
-                    await self._status_msg.remove()
-                except Exception:
-                    pass
-                self._status_msg = None
-            return
-        if self._status_msg is not None:
-            # Update in place.
-            self._status_msg.content = text
-            await self._status_msg.update()
-        else:
-            # Create new status message below main content.
-            self._status_msg = cl.Message(author="Foreman", content=text)
-            await self._status_msg.send()
+                return "\n\n_Foreman is working..._"
+        return "\n\n_Foreman is thinking..._"
 
     async def _ensure_msg(self) -> cl.Message:
         if self._msg is None:
@@ -1380,7 +1358,6 @@ class _ForemanTurnUI:
                 author="Foreman", content="_Foreman is thinking..._"
             )
             await self._msg.send()
-            await self._refresh_status()
         return self._msg
 
     async def _update_structure(self) -> None:
@@ -1390,9 +1367,9 @@ class _ForemanTurnUI:
         content = base
         if self._answer_chunks:
             content += "\n\n" + "".join(self._answer_chunks)
+        content += self._status_line()
         msg.content = content
         await msg.update()
-        await self._refresh_status()
 
     # -- TurnUI interface ---------------------------------------------
 
@@ -1476,13 +1453,13 @@ class _ForemanTurnUI:
         self._answer_chunks.append(token)
         if not self._answer_started:
             self._answer_started = True
-            # Refresh structure (includes thinking) right before answer
+            # Refresh structure — status_line() returns "" now that
+            # _answer_started is True, so the status disappears and
+            # the streamed text takes over as the activity indicator.
             base = self._render_structure()
             msg = await self._ensure_msg()
             msg.content = base
             await msg.update()
-            # Remove status message — streaming text is now the indicator.
-            await self._refresh_status()
         await self._msg.stream_token(token)  # type: ignore[union-attr]
 
     async def stream_end(self, full_text: str) -> None:
