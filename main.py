@@ -1145,19 +1145,14 @@ async def _foreman_ask(question: str) -> str | None:
 
 @asynccontextmanager
 async def _foreman_thinking(label: str):
-    """Bracket a slow LLM call with a visible `cl.Step` spinner.
+    """No-op context manager — status is handled entirely by
+    ``_ForemanTurnUI`` (status message + plan checklist).
 
-    Foreman's `dispatch` enters this around the SDK conversation so the
-    admin sees a "thinking…" step instead of an awkward silent pause.
-    The step auto-closes (spinner clears) as soon as the dispatch
-    returns, regardless of success or failure.
-
-    The step name starts as the given label and can be updated by the
-    caller via `step.name = ...` + `await step.update()` when the
-    status changes (e.g. from "thinking" to "responding").
+    The old ``cl.Step`` wrapper created a "Using Foreman / Used Foreman"
+    header that stayed at the top of the chat and never scrolled, which
+    was confusing. Removed in P4.27.
     """
-    async with cl.Step(name=label, type="run") as step:
-        yield step
+    yield None
 
 
 # ---------- structured turn UI (KKallas/Imp#55) ----------
