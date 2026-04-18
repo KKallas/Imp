@@ -1311,14 +1311,6 @@ class _ForemanTurnUI:
 
         parts: list[str] = []
 
-        # Show "thinking" status when no plan or answer yet
-        if (
-            not self._plan_items
-            and not self._thinking_chunks
-            and not self._answer_started
-        ):
-            parts.append("_Foreman is thinking..._")
-
         # Plan checklist — each tool on its own line with a log link
         if self._plan_items:
             lines = ["**Foreman's plan:**\n"]
@@ -1344,6 +1336,20 @@ class _ForemanTurnUI:
                 for line in thinking_text.splitlines()
             )
             parts.append(f"> **Foreman's thinking**\n>\n{quoted}")
+
+        # Status line — always the LAST visible thing so the user sees
+        # activity at the bottom of the chat window.
+        if not self._answer_started:
+            if self._plan_items:
+                # Check if any tool is still running
+                running = [
+                    it for it in self._plan_items
+                    if getattr(it, "status", "") in ("pending", "running")
+                ]
+                if running:
+                    parts.append("_Foreman is working..._")
+            else:
+                parts.append("_Foreman is thinking..._")
 
         return "\n\n".join(parts)
 
