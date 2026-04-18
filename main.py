@@ -1285,6 +1285,7 @@ class _ForemanTurnUI:
 
     def __init__(self) -> None:
         self._msg: cl.Message | None = None
+        self._status_msg: cl.Message | None = None
         self._plan_items: list | None = None
         self._thinking_chunks: list[str] = []
         self._answer_chunks: list[str] = []
@@ -1341,8 +1342,6 @@ class _ForemanTurnUI:
 
     # -- status message (separate from main content) --------------------
 
-    _status_msg: cl.Message | None = None
-
     def _status_text(self) -> str:
         """Current status — shown as a separate message below everything."""
         if self._answer_started:
@@ -1379,7 +1378,9 @@ class _ForemanTurnUI:
 
     async def _ensure_msg(self) -> cl.Message:
         if self._msg is None:
-            self._msg = cl.Message(author="Foreman", content="")
+            self._msg = cl.Message(
+                author="Foreman", content="_Foreman is thinking..._"
+            )
             await self._msg.send()
             await self._refresh_status()
         return self._msg
