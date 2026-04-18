@@ -26,9 +26,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from server import foreman_agent  # noqa: E402
+from server import config as server_config  # noqa: E402
 
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="imp-foreman-test-"))
-foreman_agent.CONFIG_FILE = _TMP_DIR / "config.json"
+server_config.CONFIG_FILE = _TMP_DIR / "config.json"
 
 
 # ---------- fake intercept ----------
@@ -94,8 +95,8 @@ foreman_agent.intercept.execute_command = _FAKE
 def _reset() -> None:
     _FAKE.responses.clear()
     _FAKE.calls.clear()
-    if foreman_agent.CONFIG_FILE.exists():
-        foreman_agent.CONFIG_FILE.unlink()
+    if server_config.CONFIG_FILE.exists():
+        server_config.CONFIG_FILE.unlink()
 
 
 # ---------- read / visibility ----------

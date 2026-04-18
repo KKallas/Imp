@@ -61,9 +61,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from . import budgets, intercept
+from .config import load_config as _load_config, save_config as _save_config
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_FILE = ROOT / ".imp" / "config.json"
 
 # Per-turn artifact collector for chat-renderable side outputs (charts,
 # scenario grids, etc.). `dispatch()` clears this at the start of every
@@ -72,24 +72,6 @@ CONFIG_FILE = ROOT / ".imp" / "config.json"
 # knows how to render. Currently only "scenario_session" is wired;
 # "plotly" arrives with KKallas/Imp#14 follow-up work.
 _pending_artifacts: list[dict[str, Any]] = []
-
-
-# ---------- config I/O (local copy — server.setup_agent has another
-# copy; if a third caller appears, lift into server/config.py) ----------
-
-
-def _load_config() -> dict[str, Any]:
-    if CONFIG_FILE.exists():
-        try:
-            return json.loads(CONFIG_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def _save_config(cfg: dict[str, Any]) -> None:
-    CONFIG_FILE.parent.mkdir(exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 
 # ---------- tool bodies (do_*) — pure async functions, unit-testable ----------

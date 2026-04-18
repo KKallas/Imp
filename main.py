@@ -51,6 +51,12 @@ from argon2.exceptions import VerifyMismatchError
 from chainlit.input_widget import NumberInput, Select, Switch
 
 from server import budgets, chat_history
+from server.config import (
+    load_config,
+    save_config,
+    is_setup_complete,
+    detect_repo_from_git,
+)
 
 # ── render server (P4.24 renderer plugin system) ───────────────────
 # Runs on a separate port (default 8421) so it has no auth middleware.
@@ -63,7 +69,6 @@ except Exception:
     pass  # render server unavailable — non-fatal
 
 ROOT = Path(__file__).resolve().parent
-CONFIG_FILE = ROOT / ".imp" / "config.json"
 
 _hasher = PasswordHasher()
 
@@ -81,35 +86,6 @@ def _imp_data_layer():
 
 
 # ---------- git / gh helpers ----------
-
-
-def detect_repo_from_git() -> str | None:
-    """Return `owner/name` from the local git origin, or None.
-
-    Imp is expected to live inside the repo it manages: you `git clone`
-    Imp into your project (or vendor it with git subtree), `cd` into the
-    project root, and run `python imp/imp.py`. From there, the local git
-    origin IS the target repo — no need to ask the admin which one.
-
-    Looks at the current working directory's `git remote get-url origin`.
-    Parses both SSH (`git@github.com:foo/bar.git`) and HTTPS
-    (`https://github.com/foo/bar.git`) forms.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
-    url = result.stdout.strip()
-    m = re.match(
-        r"(?:git@github\.com:|https://github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$",
-        url,
-    )
-    return m.group(1) if m else None
 
 
 async def gh_auth_status() -> tuple[bool, str]:
@@ -139,27 +115,6 @@ async def gh_repo_view(owner_repo: str) -> tuple[bool, str]:
     )
     out, _ = await proc.communicate()
     return proc.returncode == 0, out.decode().strip()
-
-
-# ---------- config helpers ----------
-
-
-def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        try:
-            return json.loads(CONFIG_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_config(cfg: dict) -> None:
-    CONFIG_FILE.parent.mkdir(exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
-
-
-def is_setup_complete() -> bool:
-    return load_config().get("setup_complete", False)
 
 
 # ---------- admin budget panel + live status bar ----------

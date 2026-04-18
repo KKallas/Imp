@@ -64,32 +64,8 @@ except ImportError:
     PasswordHasher = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_FILE = ROOT / ".imp" / "config.json"
 
-
-# ---------- config I/O (intentionally duplicated from main.py) ----------
-#
-# main.py imports `server.setup_agent`, so we can't import back — and
-# the config helpers are small enough that a shared module would be
-# over-engineering. If a third caller shows up, lift into server/config.py.
-
-
-def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        try:
-            return json.loads(CONFIG_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_config(cfg: dict) -> None:
-    CONFIG_FILE.parent.mkdir(exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
-
-
-def is_setup_complete() -> bool:
-    return load_config().get("setup_complete", False)
+from server.config import load_config, save_config, is_setup_complete  # noqa: E402
 
 
 # ---------- gh / git helpers ----------
@@ -118,27 +94,9 @@ async def _run_subprocess(argv: list[str], timeout: float = 30.0) -> tuple[int, 
 
 
 def detect_repo_from_git_sync() -> Optional[str]:
-    """Return `owner/name` from the local git origin, or None.
-
-    Not a @tool — called directly by `detect_repo_from_git_tool` below
-    so the tool layer stays thin.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=ROOT,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
-    url = result.stdout.strip()
-    m = re.match(
-        r"(?:git@github\.com:|https://github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$",
-        url,
-    )
-    return m.group(1) if m else None
+    """Delegate to server.config.detect_repo_from_git."""
+    from server.config import detect_repo_from_git
+    return detect_repo_from_git()
 
 
 # ---------- tool bodies (pure async functions, tests target these) ----------
