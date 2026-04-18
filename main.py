@@ -1111,11 +1111,10 @@ async def _foreman_say(text: str) -> None:
             content=placeholder.strip(),
         ).send()
 
-        # Phase 2: screenshot (slow) and update in-place.
+        # Phase 2: screenshot (slow) and single update in-place.
         cleaned, elements = await _apply_mermaid_watchdog(text)
         msg.content = cleaned.strip()
-        if elements:
-            msg.elements = elements  # type: ignore[assignment]
+        msg.elements = elements if elements else []  # type: ignore[assignment]
         await msg.update()
     else:
         await cl.Message(
@@ -1457,10 +1456,11 @@ class _ForemanTurnUI:
         from pipeline.mermaid_to_plotly import extract_mermaid_blocks
 
         blocks = extract_mermaid_blocks(full_text)
-        has_renderables = bool(blocks)
 
-        # Phase 1: show placeholder immediately so the user sees activity.
-        if has_renderables:
+        # Show "Rendering chart..." placeholder while screenshot runs.
+        # This replaces the mermaid blocks in-place so the user sees
+        # activity instead of a frozen screen.
+        if blocks:
             placeholder = full_text
             for block in blocks:
                 placeholder = placeholder.replace(
@@ -1468,14 +1468,11 @@ class _ForemanTurnUI:
                 )
             self._answer_chunks = [placeholder.strip()]
             base = self._render_structure()
-            content = base
-            if self._answer_chunks:
-                content += "\n\n" + self._answer_chunks[0]
             msg = await self._ensure_msg()
-            msg.content = content
+            msg.content = base + "\n\n" + self._answer_chunks[0]
             await msg.update()
 
-        # Phase 2: screenshot (slow) and replace.
+        # Screenshot (slow) then single final update with image elements.
         cleaned, elements = await _apply_mermaid_watchdog(full_text)
         self._answer_chunks = [cleaned.strip()] if cleaned.strip() else []
 
@@ -1486,8 +1483,8 @@ class _ForemanTurnUI:
 
         msg = await self._ensure_msg()
         msg.content = content
-        if elements:
-            msg.elements = elements  # type: ignore[assignment]
+        # Replace elements entirely — never append to avoid duplicates.
+        msg.elements = elements if elements else []  # type: ignore[assignment]
         await msg.update()
 
     async def thinking_update(self, text: str) -> None:
