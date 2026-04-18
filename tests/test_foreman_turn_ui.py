@@ -20,12 +20,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from server.foreman_agent import (  # noqa: E402
+from server.turn_ui import (  # noqa: E402
     PlanItem,
     TurnUI,
-    _ToolTracker,
-    _clean_tool_name,
-    _format_tool_sig,
+    ToolTracker as _ToolTracker,
+    clean_tool_name as _clean_tool_name,
+    format_tool_sig as _format_tool_sig,
 )
 
 
@@ -156,15 +156,15 @@ def test_tracker_on_start_on_done() -> None:
     tracker.register_batch(blocks)
 
     async def _run() -> None:
-        await tracker._on_start("list_issues")
+        await tracker.on_start("list_issues")
         assert tracker.plan_items[0].status == "running"
 
-        await tracker._on_done("list_issues", True, 0.5, '{"issues": []}')
+        await tracker.on_done("list_issues", True, 0.5, '{"issues": []}')
         assert tracker.plan_items[0].status == "ok"
         assert tracker.plan_items[0].duration_s == 0.5
 
-        await tracker._on_start("view_issue")
-        await tracker._on_done("view_issue", False, 1.2, "not found")
+        await tracker.on_start("view_issue")
+        await tracker.on_done("view_issue", False, 1.2, "not found")
         assert tracker.plan_items[1].status == "error"
 
     asyncio.run(_run())
@@ -180,7 +180,7 @@ def test_tracker_on_start_on_done() -> None:
     assert ui.events[1].args["status"] == "ok"
     # Second tool: error
     assert ui.events[3].args["status"] == "error"
-    print("  ✓ tracker._on_start / _on_done")
+    print("  ✓ tracker.on_start / _on_done")
 
 
 def test_tracker_duplicate_tool_name() -> None:
@@ -195,13 +195,13 @@ def test_tracker_duplicate_tool_name() -> None:
     tracker.register_batch(blocks)
 
     async def _run() -> None:
-        await tracker._on_start("view_issue")
-        await tracker._on_done("view_issue", True, 0.3, "ok1")
+        await tracker.on_start("view_issue")
+        await tracker.on_done("view_issue", True, 0.3, "ok1")
         assert tracker.plan_items[0].status == "ok"
         assert tracker.plan_items[1].status == "pending"
 
-        await tracker._on_start("view_issue")
-        await tracker._on_done("view_issue", True, 0.4, "ok2")
+        await tracker.on_start("view_issue")
+        await tracker.on_done("view_issue", True, 0.4, "ok2")
         assert tracker.plan_items[1].status == "ok"
 
     asyncio.run(_run())
@@ -292,10 +292,10 @@ def test_full_scenario_tools_then_text() -> None:
         await ui.show_plan(tracker.plan_items)
 
         # 3. Tools execute
-        await tracker._on_start("list_issues")
-        await tracker._on_done("list_issues", True, 0.8, '{"issues": [1,2]}')
-        await tracker._on_start("view_issue")
-        await tracker._on_done("view_issue", True, 0.3, '{"title": "bug"}')
+        await tracker.on_start("list_issues")
+        await tracker.on_done("list_issues", True, 0.8, '{"issues": [1,2]}')
+        await tracker.on_start("view_issue")
+        await tracker.on_done("view_issue", True, 0.3, '{"title": "bug"}')
 
         # 4. Stream text
         await ui.stream_token("Based on the issues, ")
@@ -335,8 +335,8 @@ def test_interleaved_tool_batches() -> None:
         tracker.register_batch(batch1)
         await ui.show_plan(tracker.plan_items)
 
-        await tracker._on_start("list_issues")
-        await tracker._on_done("list_issues", True, 0.5, "ok")
+        await tracker.on_start("list_issues")
+        await tracker.on_done("list_issues", True, 0.5, "ok")
 
         await ui.stream_token("Found issues. ")
 
@@ -347,8 +347,8 @@ def test_interleaved_tool_batches() -> None:
         new_items = tracker.register_batch(batch2)
         await ui.append_plan(new_items)
 
-        await tracker._on_start("view_issue")
-        await tracker._on_done("view_issue", True, 0.3, "ok")
+        await tracker.on_start("view_issue")
+        await tracker.on_done("view_issue", True, 0.3, "ok")
 
         await ui.stream_token("Done.")
         await ui.stream_end("Found issues. Done.")
@@ -379,8 +379,8 @@ def test_tool_failure() -> None:
     tracker.register_batch(blocks)
 
     async def _run() -> None:
-        await tracker._on_start("run_shell")
-        await tracker._on_done("run_shell", False, 0.1, "exit code 1")
+        await tracker.on_start("run_shell")
+        await tracker.on_done("run_shell", False, 0.1, "exit code 1")
 
     asyncio.run(_run())
 
@@ -402,8 +402,8 @@ def test_no_thinking_blocks() -> None:
 
     async def _run() -> None:
         await ui.show_plan(tracker.plan_items)
-        await tracker._on_start("get_budgets")
-        await tracker._on_done("get_budgets", True, 0.1, "{}")
+        await tracker.on_start("get_budgets")
+        await tracker.on_done("get_budgets", True, 0.1, "{}")
         await ui.stream_token("Budgets are fine.")
         await ui.stream_end("Budgets are fine.")
 

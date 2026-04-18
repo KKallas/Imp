@@ -1236,7 +1236,7 @@ class _ForemanTurnUI:
 
     def _render_structure(self) -> str:
         """Render plan + thinking — everything above the answer."""
-        from server.foreman_agent import _format_tool_sig
+        from server.turn_ui import format_tool_sig as _format_tool_sig
 
         parts: list[str] = []
 
@@ -1342,7 +1342,7 @@ class _ForemanTurnUI:
         return "\n".join(lines)
 
     async def tool_finished(self, index: int, item: object) -> None:
-        from server.foreman_agent import PlanItem
+        from server.turn_ui import PlanItem
 
         assert isinstance(item, PlanItem)
 

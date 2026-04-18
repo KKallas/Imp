@@ -56,7 +56,6 @@ from __future__ import annotations
 import json
 import sys
 import time
-from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -1166,7 +1165,7 @@ def _build_mcp_server(
                 _h: Any = _orig,
                 _n: str = _name,
             ) -> dict[str, Any]:
-                await tracker._on_start(_n)
+                await tracker.on_start(_n)
                 t0 = time.monotonic()
                 try:
                     result = await _h(args)
@@ -1175,12 +1174,12 @@ def _build_mcp_server(
                     for item in result.get("content", []):
                         if item.get("type") == "text":
                             out_text += item.get("text", "")
-                    await tracker._on_done(
+                    await tracker.on_done(
                         _n, not is_err, time.monotonic() - t0, out_text
                     )
                     return result
                 except Exception as exc:
-                    await tracker._on_done(
+                    await tracker.on_done(
                         _n, False, time.monotonic() - t0, str(exc)
                     )
                     raise
@@ -1207,120 +1206,16 @@ _DISALLOWED_TOOLS: tuple[str, ...] = (
 )
 
 
-# ---------- structured turn UI (KKallas/Imp#55) ----------
+# ---------- structured turn UI (re-exported from server.turn_ui) ----------
 
-# MCP tool names are prefixed by the SDK; strip for display.
-_MCP_PREFIX = "mcp__imp_foreman__"
-
-
-def _clean_tool_name(name: str) -> str:
-    """Strip the MCP server prefix from a tool name."""
-    return name[len(_MCP_PREFIX) :] if name.startswith(_MCP_PREFIX) else name
-
-
-def _format_tool_sig(name: str, args: dict[str, Any]) -> str:
-    """Format a tool call as a readable function signature."""
-    if not args:
-        return f"`{name}()`"
-    parts = []
-    for k, v in args.items():
-        if isinstance(v, str):
-            parts.append(f'{k}="{v}"')
-        else:
-            parts.append(f"{k}={v}")
-    return f"`{name}({', '.join(parts)})`"
-
-
-@dataclass
-class PlanItem:
-    """One tool call in a turn's plan checklist."""
-
-    name: str  # clean name (no MCP prefix)
-    args: dict[str, Any]
-    status: str = "pending"  # pending | running | ok | error
-    duration_s: float = 0.0
-    output: str = ""
-
-
-class TurnUI:
-    """Callback interface for structured tool-call rendering.
-
-    Base class provides no-op methods so ``dispatch`` can call them
-    unconditionally.  ``main.py`` subclasses this to implement
-    Chainlit rendering (plan checklist, tool steps, streaming text,
-    foldable thinking).
-    """
-
-    async def show_plan(self, items: list[PlanItem]) -> None:
-        """Display the initial plan checklist (⏳ for every item)."""
-
-    async def append_plan(self, items: list[PlanItem]) -> None:
-        """Add follow-up-wave items to an existing plan."""
-
-    async def tool_started(self, index: int, item: PlanItem) -> None:
-        """A tool started executing (index into the plan list)."""
-
-    async def tool_finished(self, index: int, item: PlanItem) -> None:
-        """A tool finished (ok or error)."""
-
-    async def stream_token(self, token: str) -> None:
-        """Append one token of assistant prose."""
-
-    async def stream_end(self, full_text: str) -> None:
-        """Finalise streamed text (post-processing, mermaid, etc.)."""
-
-    async def thinking_update(self, text: str) -> None:
-        """Append to the foldable thinking step."""
-
-
-class _ToolTracker:
-    """Wraps MCP tool handlers to emit per-tool start/finish events.
-
-    Created per-dispatch.  ``_build_mcp_server`` injects the tracker
-    into every tool handler so status updates flow to ``TurnUI``
-    without the tool bodies knowing about the UI.
-    """
-
-    def __init__(self, turn_ui: TurnUI) -> None:
-        self.turn_ui = turn_ui
-        self.plan_items: list[PlanItem] = []
-        # Queue of plan-list indices per clean tool name so we can
-        # match the (name-only) MCP callback to the right row when
-        # the same tool is called multiple times in one batch.
-        self._pending: dict[str, list[int]] = {}
-
-    def register_batch(self, tool_blocks: list[Any]) -> list[PlanItem]:
-        """Register a batch of ``ToolUseBlock``s, return new items."""
-        new_items: list[PlanItem] = []
-        for block in tool_blocks:
-            clean = _clean_tool_name(block.name)
-            item = PlanItem(name=clean, args=block.input or {})
-            idx = len(self.plan_items)
-            self.plan_items.append(item)
-            self._pending.setdefault(clean, []).append(idx)
-            new_items.append(item)
-        return new_items
-
-    async def _on_start(self, tool_name: str) -> None:
-        indices = self._pending.get(tool_name, [])
-        if not indices:
-            return
-        idx = indices[0]  # peek — pop on done
-        self.plan_items[idx].status = "running"
-        await self.turn_ui.tool_started(idx, self.plan_items[idx])
-
-    async def _on_done(
-        self, tool_name: str, ok: bool, duration: float, output: str
-    ) -> None:
-        indices = self._pending.get(tool_name, [])
-        if not indices:
-            return
-        idx = indices.pop(0)
-        item = self.plan_items[idx]
-        item.status = "ok" if ok else "error"
-        item.duration_s = duration
-        item.output = output
-        await self.turn_ui.tool_finished(idx, item)
+from .turn_ui import (  # noqa: E402
+    _MCP_PREFIX,
+    PlanItem,
+    ToolTracker as _ToolTracker,
+    TurnUI,
+    clean_tool_name as _clean_tool_name,
+    format_tool_sig as _format_tool_sig,
+)
 
 
 # ---------- dispatch driver ----------
