@@ -220,19 +220,19 @@ def test_parse_explicit_keywords() -> None:
     _reset()
     assert dispatcher._parse_explicit("moderate issue 42") == [
         "python",
-        "99-tools/moderate_issues.py",
+        "tools/github/moderate_issues.py",
         "--issue",
         "42",
     ]
     assert dispatcher._parse_explicit("solve 7") == [
         "python",
-        "99-tools/solve_issues.py",
+        "tools/github/solve_issues.py",
         "--issue",
         "7",
     ]
     assert dispatcher._parse_explicit("fix pr #17") == [
         "python",
-        "99-tools/fix_prs.py",
+        "tools/github/fix_prs.py",
         "--pr",
         "17",
     ]

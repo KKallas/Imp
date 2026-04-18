@@ -353,7 +353,7 @@ async def do_run_moderate_issues(
     issue: Optional[int] = None,
     max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
-    argv = [sys.executable, "99-tools/moderate_issues.py"]
+    argv = [sys.executable, "tools/github/moderate_issues.py"]
     if issue is not None:
         argv.extend(["--issue", str(issue)])
     if max_tokens is not None:
@@ -369,7 +369,7 @@ async def do_run_solve_issues(
     issue: int,
     max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
-    argv = [sys.executable, "99-tools/solve_issues.py", "--issue", str(issue)]
+    argv = [sys.executable, "tools/github/solve_issues.py", "--issue", str(issue)]
     if max_tokens is not None:
         argv.extend(["--max-tokens", str(max_tokens)])
     return await do_run_shell(
@@ -383,7 +383,7 @@ async def do_run_fix_prs(
     pr: int,
     max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
-    argv = [sys.executable, "99-tools/fix_prs.py", "--pr", str(pr)]
+    argv = [sys.executable, "tools/github/fix_prs.py", "--pr", str(pr)]
     if max_tokens is not None:
         argv.extend(["--max-tokens", str(max_tokens)])
     return await do_run_shell(
@@ -1029,7 +1029,7 @@ def _build_mcp_server(
 
     @tool(
         "run_moderate_issues",
-        "Run 99-tools/moderate_issues.py. Formats messy issues into well-structured tasks.",
+        "Run tools/moderate_issues. Formats messy issues into well-structured tasks.",
         {"issue": int, "max_tokens": int},
     )
     async def run_moderate_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -1043,7 +1043,7 @@ def _build_mcp_server(
 
     @tool(
         "run_solve_issues",
-        "Run 99-tools/solve_issues.py for a single issue. Writes code, opens a PR.",
+        "Run tools/solve_issues for a single issue. Writes code, opens a PR.",
         {"issue": int, "max_tokens": int},
     )
     async def run_solve_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -1057,7 +1057,7 @@ def _build_mcp_server(
 
     @tool(
         "run_fix_prs",
-        "Run 99-tools/fix_prs.py for a single PR. Reads review comments, pushes fixes.",
+        "Run tools/fix_prs for a single PR. Reads review comments, pushes fixes.",
         {"pr": int, "max_tokens": int},
     )
     async def run_fix_tool(args: dict[str, Any]) -> dict[str, Any]:

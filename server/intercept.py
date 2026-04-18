@@ -128,11 +128,16 @@ PIPELINE_READ_SCRIPTS = {
 }
 
 PIPELINE_WRITE_SCRIPTS = {
+    "tools/github/moderate_issues.py",
+    "tools/github/solve_issues.py",
+    "tools/github/fix_prs.py",
+    "tools/run_all.sh",
+    "pipeline/project_bootstrap.py",
+    # Legacy paths (in case old configs reference them)
     "99-tools/moderate_issues.py",
     "99-tools/solve_issues.py",
     "99-tools/fix_prs.py",
     "99-tools/run_all.sh",
-    "pipeline/project_bootstrap.py",
 }
 
 # Small whitelist of harmless commands so you can exercise intercept.py

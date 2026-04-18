@@ -281,7 +281,7 @@ async def test_do_run_moderate_issues() -> None:
         issue=42, max_tokens=5000, user_intent="u"
     )
     argv = _FAKE.calls[0]["argv"]
-    assert argv[1] == "99-tools/moderate_issues.py"
+    assert argv[1] == "tools/github/moderate_issues.py"
     assert "--issue" in argv
     assert "42" in argv
     assert "--max-tokens" in argv
@@ -294,7 +294,7 @@ async def test_do_run_solve_issues() -> None:
     _FAKE.script([(0, "solved", FakeAction(classified_as="write"))])
     await foreman_agent.do_run_solve_issues(issue=7, user_intent="u")
     argv = _FAKE.calls[0]["argv"]
-    assert argv[1] == "99-tools/solve_issues.py"
+    assert argv[1] == "tools/github/solve_issues.py"
     assert "--issue" in argv and "7" in argv
     print("test_do_run_solve_issues: OK")
 
@@ -304,7 +304,7 @@ async def test_do_run_fix_prs() -> None:
     _FAKE.script([(0, "", FakeAction(classified_as="write"))])
     await foreman_agent.do_run_fix_prs(pr=17, user_intent="u")
     argv = _FAKE.calls[0]["argv"]
-    assert argv[1] == "99-tools/fix_prs.py"
+    assert argv[1] == "tools/github/fix_prs.py"
     assert "--pr" in argv and "17" in argv
     print("test_do_run_fix_prs: OK")
 
