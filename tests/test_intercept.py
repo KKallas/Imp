@@ -95,8 +95,8 @@ def test_classify_command() -> None:
         (["gh", "project", "field-create"], "write"),
         (["gh", "project", "item-list"], "read"),
         (["gh", "auth", "status"], "read"),
-        (["python", "99-tools/solve_issues.py", "--issue", "42"], "write"),
-        (["python", "99-tools/moderate_issues.py"], "write"),
+        (["python", "tools/github/solve_issues.py", "--issue", "42"], "write"),
+        (["python", "tools/github/moderate_issues.py"], "write"),
         (["python3", "pipeline/sync_issues.py"], "read"),
         # estimate_dates.py is read by default, write when --push is set
         (["python3", "pipeline/estimate_dates.py"], "read"),

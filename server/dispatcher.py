@@ -353,15 +353,15 @@ def _parse_verdict(raw: str) -> Verdict:
 _KEYWORD_PATTERNS: tuple[tuple[re.Pattern[str], list[str]], ...] = (
     (
         re.compile(r"^\s*moderate\s+(?:issue\s+)?#?(\d+)\s*$", re.IGNORECASE),
-        ["python", "99-tools/moderate_issues.py", "--issue"],
+        ["python", "tools/github/moderate_issues.py", "--issue"],
     ),
     (
         re.compile(r"^\s*solve\s+(?:issue\s+)?#?(\d+)\s*$", re.IGNORECASE),
-        ["python", "99-tools/solve_issues.py", "--issue"],
+        ["python", "tools/github/solve_issues.py", "--issue"],
     ),
     (
         re.compile(r"^\s*fix\s+(?:pr\s+)?#?(\d+)\s*$", re.IGNORECASE),
-        ["python", "99-tools/fix_prs.py", "--pr"],
+        ["python", "tools/github/fix_prs.py", "--pr"],
     ),
 )
 
