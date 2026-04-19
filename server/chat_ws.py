@@ -78,6 +78,7 @@ class WebSocketTurnUI(TurnUI):
 
     async def thinking_update(self, text: str) -> None:
         await self._send({"type": "status", "text": "Thinking..."})
+        await self._send({"type": "thinking", "text": text})
 
 
 async def handle_ws_chat(ws: WebSocket) -> None:

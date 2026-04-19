@@ -61,6 +61,15 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .msg .body .tool-block.error { border-color:#da3633; }
 .msg .body .tool-block.running { border-color:var(--accent); }
 .msg .body .tool-block.running summary { color:var(--accent); }
+.msg .body .thinking-block { margin:8px 0; border:1px solid var(--border); border-radius:6px;
+  background:#161b22; font-size:13px; border-left:3px solid #8b949e; }
+.msg .body .thinking-block summary { padding:6px 10px; cursor:pointer; color:var(--muted);
+  font-size:12px; font-style:italic; list-style:none; }
+.msg .body .thinking-block summary::-webkit-details-marker { display:none; }
+.msg .body .thinking-block summary::before { content:"▶ "; font-size:10px; }
+.msg .body .thinking-block[open] summary::before { content:"▼ "; }
+.msg .body .thinking-block .thinking-content { padding:8px 12px; border-top:1px solid var(--border);
+  font-size:12px; color:var(--muted); line-height:1.5; white-space:pre-wrap; }
 
 /* --- input area --- */
 #input-area { border-top:1px solid var(--border); padding:12px 24px; background:#010409; }
@@ -122,9 +131,9 @@ let isWorking = false;
 marked.setOptions({ breaks: true, gfm: true });
 
 function renderMd(text) {
-  // Preserve <details> tool blocks from being escaped by marked
+  // Preserve <details> blocks from being escaped by marked
   const toolBlocks = [];
-  text = text.replace(/<details class="tool-block[^"]*">[\s\S]*?<\/details>/g, (match) => {
+  text = text.replace(/<details class="(?:tool-block|thinking-block)[^"]*">[\s\S]*?<\/details>/g, (match) => {
     toolBlocks.push(match);
     return `%%TOOL_BLOCK_${toolBlocks.length - 1}%%`;
   });
@@ -239,6 +248,16 @@ function connectWs() {
           `<details class="tool-block running"><summary>${placeholder}</summary><pre>Running...</pre></details>`,
           `<details class="tool-block ${msg.status}"><summary>${final}</summary><pre>${outputText || '(no output)'}</pre></details>`
         );
+        renderAgentBody();
+        break;
+      }
+
+      case 'thinking': {
+        ensureAgentMsg();
+        const escaped = msg.text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        // Accumulate thinking into one block or add new one
+        const thinkingHtml = `<details class="thinking-block"><summary>Thinking</summary><div class="thinking-content">${escaped}</div></details>`;
+        agentText += `\n\n${thinkingHtml}\n\n`;
         renderAgentBody();
         break;
       }
