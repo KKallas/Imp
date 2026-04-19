@@ -1950,7 +1950,6 @@ async def run_demo_command(user_content: str) -> None:
             user_intent=user_content,
             rationale="Admin demo of server/intercept.py via chat",
             kind="demo",
-            step=step,
         )
 
     # Refresh happens at the end of on_message via the try/finally — no

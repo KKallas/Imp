@@ -15,9 +15,8 @@ Covers:
   - Budget exhaustion rejects a fake write invocation
   - Snapshot helpers return plain dicts
 
-This file does not import chainlit — it uses the fact that intercept.py
-only needs .update() and .status on the `step`/`task_entry` objects
-passed to it. Tests pass a lightweight mock.
+No UI dependencies — tests exercise the classify/guard/execute pipeline
+directly.
 """
 
 from __future__ import annotations
@@ -52,17 +51,6 @@ guard.set_backend(_fake_guard_backend)
 
 # ---------- helpers ----------
 
-
-class FakeStep:
-    """Minimal stand-in for cl.Step so execute_command has something to stream into."""
-
-    def __init__(self) -> None:
-        self.input: str | None = None
-        self.output: str = ""
-        self.updates: int = 0
-
-    async def update(self) -> None:
-        self.updates += 1
 
 
 def _reset_state() -> None:
@@ -132,16 +120,6 @@ async def test_execute_read_command() -> None:
     assert action.returncode == 0
     assert action.finished_at is not None
     print("test_execute_read_command: OK")
-
-
-async def test_streams_into_step() -> None:
-    _reset_state()
-    step = FakeStep()
-    rc, _, _ = await intercept.execute_command(["echo", "streamed"], step=step)
-    assert rc == 0
-    assert "streamed" in step.output, f"step.output was {step.output!r}"
-    assert step.updates >= 1, "step.update() was never called"
-    print("test_streams_into_step: OK")
 
 
 async def test_log_file_written() -> None:
@@ -302,7 +280,7 @@ async def test_action_log_populated() -> None:
 async def amain() -> None:
     test_classify_command()
     await test_execute_read_command()
-    await test_streams_into_step()
+
     await test_log_file_written()
     await test_running_tasks_populated_and_cleaned()
     await test_abort_task_sigterm()

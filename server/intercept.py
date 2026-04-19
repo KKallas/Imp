@@ -28,15 +28,12 @@ pipeline script. Owns:
   5. **Execution** — approved actions are spawned via
      `asyncio.create_subprocess_exec`, with merged stdout/stderr streamed
      line-by-line into:
-       - the caller's `cl.Step.output` (with `await step.update()` per
-         line, so the browser sees a live `tail -f`)
        - `.imp/output/<action_id>.log` (so power users can `tail -f`
          from a separate terminal)
 
   6. **Running-tasks map** — `running_tasks: dict[str, RunningTask]`
      tracks every active subprocess by `action_id`, with PID, process,
-     start time, cl.Step reference, cl.Task entry, and log path. Added
-     on spawn, removed on exit.
+     start time, and log path. Added on spawn, removed on exit.
 
   7. **Cancellation** — `abort_task(action_id)` sends SIGTERM, waits 15
      seconds for a clean exit, then sends SIGKILL if the process still
@@ -49,10 +46,8 @@ pipeline script. Owns:
      unaffected.
 
 This module is intentionally independent of the Claude Agent SDK and
-Chainlit: it takes argv lists and optional opaque `step` / `task_entry`
-objects, and returns tuples. The SDK pre-tool-call hook (future,
-foreman_agent.py) and the gh-shim fallback both become thin adapters
-that call `execute_command()`.
+UI layer: it takes argv lists and returns tuples. The foreman agent
+and any future adapters call `execute_command()`.
 """
 
 from __future__ import annotations
@@ -247,11 +242,6 @@ class RunningTask:
     pid: int
     command: list[str]
     started_at: datetime
-    # Loosely typed to avoid importing chainlit here — the caller passes
-    # cl.Step / cl.Task instances but we only call .update() and .status
-    # on them so we don't need the real types.
-    step: Optional[Any] = None
-    task_entry: Optional[Any] = None
     log_file: Optional[Path] = None
 
 
@@ -337,8 +327,6 @@ async def execute_command(
     user_intent: str = "",
     rationale: str = "",
     kind: str = "run",
-    step: Optional[Any] = None,
-    task_entry: Optional[Any] = None,
 ) -> tuple[int, str, ProposedAction]:
     """Classify → guard → budget → execute a shell command.
 
@@ -346,11 +334,6 @@ async def execute_command(
 
     Reads skip the guard entirely. Writes go through `guard.check` (and
     through budget checks). Unknown commands are refused outright.
-
-    If `step` is a chainlit `cl.Step`, stdout/stderr are streamed into
-    `step.output` with `await step.update()` per line. If `task_entry`
-    is a chainlit `cl.Task`, its status is flipped to DONE/FAILED on
-    exit.
 
     The action record is always appended to `action_log` regardless of
     whether the execution succeeded, failed, or was rejected.
@@ -455,8 +438,6 @@ async def execute_command(
         pid=proc.pid,
         command=list(argv),
         started_at=datetime.now(),
-        step=step,
-        task_entry=task_entry,
         log_file=log_path,
     )
     running_tasks[action.action_id] = running
@@ -473,13 +454,6 @@ async def execute_command(
                 output_lines.append(text)
                 log_f.write(text)
                 log_f.flush()
-                if step is not None:
-                    step.output = "".join(output_lines)
-                    try:
-                        await step.update()
-                    except Exception:
-                        # best effort — if the session went away, keep executing
-                        pass
         await proc.wait()
     finally:
         running_tasks.pop(action.action_id, None)
@@ -487,17 +461,6 @@ async def execute_command(
     combined_output = "".join(output_lines)
     action.returncode = proc.returncode
     action.finished_at = datetime.now()
-
-    # Flip cl.Task status if the caller passed one
-    if task_entry is not None:
-        try:
-            import chainlit as cl  # local import: module works without chainlit too
-
-            task_entry.status = (
-                cl.TaskStatus.DONE if proc.returncode == 0 else cl.TaskStatus.FAILED
-            )
-        except Exception:
-            pass
 
     # Accounting — only on success
     if proc.returncode == 0:

@@ -56,7 +56,7 @@ deterministic fake via `set_backend()`. A backend is just an
 `async (system_prompt, user_prompt) -> str` — the LLM's raw text
 response. `_parse_verdict` handles JSON extraction from that text.
 
-This module has no chainlit import and no hard claude-agent-sdk
+This module has no UI import and no hard claude-agent-sdk
 import at the top level — the SDK is imported lazily inside the
 default backend, so `import server.guard` works even in environments
 where the SDK isn't installed (for example the test harness).

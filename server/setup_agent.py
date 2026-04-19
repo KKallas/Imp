@@ -40,12 +40,12 @@ Stub (blocked on another issue):
     currently a stub that returns a "KKallas/Imp#10 not merged yet"
     error.
 
-## No chainlit import
+## No UI import
 
-The module has no chainlit import. `run_setup(say, ask)` takes two
-caller-provided coroutines for UI; main.py wires them to `cl.Message`
-and `cl.AskUserMessage`. Tools themselves return structured dicts —
-they never talk to the user directly; the LLM decides what to say.
+The module has no UI import. `run_setup(say, ask)` takes two
+caller-provided coroutines for UI; the WebSocket handler wires them.
+Tools themselves return structured dicts — they never talk to the user
+directly; the LLM decides what to say.
 """
 
 from __future__ import annotations

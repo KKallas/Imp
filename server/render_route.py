@@ -1,7 +1,7 @@
 """server/render_route.py — standalone render server.
 
 A lightweight FastAPI app that serves rendered charts without auth.
-Runs on its own port (default 8421) alongside Chainlit.
+Runs on its own port (default 8421). Also serves the chat UI.
 
 URL contract::
 
@@ -16,9 +16,7 @@ Start standalone::
     python -m server.render_route          # port 8421
     python -m server.render_route --port 9000
 
-Or let Chainlit spawn it automatically via ``start_background()``
-in main.py — it launches a subprocess and stores the URL in
-``cl.user_session``.
+Can also be spawned as a background subprocess via ``start_background()``.
 """
 
 from __future__ import annotations
