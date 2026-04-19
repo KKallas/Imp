@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from . import budgets, guard, intercept
+from . import budgets, guard
 
 ROOT = Path(__file__).resolve().parent.parent
 _PROMPT_FILE = ROOT / "server" / "foreman_prompt.md"
@@ -108,7 +108,7 @@ async def _security_hook(
             )
 
     # Classify via intercept whitelist
-    classification = intercept.classify_command(argv)
+    classification = guard.classify_command(argv)
 
     if classification == "unknown":
         return PermissionResultDeny(
