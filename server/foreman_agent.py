@@ -38,10 +38,23 @@ from .turn_ui import (  # noqa: F401, E402
 
 
 def _load_system_prompt() -> str:
-    """Load from file at dispatch time — hot-reloadable, editable."""
+    """Load from file + append auto-discovered tool list."""
+    base = ""
     if _PROMPT_FILE.exists():
-        return _PROMPT_FILE.read_text()
-    return "You are Foreman, an AI project manager. Use shell commands via gh CLI."
+        base = _PROMPT_FILE.read_text()
+    else:
+        base = "You are Foreman, an AI project manager."
+
+    # Append available tools so Claude tries them before raw Bash
+    try:
+        import tools
+        tool_list = tools.build_tool_list_for_prompt()
+        if tool_list:
+            base += "\n\n" + tool_list
+    except Exception:
+        pass
+
+    return base
 
 
 # ---------- security hook ----------
