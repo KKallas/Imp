@@ -19,7 +19,7 @@ same chat session. This module provides that help in four pieces
      the SDK client sees the prior conversation as context. No tool
      calls are re-executed; the preamble is for reference only.
 
-No chainlit import — `main.py` wires the session into `cl.user_session`.
+No UI import — the chat WebSocket handler manages session state.
 """
 
 from __future__ import annotations
@@ -158,8 +158,7 @@ class ChatSession:
         return self.title
 
     def to_thread_dict(self, *, user_id: str = "admin") -> dict[str, Any]:
-        """Convert to Chainlit's ThreadDict shape so our JSON-backed
-        data layer can serve chat history in the native left sidebar."""
+        """Convert to a thread dict for the chat sidebar API."""
         steps: list[dict[str, Any]] = []
         for i, t in enumerate(self.turns):
             step_type = "user_message" if t.role == "user" else "assistant_message"
@@ -253,7 +252,7 @@ _DATE_PREFIX_RE = _re.compile(r"^\[[\w\s:]+\]\s*")
 
 def _strip_date_prefix(title: str) -> str:
     """Remove all ``[Apr 17 14:32]`` prefixes, avoiding double-prefix
-    when Chainlit round-trips the sidebar title back through ``rename``."""
+    when the UI round-trips the sidebar title back through ``rename``."""
     result = title
     while _DATE_PREFIX_RE.match(result):
         result = _DATE_PREFIX_RE.sub("", result, count=1).strip()
@@ -378,7 +377,7 @@ def latest_session(*, base: Optional[Path] = None) -> Optional[ChatSession]:
 def prune_stubs(*, base: Optional[Path] = None) -> int:
     """Delete all empty stubs except the most recent one.
 
-    Every server restart creates a new empty stub (Chainlit assigns a
+    Every server restart creates a new empty stub (the UI assigns a
     fresh ``thread_id`` that doesn't match anything on disk).  Keeping
     only the newest prevents the sidebar from filling up with blank
     "New chat" entries.

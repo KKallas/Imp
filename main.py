@@ -68,18 +68,6 @@ CONFIG_FILE = ROOT / ".imp" / "config.json"
 _hasher = PasswordHasher()
 
 
-# ---------- Chainlit data layer (KKallas/Imp#45) ----------
-# Registers our JSON-backed data layer so Chainlit's native left sidebar
-# shows past chats with click-to-resume, rename, and delete.
-
-
-@cl.data_layer
-def _imp_data_layer():
-    from server.data_layer import ImpDataLayer
-
-    return ImpDataLayer()
-
-
 # ---------- git / gh helpers ----------
 
 
@@ -2036,7 +2024,6 @@ async def run_demo_command(user_content: str) -> None:
             user_intent=user_content,
             rationale="Admin demo of server/intercept.py via chat",
             kind="demo",
-            step=step,
         )
 
     # Refresh happens at the end of on_message via the try/finally — no

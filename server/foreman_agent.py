@@ -44,11 +44,11 @@ Escape hatch:
   - run_shell(argv) — raw argv through intercept, for anything not
     covered by a named tool. Guard classifies and enforces per usual.
 
-## No chainlit import
+## No UI import
 
-Module has no chainlit imports; UI seams (`say`, `ask`, `thinking`)
-are passed in as callables. main.py wires them to `cl.Message`,
-`cl.AskUserMessage`, and `cl.Step(type="run")`.
+Module has no UI imports; UI seams (`say`, `ask`, `thinking`)
+are passed in as callables. The chat UI wires them to WebSocket
+messages.
 """
 
 from __future__ import annotations
@@ -574,7 +574,7 @@ async def do_get_budgets() -> dict[str, Any]:
 
     Setters (`set_*_budget`, `reset_budgets`) are intentionally NOT
     exposed as agent tools per the P2.8 design: a budget the agent can
-    lift isn't a budget. Admin changes them via the Chainlit gear-icon
+    lift isn't a budget. Admin changes them via the UI settings
     panel.
     """
     return budgets.get_budgets().to_dict()
@@ -1552,6 +1552,7 @@ async def dispatch(
         allowed_tools=allowed_tool_names,
         disallowed_tools=list(_DISALLOWED_TOOLS),
         max_turns=20,
+        thinking={"type": "enabled", "budget_tokens": 10000},
     )
 
     cm_factory = thinking if thinking is not None else (lambda _label: _NullAsyncContext())

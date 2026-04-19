@@ -15,9 +15,9 @@ action at checkpoint B. **In-flight subprocesses are never killed by a budget
 tick** — they finish on their own cap; the budget exhausts "into" the task,
 not "through" it.
 
-This module has zero dependencies on chainlit so it can be unit-tested in
-isolation. The legacy `99-tools/_state.py` is a thin shim over these
-functions so the CLI mode (`./99-tools/run_all.sh`) reads and writes the
+This module has zero UI dependencies so it can be unit-tested in
+isolation. The legacy `tools/_state.py` is a thin shim over these
+functions so the CLI mode (`tools/run_all.sh`) reads and writes the
 same counters as the chat mode.
 """
 

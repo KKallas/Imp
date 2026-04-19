@@ -1,9 +1,8 @@
 """pipeline/mermaid_to_plotly.py — parse mermaid gantt blocks into Plotly figures.
 
-The Foreman agent occasionally emits mermaid gantt syntax in chat replies
-even though Chainlit can't render mermaid natively. This module provides a
-line-based parser that converts those blocks into Plotly horizontal-bar
-figures that Chainlit *can* render inline via `cl.Plotly`.
+The Foreman agent occasionally emits mermaid gantt syntax in chat replies.
+This module provides a line-based parser that converts those blocks into
+Plotly horizontal-bar figures for inline rendering.
 
 No external dependencies — the mermaid gantt grammar is small enough to
 handle directly with string splitting.
@@ -392,7 +391,7 @@ def gantt_to_plotly_figure(parsed: dict[str, Any]) -> dict[str, Any]:
     # with x = [start, end] pairs rendered via base + width.
     #
     # Actually, the cleanest Plotly approach for gantt is to use
-    # one shape per task. But for cl.Plotly we need a figure dict.
+    # one shape per task. But for inline rendering we need a figure dict.
     # We'll use a bar chart with base= start dates and x = durations.
 
     # Convert durations to milliseconds for the date axis.
