@@ -194,6 +194,13 @@ async def dispatch(
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt_text)
                 async for message in client.receive_response():
+                    print(
+                        f"[foreman] msg: {type(message).__name__} "
+                        f"blocks={[type(b).__name__ for b in getattr(message, 'content', [])]}"
+                        if hasattr(message, 'content') else
+                        f"[foreman] msg: {type(message).__name__}",
+                        file=sys.stderr,
+                    )
                     if isinstance(message, AssistantMessage):
                         msg_thinking: list[Any] = []
                         msg_tools: list[Any] = []
@@ -209,6 +216,12 @@ async def dispatch(
                                 msg_results.append(block)
                             elif isinstance(block, TextBlock):
                                 msg_text.append(block)
+                            else:
+                                # Log unknown block types for debugging
+                                print(
+                                    f"[foreman] unknown block: {type(block).__name__}",
+                                    file=sys.stderr,
+                                )
 
                         for b in msg_thinking:
                             await ui.thinking_update(b.thinking)
