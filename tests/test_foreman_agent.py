@@ -38,17 +38,34 @@ async def test_security_allows_non_bash_tools() -> None:
 
 
 async def test_security_allows_read_commands() -> None:
-    """gh issue list, echo, ls etc. are classified as reads and allowed."""
-    result = await foreman_agent._security_hook(
-        "Bash", {"command": "gh issue list --state open"}, None
-    )
-    assert result.behavior == "allow"
-
+    """echo, ls etc. are classified as reads and allowed."""
     result = await foreman_agent._security_hook(
         "Bash", {"command": "echo hello"}, None
     )
     assert result.behavior == "allow"
+
+    result = await foreman_agent._security_hook(
+        "Bash", {"command": "ls"}, None
+    )
+    assert result.behavior == "allow"
     print("test_security_allows_read_commands: OK")
+
+
+async def test_security_redirects_gh_to_tools() -> None:
+    """Raw gh commands that have tool scripts are denied with a suggestion."""
+    result = await foreman_agent._security_hook(
+        "Bash", {"command": "gh issue list --state open"}, None
+    )
+    assert result.behavior == "deny"
+    assert "tool script" in result.message
+    assert "list_issues" in result.message
+
+    # gh issue view has no tool script — should be allowed
+    result = await foreman_agent._security_hook(
+        "Bash", {"command": "gh issue view 42"}, None
+    )
+    assert result.behavior == "allow"
+    print("test_security_redirects_gh_to_tools: OK")
 
 
 async def test_security_denies_unknown_commands() -> None:
@@ -83,6 +100,7 @@ async def amain() -> None:
     tests = [
         test_security_allows_non_bash_tools,
         test_security_allows_read_commands,
+        test_security_redirects_gh_to_tools,
         test_security_denies_unknown_commands,
         test_security_allows_empty_bash,
         test_load_system_prompt,

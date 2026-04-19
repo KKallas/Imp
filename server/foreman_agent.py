@@ -84,6 +84,29 @@ async def _security_hook(
     if not argv:
         return PermissionResultAllow(behavior="allow")
 
+    # Suggest tool scripts for common gh operations
+    _GH_TO_TOOL: dict[str, str] = {
+        "issue list": "python tools/github/list_issues.py",
+        "pr list": "python tools/github/list_prs.py",
+        "issue create": "python tools/github/open_issue.py",
+        "issue close": "python tools/github/close_issue.py",
+        "pr create": "python tools/github/open_pr.py",
+        "pr merge": "python tools/github/merge_pr.py",
+    }
+    if argv[0] == "gh" and len(argv) >= 3:
+        gh_cmd = f"{argv[1]} {argv[2]}"
+        suggestion = _GH_TO_TOOL.get(gh_cmd)
+        if suggestion:
+            return PermissionResultDeny(
+                behavior="deny",
+                message=(
+                    f"Use the tool script instead: `{suggestion}`. "
+                    f"Raw `gh {gh_cmd}` is available as fallback only "
+                    f"when no tool script exists."
+                ),
+                interrupt=False,
+            )
+
     # Classify via intercept whitelist
     classification = intercept.classify_command(argv)
 
