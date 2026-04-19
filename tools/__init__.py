@@ -126,8 +126,8 @@ def build_tool_list_for_prompt() -> str:
     description if available.
     """
     lines: list[str] = ["## Available tools\n"]
-    lines.append("Use `run_tool(tool, executable, args)` to call any tool below.")
-    lines.append("Use `run_shell(argv)` as an escape hatch for arbitrary commands.\n")
+    lines.append("Try these tool scripts FIRST before using raw `gh` or Bash.")
+    lines.append("Run them with: `python tools/<folder>/<script>.py --args`\n")
 
     for name, path in sorted(discover().items()):
         # Try to get description from README
