@@ -365,6 +365,45 @@ async function loadChats() {
   } catch (e) { console.error('loadChats failed:', e); }
 }
 
+function renderTurnFull(turn) {
+  // Build the full content including thinking + tool blocks
+  let parts = [];
+
+  // Thinking blocks
+  if (turn.thinking && turn.thinking.length) {
+    turn.thinking.forEach(t => {
+      const escaped = t.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      parts.push(`<details class="thinking-block"><summary>Thinking</summary><div class="thinking-content">${escaped}</div></details>`);
+    });
+  }
+
+  // Tool calls
+  if (turn.tool_calls && turn.tool_calls.length) {
+    turn.tool_calls.forEach(tc => {
+      const icon = tc.status === 'ok' ? '✅' : (tc.status === 'error' ? '❌' : '⏳');
+      const dur = tc.duration_s ? ` · ${tc.duration_s.toFixed(1)}s` : '';
+      const args = tc.args || {};
+      const output = (tc.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(args)})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+    });
+  }
+
+  // Content
+  if (turn.content) {
+    parts.push(turn.content);
+  }
+
+  return parts.join('\n\n');
+}
+
+let isHistoricView = false;
+
+function setHistoricMode(on) {
+  isHistoricView = on;
+  document.getElementById('input-area').style.display = on ? 'none' : '';
+  document.getElementById('status').style.display = on ? 'none' : '';
+}
+
 async function loadChat(id) {
   try {
     const res = await fetch(`${API}/api/chats/${id}`);
@@ -372,8 +411,23 @@ async function loadChat(id) {
     currentChatId = id;
     const msgs = document.getElementById('messages');
     msgs.innerHTML = '';
-    (chat.turns || []).forEach(t => addMessage(t.role === 'user' ? 'user' : 'agent', t.content));
-    loadChats(); // refresh sidebar active state
+
+    // Show date header
+    const dateStr = chat.created_at ? new Date(chat.created_at).toLocaleString() : '';
+    const title = chat.title || 'Chat';
+    msgs.innerHTML = `<div style="text-align:center;padding:16px 0 8px;"><strong>${title}</strong><br><span style="font-size:11px;color:var(--muted);">${dateStr}</span></div>`;
+
+    // Render all turns with full log
+    (chat.turns || []).forEach(t => {
+      const role = t.role === 'user' ? 'user' : 'agent';
+      const content = role === 'agent' ? renderTurnFull(t) : t.content;
+      addMessage(role, content);
+    });
+
+    // Historic = read-only, current = editable
+    const hasActiveSession = chat.turns && chat.turns.length > 0;
+    setHistoricMode(true);  // loaded chats are read-only logs
+    loadChats();
   } catch (e) { console.error('loadChat failed:', e); }
 }
 
@@ -383,6 +437,7 @@ async function newChat() {
     const chat = await res.json();
     currentChatId = chat.id;
     document.getElementById('messages').innerHTML = '';
+    setHistoricMode(false);  // new chat is editable
     loadChats();
   } catch (e) { console.error('newChat failed:', e); }
 }

@@ -24,10 +24,15 @@ from server.foreman_agent import (
 
 
 class WebSocketTurnUI(TurnUI):
-    """TurnUI that sends structured events over WebSocket."""
+    """TurnUI that sends structured events over WebSocket and
+    accumulates the full turn log for persistence."""
 
     def __init__(self, ws: WebSocket) -> None:
         self._ws = ws
+        # Accumulated log for saving to chat history
+        self.thinking_log: list[str] = []
+        self.tool_log: list[dict[str, Any]] = []
+        self.artifact_log: list[dict[str, Any]] = []
 
     async def _send(self, msg: dict[str, Any]) -> None:
         try:
@@ -49,7 +54,6 @@ class WebSocketTurnUI(TurnUI):
             "type": "status",
             "text": f"Running {item.name}()...",
         })
-        # Insert inline tool marker in the stream
         await self._send({
             "type": "tool_start",
             "name": item.name,
@@ -57,12 +61,20 @@ class WebSocketTurnUI(TurnUI):
         })
 
     async def tool_finished(self, index: int, item: PlanItem) -> None:
+        # Save to log
+        self.tool_log.append({
+            "name": item.name,
+            "args": item.args,
+            "status": item.status,
+            "duration_s": item.duration_s,
+            "output": item.output[:4000],
+        })
         await self._send({
             "type": "tool_done",
             "name": item.name,
             "status": item.status,
             "duration": item.duration_s,
-            "output": item.output[:2000],  # cap for display
+            "output": item.output[:2000],
         })
         icon = "\u2705" if item.status == "ok" else "\u274c"
         await self._send({
@@ -74,10 +86,10 @@ class WebSocketTurnUI(TurnUI):
         await self._send({"type": "token", "text": token})
 
     async def stream_end(self, full_text: str) -> None:
-        # Final text sent via "done" message from the handler
         pass
 
     async def thinking_update(self, text: str) -> None:
+        self.thinking_log.append(text)
         await self._send({"type": "status", "text": "Thinking..."})
         await self._send({"type": "thinking", "text": text})
 
@@ -210,9 +222,15 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                         turn_ui=turn_ui,
                     )
 
-                    # Save assistant turn
+                    # Save assistant turn with full structured log
                     if reply:
-                        session.append_turn("assistant", reply)
+                        session.append_turn(
+                            "assistant",
+                            reply,
+                            tool_calls=turn_ui.tool_log,
+                            thinking=turn_ui.thinking_log,
+                            artifacts=turn_ui.artifact_log,
+                        )
                         session.truncate()
                         chat_history.save_session(session)
 
