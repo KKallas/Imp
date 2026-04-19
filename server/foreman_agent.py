@@ -54,21 +54,16 @@ async def _security_hook(
 ) -> Any:
     """Called by Claude SDK before every tool use.
 
-    All tools are allowed through — security is enforced at the
-    command execution level by ``intercept.py`` (whitelist + classify)
-    and ``guard.py`` (LLM approval for writes).
+    Only blocks genuinely dangerous actions:
+    - Write commands need guard LLM approval + budget check
+    - Everything else is allowed through
 
-    Bash commands are classified and gated:
-    - reads: allowed (gh issue list, echo, ls, etc.)
-    - writes: guard approval + budget check required
-    - unknown: denied
-
-    Non-Bash tools (Read, Write, Grep, etc.) are local file
-    operations and always allowed.
+    The "prefer tools over raw bash" logic is in the system prompt,
+    not enforced here.
     """
     from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
-    # Non-Bash tools are safe (local file operations)
+    # Non-Bash tools are always safe
     if tool_name != "Bash":
         return PermissionResultAllow(behavior="allow")
 
@@ -84,38 +79,8 @@ async def _security_hook(
     if not argv:
         return PermissionResultAllow(behavior="allow")
 
-    # Suggest tool scripts for common gh operations
-    _GH_TO_TOOL: dict[str, str] = {
-        "issue list": "python tools/github/list_issues.py",
-        "pr list": "python tools/github/list_prs.py",
-        "issue create": "python tools/github/open_issue.py",
-        "issue close": "python tools/github/close_issue.py",
-        "pr create": "python tools/github/open_pr.py",
-        "pr merge": "python tools/github/merge_pr.py",
-    }
-    if argv[0] == "gh" and len(argv) >= 3:
-        gh_cmd = f"{argv[1]} {argv[2]}"
-        suggestion = _GH_TO_TOOL.get(gh_cmd)
-        if suggestion:
-            return PermissionResultDeny(
-                behavior="deny",
-                message=(
-                    f"Use the tool script instead: `{suggestion}`. "
-                    f"Raw `gh {gh_cmd}` is available as fallback only "
-                    f"when no tool script exists."
-                ),
-                interrupt=False,
-            )
-
-    # Classify via intercept whitelist
+    # Classify the command
     classification = guard.classify_command(argv)
-
-    if classification == "unknown":
-        return PermissionResultDeny(
-            behavior="deny",
-            message=f"Command not in whitelist: {argv[0]}",
-            interrupt=False,
-        )
 
     # Writes need guard approval + budget check
     if classification == "write":
@@ -140,6 +105,7 @@ async def _security_hook(
                 interrupt=False,
             )
 
+    # Reads and unknown commands are allowed — Claude decides what to run
     return PermissionResultAllow(behavior="allow")
 
 

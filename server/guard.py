@@ -537,15 +537,24 @@ def classify_command(argv: list[str]) -> ClassifyResult:
     cmd = argv[0]
     basename = cmd.rsplit("/", 1)[-1]
 
-    if basename == "gh" and len(argv) >= 3:
-        verb = argv[2]
-        if verb in GH_READ_VERBS:
+    if basename == "gh" and len(argv) >= 2:
+        # gh api — read by default, write if --method POST/PATCH/DELETE
+        if argv[1] == "api":
+            method_flags = {"POST", "PATCH", "DELETE", "PUT"}
+            for i, arg in enumerate(argv):
+                if arg in ("-X", "--method") and i + 1 < len(argv):
+                    if argv[i + 1].upper() in method_flags:
+                        return "write"
             return "read"
-        if verb in GH_WRITE_VERBS:
-            return "write"
-        return "unknown"
 
-    if basename == "gh" and len(argv) == 2:
+        if len(argv) >= 3:
+            verb = argv[2]
+            if verb in GH_READ_VERBS:
+                return "read"
+            if verb in GH_WRITE_VERBS:
+                return "write"
+            return "unknown"
+
         if argv[1] in ("auth", "--version", "version"):
             return "read"
         return "unknown"
