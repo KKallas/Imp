@@ -1552,6 +1552,7 @@ async def dispatch(
         allowed_tools=allowed_tool_names,
         disallowed_tools=list(_DISALLOWED_TOOLS),
         max_turns=20,
+        thinking={"type": "enabled", "budget_tokens": 10000},
     )
 
     cm_factory = thinking if thinking is not None else (lambda _label: _NullAsyncContext())

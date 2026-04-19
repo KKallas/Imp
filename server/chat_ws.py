@@ -7,6 +7,7 @@ structured plan/thinking/streaming flow works over WebSocket.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from typing import Any
@@ -84,6 +85,7 @@ class WebSocketTurnUI(TurnUI):
 async def handle_ws_chat(ws: WebSocket) -> None:
     """WebSocket endpoint for chat."""
     await ws.accept()
+    current_task: asyncio.Task | None = None
 
     try:
         while True:
@@ -94,7 +96,10 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                 continue
 
             if msg.get("type") == "stop":
-                # TODO: cancel in-flight dispatch
+                if current_task and not current_task.done():
+                    current_task.cancel()
+                    await ws.send_json({"type": "status", "text": ""})
+                    await ws.send_json({"type": "done", "full_text": "(stopped)"})
                 continue
 
             if msg.get("type") != "message":
@@ -102,6 +107,14 @@ async def handle_ws_chat(ws: WebSocket) -> None:
 
             text = msg.get("text", "").strip()
             if not text:
+                continue
+
+            # Don't start a new dispatch while one is running
+            if current_task and not current_task.done():
+                await ws.send_json({
+                    "type": "error",
+                    "text": "Still working on the previous request. Click Stop first.",
+                })
                 continue
 
             chat_id = msg.get("chat_id")
@@ -149,46 +162,51 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                     "alt": f"{template} chart",
                 })
 
-            try:
-                reply = await foreman_dispatch(
-                    text,
-                    say=say,
-                    ask=ask,
-                    thinking=thinking,
-                    chart=chart,
-                    history=history_turns,
-                    turn_ui=turn_ui,
-                )
+            async def _run_dispatch() -> None:
+                try:
+                    reply = await foreman_dispatch(
+                        text,
+                        say=say,
+                        ask=ask,
+                        thinking=thinking,
+                        chart=chart,
+                        history=history_turns,
+                        turn_ui=turn_ui,
+                    )
 
-                # Save assistant turn
-                if reply:
-                    session.append_turn("assistant", reply)
-                    session.truncate()
-                    chat_history.save_session(session)
+                    # Save assistant turn
+                    if reply:
+                        session.append_turn("assistant", reply)
+                        session.truncate()
+                        chat_history.save_session(session)
 
-                    # Auto-title after first reply
-                    if session.needs_agent_title():
-                        try:
-                            await chat_history.generate_title(session)
-                            chat_history.save_session(session)
-                        except Exception:
-                            pass
+                        # Auto-title after first reply
+                        if session.needs_agent_title():
+                            try:
+                                await chat_history.generate_title(session)
+                                chat_history.save_session(session)
+                            except Exception:
+                                pass
 
-                await ws.send_json({
-                    "type": "done",
-                    "full_text": reply or "",
-                    "chat_id": chat_id,
-                })
+                    await ws.send_json({
+                        "type": "done",
+                        "full_text": reply or "",
+                        "chat_id": chat_id,
+                    })
 
-            except Exception as exc:
-                print(
-                    f"[chat_ws] dispatch error: {type(exc).__name__}: {exc}",
-                    file=sys.stderr,
-                )
-                await ws.send_json({
-                    "type": "error",
-                    "text": f"{type(exc).__name__}: {exc}",
-                })
+                except asyncio.CancelledError:
+                    await ws.send_json({"type": "done", "full_text": "(stopped)"})
+                except Exception as exc:
+                    print(
+                        f"[chat_ws] dispatch error: {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    await ws.send_json({
+                        "type": "error",
+                        "text": f"{type(exc).__name__}: {exc}",
+                    })
+
+            current_task = asyncio.create_task(_run_dispatch())
 
     except WebSocketDisconnect:
         pass
