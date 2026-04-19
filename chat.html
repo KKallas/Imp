@@ -48,6 +48,19 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .msg .body th,.msg .body td { border:1px solid var(--border); padding:4px 8px; font-size:13px; text-align:left; }
 .msg .body th { background:#161b22; }
 .msg .body blockquote { border-left:3px solid var(--border); padding-left:12px; color:var(--muted); margin:8px 0; }
+.msg .body .tool-block { margin:8px 0; border:1px solid var(--border); border-radius:6px;
+  background:#161b22; font-size:13px; }
+.msg .body .tool-block summary { padding:6px 10px; cursor:pointer; color:var(--muted);
+  font-family:"SF Mono",Consolas,monospace; font-size:12px; list-style:none; }
+.msg .body .tool-block summary::-webkit-details-marker { display:none; }
+.msg .body .tool-block summary::before { content:"▶ "; font-size:10px; }
+.msg .body .tool-block[open] summary::before { content:"▼ "; }
+.msg .body .tool-block pre { margin:0; padding:8px 10px; border-top:1px solid var(--border);
+  font-size:11px; max-height:300px; overflow:auto; white-space:pre-wrap; color:var(--fg); }
+.msg .body .tool-block.ok { border-color:#238636; }
+.msg .body .tool-block.error { border-color:#da3633; }
+.msg .body .tool-block.running { border-color:var(--accent); }
+.msg .body .tool-block.running summary { color:var(--accent); }
 
 /* --- input area --- */
 #input-area { border-top:1px solid var(--border); padding:12px 24px; background:#010409; }
@@ -109,6 +122,13 @@ let isWorking = false;
 marked.setOptions({ breaks: true, gfm: true });
 
 function renderMd(text) {
+  // Preserve <details> tool blocks from being escaped by marked
+  const toolBlocks = [];
+  text = text.replace(/<details class="tool-block[^"]*">[\s\S]*?<\/details>/g, (match) => {
+    toolBlocks.push(match);
+    return `%%TOOL_BLOCK_${toolBlocks.length - 1}%%`;
+  });
+
   // Replace mermaid code blocks with render server images
   text = text.replace(/```mermaid\n([\s\S]*?)```/g, (_, diagram) => {
     const encoded = encodeURIComponent(diagram.trim());
@@ -116,7 +136,12 @@ function renderMd(text) {
     const viewUrl = `${API}/render/mermaid?diagram=${encoded}&mode=viewer`;
     return `<a href="${viewUrl}" target="_blank"><img src="${imgUrl}" alt="mermaid diagram"></a>`;
   });
-  return marked.parse(text);
+  let html = marked.parse(text);
+  // Restore tool blocks after markdown parsing
+  toolBlocks.forEach((block, i) => {
+    html = html.replace(`%%TOOL_BLOCK_${i}%%`, block);
+  });
+  return html;
 }
 
 // --- messages ---
@@ -156,6 +181,28 @@ function setWorking(v) {
 // --- websocket ---
 let currentAgentMsg = null;
 let agentText = '';
+let pendingTools = {};  // name → {args} for open tool_start blocks
+
+function ensureAgentMsg() {
+  if (!currentAgentMsg) {
+    currentAgentMsg = addMessage('agent', '');
+    agentText = '';
+  }
+  return currentAgentMsg;
+}
+
+function renderAgentBody() {
+  if (!currentAgentMsg) return;
+  currentAgentMsg.querySelector('.body').innerHTML = renderMd(agentText);
+  scrollBottom();
+}
+
+function formatArgs(args) {
+  if (!args || Object.keys(args).length === 0) return '';
+  return Object.entries(args).map(([k,v]) =>
+    typeof v === 'string' ? `${k}="${v}"` : `${k}=${JSON.stringify(v)}`
+  ).join(', ');
+}
 
 function connectWs() {
   ws = new WebSocket(WS_URL);
@@ -165,39 +212,67 @@ function connectWs() {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case 'token':
-        if (!currentAgentMsg) {
-          currentAgentMsg = addMessage('agent', '');
-          agentText = '';
-        }
+        ensureAgentMsg();
         agentText += msg.text;
-        currentAgentMsg.querySelector('.body').innerHTML = renderMd(agentText);
-        scrollBottom();
+        renderAgentBody();
         break;
+
+      case 'tool_start':
+        ensureAgentMsg();
+        pendingTools[msg.name] = msg.args || {};
+        // Insert a placeholder in the text stream
+        agentText += `\n\n<details class="tool-block running"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
+        renderAgentBody();
+        break;
+
+      case 'tool_done': {
+        ensureAgentMsg();
+        const icon = msg.status === 'ok' ? '✅' : '❌';
+        const dur = msg.duration ? ` · ${msg.duration.toFixed(1)}s` : '';
+        const args = pendingTools[msg.name] || {};
+        delete pendingTools[msg.name];
+        // Replace the placeholder with the final block
+        const placeholder = `⏳ ${msg.name}(${formatArgs(args)})...`;
+        const final = `${icon} ${msg.name}(${formatArgs(args)})${dur}`;
+        const outputText = (msg.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        agentText = agentText.replace(
+          `<details class="tool-block running"><summary>${placeholder}</summary><pre>Running...</pre></details>`,
+          `<details class="tool-block ${msg.status}"><summary>${final}</summary><pre>${outputText || '(no output)'}</pre></details>`
+        );
+        renderAgentBody();
+        break;
+      }
+
       case 'status':
         setStatus(msg.text);
         break;
+
       case 'done':
         if (currentAgentMsg && msg.full_text) {
-          agentText = msg.full_text;
-          currentAgentMsg.querySelector('.body').innerHTML = renderMd(agentText);
+          // Keep tool blocks that were injected, append final text if needed
+          if (!agentText.includes(msg.full_text) && msg.full_text) {
+            agentText += msg.full_text;
+          }
+          renderAgentBody();
         }
         currentAgentMsg = null;
         agentText = '';
+        pendingTools = {};
         setWorking(false);
         setStatus('');
         scrollBottom();
         break;
+
       case 'error':
         addMessage('agent', `**Error:** ${msg.text}`);
         setWorking(false);
         setStatus('');
         break;
+
       case 'image':
-        if (currentAgentMsg) {
-          agentText += `\n\n![${msg.alt || 'chart'}](${msg.url})\n`;
-          currentAgentMsg.querySelector('.body').innerHTML = renderMd(agentText);
-          scrollBottom();
-        }
+        ensureAgentMsg();
+        agentText += `\n\n![${msg.alt || 'chart'}](${msg.url})\n`;
+        renderAgentBody();
         break;
     }
   };

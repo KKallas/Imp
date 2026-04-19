@@ -48,8 +48,21 @@ class WebSocketTurnUI(TurnUI):
             "type": "status",
             "text": f"Running {item.name}()...",
         })
+        # Insert inline tool marker in the stream
+        await self._send({
+            "type": "tool_start",
+            "name": item.name,
+            "args": item.args,
+        })
 
     async def tool_finished(self, index: int, item: PlanItem) -> None:
+        await self._send({
+            "type": "tool_done",
+            "name": item.name,
+            "status": item.status,
+            "duration": item.duration_s,
+            "output": item.output[:2000],  # cap for display
+        })
         icon = "\u2705" if item.status == "ok" else "\u274c"
         await self._send({
             "type": "status",
