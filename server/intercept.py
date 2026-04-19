@@ -116,24 +116,37 @@ PIPELINE_READ_SCRIPTS = {
     "pipeline/heuristics.py",
     "pipeline/render_chart.py",
     "pipeline/scenario.py",
-    # estimate_dates.py without --push is a pure local-file update;
-    # with --push it issues gh edits and is reclassified as write
-    # via the flag-aware special case below.
     "pipeline/estimate_dates.py",
 }
 
+# AI workflow scripts that modify code/issues (guard + budget)
+_WRITE_TOOL_NAMES = {"moderate_issues", "solve_issues", "fix_prs"}
+
 PIPELINE_WRITE_SCRIPTS = {
-    "tools/github/moderate_issues.py",
-    "tools/github/solve_issues.py",
-    "tools/github/fix_prs.py",
     "tools/run_all.sh",
     "pipeline/project_bootstrap.py",
-    # Legacy paths (in case old configs reference them)
-    "99-tools/moderate_issues.py",
-    "99-tools/solve_issues.py",
-    "99-tools/fix_prs.py",
-    "99-tools/run_all.sh",
 }
+
+
+def _auto_populate_tool_whitelist() -> None:
+    """Add all tools/ scripts to the whitelist at import time.
+
+    Write tools (AI workflows) go to PIPELINE_WRITE_SCRIPTS.
+    Everything else goes to PIPELINE_READ_SCRIPTS.
+    """
+    try:
+        import tools
+        for path in tools.all_tool_paths():
+            name = Path(path).stem
+            if name in _WRITE_TOOL_NAMES:
+                PIPELINE_WRITE_SCRIPTS.add(path)
+            else:
+                PIPELINE_READ_SCRIPTS.add(path)
+    except Exception:
+        pass  # tools/ not importable (e.g. in tests) — static lists only
+
+
+_auto_populate_tool_whitelist()
 
 # Small whitelist of harmless commands so you can exercise intercept.py
 # end-to-end from chat without wiring up a real pipeline script. These

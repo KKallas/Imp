@@ -57,7 +57,7 @@ async def test_security_denies_unknown_commands() -> None:
         "Bash", {"command": "rm -rf /"}, None
     )
     assert result.behavior == "deny"
-    assert "not recognized" in result.message
+    assert "not in whitelist" in result.message
     print("test_security_denies_unknown_commands: OK")
 
 

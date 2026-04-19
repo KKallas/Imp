@@ -53,9 +53,17 @@ async def _security_hook(
 ) -> Any:
     """Called by Claude SDK before every tool use.
 
-    Routes Bash commands through intercept (whitelist + classify) and
-    guard (LLM approval for writes). Other tools (Read, Write, Grep,
-    etc.) are allowed — they operate on local files only.
+    All tools are allowed through — security is enforced at the
+    command execution level by ``intercept.py`` (whitelist + classify)
+    and ``guard.py`` (LLM approval for writes).
+
+    Bash commands are classified and gated:
+    - reads: allowed (gh issue list, echo, ls, etc.)
+    - writes: guard approval + budget check required
+    - unknown: denied
+
+    Non-Bash tools (Read, Write, Grep, etc.) are local file
+    operations and always allowed.
     """
     from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
@@ -67,7 +75,6 @@ async def _security_hook(
     if not command.strip():
         return PermissionResultAllow(behavior="allow")
 
-    # Parse the command into argv for intercept
     try:
         argv = shlex.split(command)
     except ValueError:
@@ -76,20 +83,20 @@ async def _security_hook(
     if not argv:
         return PermissionResultAllow(behavior="allow")
 
-    # Classify the command
+    # Classify via intercept whitelist
     classification = intercept.classify_command(argv)
 
     if classification == "unknown":
         return PermissionResultDeny(
             behavior="deny",
-            message=f"Command not recognized by security policy: {argv[0]}",
+            message=f"Command not in whitelist: {argv[0]}",
             interrupt=False,
         )
 
-    # Writes go through the guard
+    # Writes need guard approval + budget check
     if classification == "write":
         ok, reason = await guard.check_action(
-            user_intent="",  # filled by dispatch context
+            user_intent="",
             proposed_command=command,
             worker_rationale="Foreman agent tool use",
         )
@@ -100,7 +107,6 @@ async def _security_hook(
                 interrupt=False,
             )
 
-        # Budget check
         b = budgets.get_budgets()
         if b.any_exhausted():
             exhausted = [c for c in ("tokens", "edits", "tasks") if b.exhausted(c)]
