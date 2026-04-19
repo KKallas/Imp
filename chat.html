@@ -137,6 +137,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   font-size:13px; font-weight:600; }
 #queue-popup-actions .action-primary { background:var(--accent); color:#fff; }
 #queue-popup-actions .action-secondary { background:var(--border); color:var(--fg); }
+#queue-popup-actions .action-close { background:#da3633; color:#fff; }
 
 /* --- responsive --- */
 @media(max-width:700px) {
@@ -589,6 +590,12 @@ function openPopup(itemId) {
     btn.onclick = () => resolveItem(item.id, a.action);
     actionsEl.appendChild(btn);
   });
+  // Always add a close button that doesn't change anything
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.className = 'action-close';
+  closeBtn.onclick = closePopup;
+  actionsEl.appendChild(closeBtn);
   document.getElementById('queue-popup').style.display = '';
 }
 
