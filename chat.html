@@ -112,10 +112,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   <div id="chat-list"></div>
   <div id="version"></div>
   <script>
-    // Show last-modified timestamp of chat.html as version
-    fetch(location.origin + '/', {method:'HEAD'}).then(r => {
-      const lm = r.headers.get('last-modified');
-      document.getElementById('version').textContent = lm ? 'Imp · ' + lm : 'Imp';
+    // Show newest mtime across all server files as version
+    fetch(location.origin + '/api/version').then(r => r.json()).then(d => {
+      document.getElementById('version').textContent = d.version ? 'Imp · ' + d.version : 'Imp';
     }).catch(() => {
       document.getElementById('version').textContent = 'Imp';
     });

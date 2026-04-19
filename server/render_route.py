@@ -75,6 +75,20 @@ async def health():
     return {"status": "ok", "renderers": plugins}
 
 
+@app.get("/api/version")
+async def version():
+    """Return the newest mtime across all server/pipeline/renderer files."""
+    from datetime import datetime, timezone
+    newest = 0.0
+    for pattern in ("server/*.py", "pipeline/*.py", "renderers/**/*.py", "chat.html"):
+        for p in _ROOT.glob(pattern):
+            mt = p.stat().st_mtime
+            if mt > newest:
+                newest = mt
+    ts = datetime.fromtimestamp(newest, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return {"version": ts}
+
+
 @app.get("/render/{renderer_name}")
 async def handle_render(request: Request, renderer_name: str) -> Response:
     mode = request.query_params.get("mode", "image")
