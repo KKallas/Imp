@@ -1054,6 +1054,9 @@ async def _on_message_body(msg: cl.Message) -> None:
         session.truncate()
         chat_history.save_session(session)
 
+    turn_ui = _ForemanTurnUI()
+    await turn_ui._ensure_msg()  # show "thinking" status immediately
+
     reply = await foreman_agent.dispatch(
         msg.content,
         say=_foreman_say,
@@ -1061,7 +1064,7 @@ async def _on_message_body(msg: cl.Message) -> None:
         thinking=_foreman_thinking,
         chart=_foreman_chart,
         history=history_turns,
-        turn_ui=_ForemanTurnUI(),
+        turn_ui=turn_ui,
     )
 
     # Record the assistant turn + persist + agent-title after the first
@@ -1091,14 +1094,36 @@ async def _foreman_say(text: str) -> None:
     text for fenced mermaid blocks.  Each block is screenshotted to PNG
     via the render server and shown inline as an image with a link to
     the interactive viewer underneath.
-    """
-    cleaned, elements = await _apply_mermaid_watchdog(text)
 
-    await cl.Message(
-        author="Foreman",
-        content=cleaned.strip(),
-        elements=elements if elements else None,
-    ).send()
+    Shows a placeholder ("Rendering chart...") immediately while the
+    screenshot runs so the user sees activity.
+    """
+    from pipeline.mermaid_to_plotly import extract_mermaid_blocks
+
+    blocks = extract_mermaid_blocks(text)
+
+    # Phase 1: send immediately with placeholder if there are charts.
+    if blocks:
+        placeholder = text
+        for block in blocks:
+            placeholder = placeholder.replace(
+                block["raw"], "\n\n_Rendering chart..._\n"
+            )
+        msg = await cl.Message(
+            author="Foreman",
+            content=placeholder.strip(),
+        ).send()
+
+        # Phase 2: screenshot (slow) and single update in-place.
+        cleaned, elements = await _apply_mermaid_watchdog(text)
+        msg.content = cleaned.strip()
+        msg.elements = elements if elements else []  # type: ignore[assignment]
+        await msg.update()
+    else:
+        await cl.Message(
+            author="Foreman",
+            content=text.strip(),
+        ).send()
 
 
 async def _foreman_ask(question: str) -> str | None:
@@ -1123,15 +1148,14 @@ async def _foreman_ask(question: str) -> str | None:
 
 @asynccontextmanager
 async def _foreman_thinking(label: str):
-    """Bracket a slow LLM call with a visible `cl.Step` spinner.
+    """No-op context manager — status is handled entirely by
+    ``_ForemanTurnUI`` (status message + plan checklist).
 
-    Foreman's `dispatch` enters this around the SDK conversation so the
-    admin sees a "thinking…" step instead of an awkward silent pause.
-    The step auto-closes (spinner clears) as soon as the dispatch
-    returns, regardless of success or failure.
+    The old ``cl.Step`` wrapper created a "Using Foreman / Used Foreman"
+    header that stayed at the top of the chat and never scrolled, which
+    was confusing. Removed in P4.27.
     """
-    async with cl.Step(name=label, type="run") as step:
-        yield step
+    yield None
 
 
 # ---------- structured turn UI (KKallas/Imp#55) ----------
@@ -1313,9 +1337,26 @@ class _ForemanTurnUI:
 
         return "\n\n".join(parts)
 
+    # -- status line (appended to main message content) -----------------
+
+    def _status_line(self) -> str:
+        """Status text appended to the END of the main message content."""
+        if self._answer_started:
+            return ""
+        if self._plan_items:
+            running = [
+                it for it in self._plan_items
+                if getattr(it, "status", "") in ("pending", "running")
+            ]
+            if running:
+                return "\n\n_Foreman is working..._"
+        return "\n\n_Foreman is thinking..._"
+
     async def _ensure_msg(self) -> cl.Message:
         if self._msg is None:
-            self._msg = cl.Message(author="Foreman", content="")
+            self._msg = cl.Message(
+                author="Foreman", content="_Foreman is thinking..._"
+            )
             await self._msg.send()
         return self._msg
 
@@ -1326,6 +1367,7 @@ class _ForemanTurnUI:
         content = base
         if self._answer_chunks:
             content += "\n\n" + "".join(self._answer_chunks)
+        content += self._status_line()
         msg.content = content
         await msg.update()
 
@@ -1411,7 +1453,9 @@ class _ForemanTurnUI:
         self._answer_chunks.append(token)
         if not self._answer_started:
             self._answer_started = True
-            # Refresh structure (includes thinking) right before answer
+            # Refresh structure — status_line() returns "" now that
+            # _answer_started is True, so the status disappears and
+            # the streamed text takes over as the activity indicator.
             base = self._render_structure()
             msg = await self._ensure_msg()
             msg.content = base
@@ -1419,6 +1463,26 @@ class _ForemanTurnUI:
         await self._msg.stream_token(token)  # type: ignore[union-attr]
 
     async def stream_end(self, full_text: str) -> None:
+        from pipeline.mermaid_to_plotly import extract_mermaid_blocks
+
+        blocks = extract_mermaid_blocks(full_text)
+
+        # Show "Rendering chart..." placeholder while screenshot runs.
+        # This replaces the mermaid blocks in-place so the user sees
+        # activity instead of a frozen screen.
+        if blocks:
+            placeholder = full_text
+            for block in blocks:
+                placeholder = placeholder.replace(
+                    block["raw"], "\n\n_Rendering chart..._\n"
+                )
+            self._answer_chunks = [placeholder.strip()]
+            base = self._render_structure()
+            msg = await self._ensure_msg()
+            msg.content = base + "\n\n" + self._answer_chunks[0]
+            await msg.update()
+
+        # Screenshot (slow) then single final update with image elements.
         cleaned, elements = await _apply_mermaid_watchdog(full_text)
         self._answer_chunks = [cleaned.strip()] if cleaned.strip() else []
 
@@ -1429,8 +1493,8 @@ class _ForemanTurnUI:
 
         msg = await self._ensure_msg()
         msg.content = content
-        if elements:
-            msg.elements = elements  # type: ignore[assignment]
+        # Replace elements entirely — never append to avoid duplicates.
+        msg.elements = elements if elements else []  # type: ignore[assignment]
         await msg.update()
 
     async def thinking_update(self, text: str) -> None:
@@ -1539,6 +1603,11 @@ async def _render_chart_file(artifact: dict) -> None:
         from server.screenshot import available as _ss_available
 
         if _ss_available():
+            # Show placeholder while screenshot runs.
+            placeholder_msg = await cl.Message(
+                author="Foreman",
+                content=f"_Rendering {template} chart..._",
+            ).send()
             try:
                 from server.screenshot import screenshot
 
@@ -1563,6 +1632,11 @@ async def _render_chart_file(artifact: dict) -> None:
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
+            # Remove placeholder — the final message below replaces it.
+            try:
+                await placeholder_msg.remove()
+            except Exception:
+                pass
 
     if not elements and not public_url:
         await cl.Message(

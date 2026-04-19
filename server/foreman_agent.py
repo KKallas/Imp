@@ -1561,7 +1561,7 @@ async def dispatch(
     has_plan = False
 
     try:
-        async with cm_factory("Foreman is thinking…"):
+        async with cm_factory("Foreman"):
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt_text)
                 async for message in client.receive_response():
