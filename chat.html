@@ -28,7 +28,8 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   color:var(--muted); }
 .chat-item:hover { background:var(--border); }
 .chat-item.active { background:var(--user-bg); color:var(--accent); }
-.chat-item .date { font-size:11px; opacity:0.6; }
+.chat-item .chat-title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-item .chat-date { font-size:10px; opacity:0.5; margin-top:2px; }
 
 /* --- main area --- */
 #main { flex:1; display:flex; flex-direction:column; min-width:0; }
@@ -355,11 +356,12 @@ async function loadChats() {
     const chats = await res.json();
     const list = document.getElementById('chat-list');
     list.innerHTML = '';
-    chats.forEach(c => {
+    chats.forEach((c, i) => {
       const el = document.createElement('div');
       el.className = `chat-item${c.id === currentChatId ? ' active' : ''}`;
-      el.textContent = c.title;
-      el.onclick = () => loadChat(c.id);
+      const dateStr = c.created_at ? new Date(c.created_at).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+      el.innerHTML = `<div class="chat-title">${c.title || 'New chat'}</div><div class="chat-date">${dateStr}</div>`;
+      el.onclick = () => loadChat(c.id, i === 0);
       list.appendChild(el);
     });
   } catch (e) { console.error('loadChats failed:', e); }
@@ -404,7 +406,7 @@ function setHistoricMode(on) {
   document.getElementById('status').style.display = on ? 'none' : '';
 }
 
-async function loadChat(id) {
+async function loadChat(id, isActive) {
   try {
     const res = await fetch(`${API}/api/chats/${id}`);
     const chat = await res.json();
@@ -424,9 +426,8 @@ async function loadChat(id) {
       addMessage(role, content);
     });
 
-    // Historic = read-only, current = editable
-    const hasActiveSession = chat.turns && chat.turns.length > 0;
-    setHistoricMode(true);  // loaded chats are read-only logs
+    // Topmost chat (active) is editable, others are read-only logs
+    setHistoricMode(!isActive);
     loadChats();
   } catch (e) { console.error('loadChat failed:', e); }
 }
