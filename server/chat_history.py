@@ -64,16 +64,18 @@ def _safe_stem(created_at_iso: str) -> str:
 class Turn:
     """A single user or assistant message in a chat.
 
-    `tool_calls` is a list of `{"name": str, "input": dict}` for
-    assistant turns that invoked tools, preserved for audit / replay
-    inspection. Never consumed by the LLM — tools aren't re-executed
-    on resume, they're just visible in the JSON on disk.
+    For assistant turns, the full structured log is preserved:
+    - `thinking`: list of thinking block strings
+    - `tool_calls`: list of {name, args, status, duration_s, output}
+    - `artifacts`: list of {type, template, path, ...}
     """
 
     role: str  # "user" | "assistant"
     content: str
     timestamp: str = field(default_factory=_utcnow_iso)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    thinking: list[str] = field(default_factory=list)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -83,6 +85,10 @@ class Turn:
         }
         if self.tool_calls:
             d["tool_calls"] = list(self.tool_calls)
+        if self.thinking:
+            d["thinking"] = list(self.thinking)
+        if self.artifacts:
+            d["artifacts"] = list(self.artifacts)
         return d
 
     @classmethod
@@ -92,6 +98,8 @@ class Turn:
             content=str(data.get("content") or ""),
             timestamp=str(data.get("timestamp") or _utcnow_iso()),
             tool_calls=list(data.get("tool_calls") or []),
+            thinking=list(data.get("thinking") or []),
+            artifacts=list(data.get("artifacts") or []),
         )
 
 
@@ -202,8 +210,16 @@ class ChatSession:
         content: str,
         *,
         tool_calls: Optional[list[dict[str, Any]]] = None,
+        thinking: Optional[list[str]] = None,
+        artifacts: Optional[list[dict[str, Any]]] = None,
     ) -> Turn:
-        turn = Turn(role=role, content=content, tool_calls=list(tool_calls or []))
+        turn = Turn(
+            role=role,
+            content=content,
+            tool_calls=list(tool_calls or []),
+            thinking=list(thinking or []),
+            artifacts=list(artifacts or []),
+        )
         self.turns.append(turn)
         self.last_active_at = turn.timestamp
         return turn
@@ -306,23 +322,68 @@ def load_session(chat_id: str, *, base: Optional[Path] = None) -> Optional[ChatS
     return None
 
 
+def asset_dir(chat_id: str, *, base: Optional[Path] = None) -> Path:
+    """Return the asset folder for a session, creating it if needed."""
+    d = (base or CHATS_DIR) / chat_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def delete_session(chat_id: str, *, base: Optional[Path] = None) -> bool:
-    """Delete a session file by id. Returns True if found and deleted."""
+    """Delete a session file + asset folder by id."""
+    import shutil
+
     d = base or CHATS_DIR
     if not d.exists():
         return False
+    deleted = False
     for path in d.glob(f"*_{chat_id}.json"):
         try:
             path.unlink()
-            return True
+            deleted = True
         except OSError as exc:
             print(
                 f"[chat_history] delete failed for {path.name}: "
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            return False
-    return False
+    # Remove asset folder
+    asset_path = d / chat_id
+    if asset_path.is_dir():
+        try:
+            shutil.rmtree(asset_path)
+        except OSError:
+            pass
+    return deleted
+
+
+def purge_orphans(*, base: Optional[Path] = None) -> int:
+    """Delete asset folders with no matching JSON file. Returns count."""
+    d = base or CHATS_DIR
+    if not d.exists():
+        return 0
+    import shutil
+
+    # Collect all session IDs from JSON files
+    json_ids: set[str] = set()
+    for path in d.glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+            json_ids.add(str(data.get("id", "")))
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    pruned = 0
+    for subdir in d.iterdir():
+        if subdir.is_dir() and subdir.name not in json_ids:
+            try:
+                shutil.rmtree(subdir)
+                pruned += 1
+            except OSError:
+                pass
+    if pruned:
+        print(f"[chat_history] purged {pruned} orphaned asset folder(s)", file=sys.stderr)
+    return pruned
 
 
 def list_sessions(
