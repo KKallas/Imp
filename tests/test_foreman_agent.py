@@ -51,31 +51,26 @@ async def test_security_allows_read_commands() -> None:
     print("test_security_allows_read_commands: OK")
 
 
-async def test_security_redirects_gh_to_tools() -> None:
-    """Raw gh commands that have tool scripts are denied with a suggestion."""
+async def test_security_allows_all_reads() -> None:
+    """All commands are allowed unless they're classified as writes."""
+    # gh api — allowed
+    result = await foreman_agent._security_hook(
+        "Bash", {"command": "gh api repos/:owner/:repo/milestones"}, None
+    )
+    assert result.behavior == "allow"
+
+    # gh issue list — allowed (no blocking, just prompt recommends tools)
     result = await foreman_agent._security_hook(
         "Bash", {"command": "gh issue list --state open"}, None
     )
-    assert result.behavior == "deny"
-    assert "tool script" in result.message
-    assert "list_issues" in result.message
-
-    # gh issue view has no tool script — should be allowed
-    result = await foreman_agent._security_hook(
-        "Bash", {"command": "gh issue view 42"}, None
-    )
     assert result.behavior == "allow"
-    print("test_security_redirects_gh_to_tools: OK")
 
-
-async def test_security_denies_unknown_commands() -> None:
-    """Commands not in the whitelist are denied."""
+    # unknown commands — allowed (Claude decides, not us)
     result = await foreman_agent._security_hook(
         "Bash", {"command": "rm -rf /"}, None
     )
-    assert result.behavior == "deny"
-    assert "not in whitelist" in result.message
-    print("test_security_denies_unknown_commands: OK")
+    assert result.behavior == "allow"
+    print("test_security_allows_all_reads: OK")
 
 
 async def test_security_allows_empty_bash() -> None:
@@ -100,8 +95,7 @@ async def amain() -> None:
     tests = [
         test_security_allows_non_bash_tools,
         test_security_allows_read_commands,
-        test_security_redirects_gh_to_tools,
-        test_security_denies_unknown_commands,
+        test_security_allows_all_reads,
         test_security_allows_empty_bash,
         test_load_system_prompt,
     ]
