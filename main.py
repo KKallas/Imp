@@ -68,18 +68,6 @@ CONFIG_FILE = ROOT / ".imp" / "config.json"
 _hasher = PasswordHasher()
 
 
-# ---------- Chainlit data layer (KKallas/Imp#45) ----------
-# Registers our JSON-backed data layer so Chainlit's native left sidebar
-# shows past chats with click-to-resume, rename, and delete.
-
-
-@cl.data_layer
-def _imp_data_layer():
-    from server.data_layer import ImpDataLayer
-
-    return ImpDataLayer()
-
-
 # ---------- git / gh helpers ----------
 
 
