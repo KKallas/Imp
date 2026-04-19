@@ -115,3 +115,44 @@ def delete_config(tool_name: str, exec_name: str) -> bool:
         return False
     path.unlink()
     return True
+
+
+# ── prompt generation ───────────────────────────────────────────────
+
+def build_tool_list_for_prompt() -> str:
+    """Auto-generate the 'Tools available' section for the system prompt.
+
+    Scans ``tools/*/`` and lists every executable with its README
+    description if available.
+    """
+    lines: list[str] = ["## Available tools\n"]
+    lines.append("Use `run_tool(tool, executable, args)` to call any tool below.")
+    lines.append("Use `run_shell(argv)` as an escape hatch for arbitrary commands.\n")
+
+    for name, path in sorted(discover().items()):
+        # Try to get description from README
+        readme = path / "README.md"
+        desc = ""
+        if readme.exists():
+            first_line = readme.read_text().strip().split("\n")[0]
+            desc = f" — {first_line.lstrip('# ').strip()}"
+        lines.append(f"### {name}/{desc}")
+
+        for e in list_executables(name):
+            cfg = " (has config)" if e["has_config"] else ""
+            lines.append(f"- `{e['name']}`{cfg}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def all_tool_paths() -> list[str]:
+    """Return all tool script paths for whitelist generation.
+
+    Used by ``intercept.py`` to auto-populate the command whitelist.
+    """
+    paths: list[str] = []
+    for name in discover():
+        for e in list_executables(name):
+            paths.append(f"tools/{name}/{e['name']}.py")
+    return paths

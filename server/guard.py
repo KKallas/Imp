@@ -456,12 +456,7 @@ async def check_action(
 
 
 async def check(action: Any) -> tuple[bool, str]:
-    """Drop-in replacement for `intercept._stub_guard`.
-
-    Accepts anything with `user_intent`, `command` (list[str]), and
-    `rationale` attributes — which in practice is `intercept.ProposedAction`.
-    Typed as `Any` here to avoid a circular import with `server.intercept`.
-    """
+    """Legacy adapter — accepts object with command/user_intent/rationale."""
     command = getattr(action, "command", None) or []
     if isinstance(command, (list, tuple)):
         proposed_command = " ".join(str(c) for c in command)
@@ -473,3 +468,109 @@ async def check(action: Any) -> tuple[bool, str]:
         proposed_command=proposed_command,
         worker_rationale=getattr(action, "rationale", "") or "",
     )
+
+
+# ---------- command classification (moved from intercept.py) ----------
+
+from pathlib import Path as _Path
+from typing import Literal as _Literal
+
+_ROOT = _Path(__file__).resolve().parent.parent
+
+ClassifyResult = _Literal["read", "write", "unknown"]
+
+GH_WRITE_VERBS = {
+    "edit", "create", "delete", "close", "reopen", "add", "remove",
+    "set", "lock", "unlock", "comment", "merge",
+    "item-edit", "item-create", "item-delete", "item-add", "item-archive",
+    "field-create", "field-delete",
+}
+
+GH_READ_VERBS = {
+    "view", "list", "status", "browse", "ls", "search",
+    "item-list", "field-list", "diff", "checks",
+}
+
+PIPELINE_READ_SCRIPTS: set[str] = {
+    "pipeline/sync_issues.py",
+    "pipeline/heuristics.py",
+    "pipeline/render_chart.py",
+    "pipeline/scenario.py",
+    "pipeline/estimate_dates.py",
+}
+
+_WRITE_TOOL_NAMES = {"moderate_issues", "solve_issues", "fix_prs"}
+
+PIPELINE_WRITE_SCRIPTS: set[str] = {
+    "tools/run_all.sh",
+    "pipeline/project_bootstrap.py",
+}
+
+SAFE_COMMANDS = {
+    "echo", "ls", "pwd", "date", "hostname", "whoami", "uname", "cat",
+    "sleep", "head", "tail", "wc", "sort", "grep", "find",
+}
+
+
+def _auto_populate_tool_whitelist() -> None:
+    """Add all tools/ scripts to the whitelist at import time."""
+    try:
+        import tools
+        for path in tools.all_tool_paths():
+            name = _Path(path).stem
+            if name in _WRITE_TOOL_NAMES:
+                PIPELINE_WRITE_SCRIPTS.add(path)
+            else:
+                PIPELINE_READ_SCRIPTS.add(path)
+    except Exception:
+        pass
+
+
+_auto_populate_tool_whitelist()
+
+
+def classify_command(argv: list[str]) -> ClassifyResult:
+    """Return ``read``, ``write``, or ``unknown`` for a shell command."""
+    if not argv:
+        return "unknown"
+
+    cmd = argv[0]
+    basename = cmd.rsplit("/", 1)[-1]
+
+    if basename == "gh" and len(argv) >= 3:
+        verb = argv[2]
+        if verb in GH_READ_VERBS:
+            return "read"
+        if verb in GH_WRITE_VERBS:
+            return "write"
+        return "unknown"
+
+    if basename == "gh" and len(argv) == 2:
+        if argv[1] in ("auth", "--version", "version"):
+            return "read"
+        return "unknown"
+
+    if basename in ("python", "python3") and len(argv) >= 2:
+        if len(argv) >= 3 and argv[1] == "-c":
+            return "write"
+        script = argv[1]
+        if script.endswith("pipeline/estimate_dates.py") and "--push" in argv:
+            return "write"
+        for s in PIPELINE_READ_SCRIPTS:
+            if script.endswith(s):
+                return "read"
+        for s in PIPELINE_WRITE_SCRIPTS:
+            if script.endswith(s):
+                return "write"
+        return "unknown"
+
+    if basename in ("bash", "sh") and len(argv) >= 3 and argv[1] == "-c":
+        return "write"
+
+    if cmd.endswith("/run_all.sh") or basename == "run_all.sh":
+        return "write"
+
+    if basename in SAFE_COMMANDS:
+        return "read"
+
+    return "unknown"

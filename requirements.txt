@@ -1,6 +1,7 @@
-chainlit>=2.11
 claude-agent-sdk
-argon2-cffi
 plotly>=5
 pandas>=2
 html2image>=2.0
+uvicorn
+fastapi
+jinja2

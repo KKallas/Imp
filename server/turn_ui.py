@@ -8,12 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-_MCP_PREFIX = "mcp__imp_foreman__"
-
-
 def clean_tool_name(name: str) -> str:
-    """Strip the MCP server prefix from a tool name."""
-    return name[len(_MCP_PREFIX):] if name.startswith(_MCP_PREFIX) else name
+    """Return the tool name as-is (no prefix stripping needed)."""
+    return name
 
 
 def format_tool_sig(name: str, args: dict[str, Any]) -> str:
