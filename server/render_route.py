@@ -225,13 +225,13 @@ async def delete_chat(chat_id: str):
 
 @app.get("/api/queue")
 async def list_queue():
-    from server import queue
+    from server import work_queue as queue
     return queue.list_pending()
 
 
 @app.post("/api/queue")
 async def add_to_queue(request: Request):
-    from server import queue
+    from server import work_queue as queue
     data = await request.json()
     item = queue.add(
         tool=data.get("tool", "general"),
@@ -244,7 +244,7 @@ async def add_to_queue(request: Request):
 
 @app.post("/api/queue/{item_id}/action")
 async def resolve_queue_item(item_id: str, request: Request):
-    from server import queue
+    from server import work_queue as queue
     data = await request.json()
     item = queue.resolve(item_id, data.get("action", "done"))
     if item is None:
@@ -254,7 +254,7 @@ async def resolve_queue_item(item_id: str, request: Request):
 
 @app.delete("/api/queue/{item_id}")
 async def delete_queue_item(item_id: str):
-    from server import queue
+    from server import work_queue as queue
     return {"deleted": queue.remove(item_id)}
 
 
