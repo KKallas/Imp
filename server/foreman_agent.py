@@ -168,6 +168,7 @@ async def dispatch(
         TextBlock,
         ThinkingBlock,
         ToolUseBlock,
+        UserMessage,
     )
     from claude_agent_sdk.types import ToolResultBlock
 
@@ -266,6 +267,26 @@ async def dispatch(
                             assistant_chunks.append(b.text)
                             if not msg_tools:
                                 await ui.stream_token(b.text)
+
+                    elif isinstance(message, UserMessage):
+                        # Tool results arrive inside UserMessage
+                        for block in message.content:
+                            if isinstance(block, ToolResultBlock):
+                                entry = _pending_tool_ids.pop(
+                                    block.tool_use_id, None
+                                )
+                                if entry and tracker is not None:
+                                    tool_name, start_t = entry
+                                    duration = time.monotonic() - start_t
+                                    output = ""
+                                    if isinstance(block.content, str):
+                                        output = block.content
+                                    elif isinstance(block.content, list):
+                                        output = str(block.content)
+                                    ok = not block.is_error
+                                    await tracker.on_done(
+                                        tool_name, ok, duration, output[:4000]
+                                    )
 
                     elif isinstance(message, ResultMessage):
                         usage = getattr(message, "usage", None) or {}
