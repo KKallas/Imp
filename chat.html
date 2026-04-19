@@ -11,7 +11,8 @@
   --accent:#58a6ff; --sidebar-w:260px; --status-h:28px; }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  background:var(--bg); color:var(--fg); height:100vh; display:flex; overflow:hidden; }
+  background:var(--bg); color:var(--fg); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+#app-body { flex:1; display:flex; overflow:hidden; }
 
 /* --- sidebar --- */
 #sidebar { width:var(--sidebar-w); background:#010409; border-right:1px solid var(--border);
@@ -98,8 +99,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
 /* --- tabs --- */
-#tab-bar { display:flex; border-bottom:1px solid var(--border); background:#010409; }
-.tab { padding:8px 20px; background:none; border:none; color:var(--muted); cursor:pointer;
+#tab-bar { display:flex; align-items:center; border-bottom:1px solid var(--border);
+  background:#010409; flex-shrink:0; }
+.tab { padding:10px 20px; background:none; border:none; color:var(--muted); cursor:pointer;
   font-size:13px; font-weight:600; border-bottom:2px solid transparent; }
 .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
 .tab:hover { color:var(--fg); }
@@ -144,15 +146,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 </head>
 <body>
 
-<div id="sidebar" style="display:none">
-  <div id="sidebar-header">
-    <button onclick="newChat()">+ New</button>
-    <button class="del" onclick="deleteChat()">Del</button>
-  </div>
-  <div id="chat-list"></div>
-  <div id="version"></div>
+<div id="tab-bar">
+  <button class="tab active" onclick="switchTab('queue')">Queue</button>
+  <button class="tab" onclick="switchTab('chat')">Chat</button>
+  <div id="version" style="margin-left:auto;"></div>
   <script>
-    // Show newest mtime across all server files as version
     fetch(location.origin + '/api/version').then(r => r.json()).then(d => {
       document.getElementById('version').textContent = d.version ? 'Imp · ' + d.version : 'Imp';
     }).catch(() => {
@@ -161,12 +159,17 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   </script>
 </div>
 
-<div id="main">
-  <div id="tab-bar">
-    <button class="tab active" onclick="switchTab('queue')">Queue</button>
-    <button class="tab" onclick="switchTab('chat')">Chat</button>
-  </div>
+<div id="app-body">
 
+<div id="sidebar" style="display:none">
+  <div id="sidebar-header">
+    <button onclick="newChat()">+ New</button>
+    <button class="del" onclick="deleteChat()">Del</button>
+  </div>
+  <div id="chat-list"></div>
+</div>
+
+<div id="main">
   <!-- Queue tab (default) -->
   <div id="queue-tab" class="tab-content">
     <div id="queue-list"></div>
@@ -194,7 +197,8 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
       <div id="queue-popup-actions"></div>
     </div>
   </div>
-</div>
+</div><!-- /main -->
+</div><!-- /app-body -->
 
 <script>
 const API = location.origin;
