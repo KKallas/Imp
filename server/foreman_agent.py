@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -168,6 +169,7 @@ async def dispatch(
         ThinkingBlock,
         ToolUseBlock,
     )
+    from claude_agent_sdk.types import ToolResultBlock
 
     ui = turn_ui or TurnUI()
     tracker = _ToolTracker(ui) if turn_ui is not None else None
@@ -184,6 +186,8 @@ async def dispatch(
     assistant_chunks: list[str] = []
     tool_calls_seen: list[str] = []
     has_plan = False
+    # Track pending tool calls by ID so we can match results
+    _pending_tool_ids: dict[str, tuple[str, float]] = {}  # id → (name, start_time)
 
     try:
         async with cm_factory("Foreman"):
@@ -193,6 +197,7 @@ async def dispatch(
                     if isinstance(message, AssistantMessage):
                         msg_thinking: list[Any] = []
                         msg_tools: list[Any] = []
+                        msg_results: list[Any] = []
                         msg_text: list[Any] = []
                         for block in message.content:
                             if isinstance(block, ThinkingBlock):
@@ -200,12 +205,15 @@ async def dispatch(
                             elif isinstance(block, ToolUseBlock):
                                 tool_calls_seen.append(block.name)
                                 msg_tools.append(block)
+                            elif isinstance(block, ToolResultBlock):
+                                msg_results.append(block)
                             elif isinstance(block, TextBlock):
                                 msg_text.append(block)
 
                         for b in msg_thinking:
                             await ui.thinking_update(b.thinking)
 
+                        # Register new tool calls in the tracker
                         if msg_tools and tracker is not None:
                             new_items = tracker.register_batch(msg_tools)
                             if not has_plan:
@@ -213,6 +221,33 @@ async def dispatch(
                                 has_plan = True
                             else:
                                 await ui.append_plan(new_items)
+                            # Track start times
+                            for block in msg_tools:
+                                _pending_tool_ids[block.id] = (
+                                    _clean_tool_name(block.name),
+                                    time.monotonic(),
+                                )
+                                await tracker.on_start(
+                                    _clean_tool_name(block.name)
+                                )
+
+                        # Match tool results to their calls
+                        for result_block in msg_results:
+                            entry = _pending_tool_ids.pop(
+                                result_block.tool_use_id, None
+                            )
+                            if entry and tracker is not None:
+                                tool_name, start_t = entry
+                                duration = time.monotonic() - start_t
+                                output = ""
+                                if isinstance(result_block.content, str):
+                                    output = result_block.content
+                                elif isinstance(result_block.content, list):
+                                    output = str(result_block.content)
+                                ok = not result_block.is_error
+                                await tracker.on_done(
+                                    tool_name, ok, duration, output[:4000]
+                                )
 
                         for b in msg_text:
                             assistant_chunks.append(b.text)
