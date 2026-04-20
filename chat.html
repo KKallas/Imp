@@ -705,13 +705,19 @@ function formatStepOutput(text) {
     try {
       const obj = JSON.parse(text.trim());
       const pretty = JSON.stringify(obj, null, 2);
-      const colored = pretty
+      // Truncate huge JSON (e.g. full issue bodies) for display
+      const MAX_JSON_LEN = 5000;
+      let display = pretty;
+      if (display.length > MAX_JSON_LEN) {
+        display = display.substring(0, MAX_JSON_LEN) + '\n... (truncated)';
+      }
+      const colored = display
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"([^"]+)":/g, '<span class="kw">"$1"</span>:')
-        .replace(/: "(.*?)"/g, ': <span class="str">"$1"</span>')
+        .replace(/: "([^"]*)"/g, ': <span class="str">"$1"</span>')
         .replace(/: (\d+)/g, ': <span style="color:#79c0ff">$1</span>')
         .replace(/: (true|false|null)/g, ': <span class="kw">$1</span>');
-      return `<pre class="wf-step-code" style="counter-reset:line">${colored.split('\n').map(l => `<span class="line">${l}</span>`).join('')}</pre>`;
+      return `<pre class="wf-step-code">${colored}</pre>`;
     } catch (e) {}
   }
 
@@ -794,6 +800,7 @@ async function loadWorkflows() {
         }).join('');
       } catch (e) {}
 
+      const ranAt = wf.ran_at ? `Last run: ${new Date(wf.ran_at).toLocaleString()}` : '';
       html += `<details class="wf-item" data-id="wf-${wf.name}" ${wf.status !== 'idle' ? 'open' : ''}>
         <summary>
           <span class="wf-item-name">${wf.name}</span>
@@ -802,7 +809,7 @@ async function loadWorkflows() {
           <button class="wf-start" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation();startWorkflow('${wf.name}')">Start</button>
         </summary>
         <div class="wf-body">
-          <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}</div>
+          <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}</div>
           <div class="wf-steps">${stepsHtml}</div>
         </div>
       </details>`;

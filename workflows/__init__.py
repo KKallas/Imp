@@ -108,6 +108,7 @@ class WorkflowRunner:
             "current_step": self.current,
             "total_steps": len(self.steps),
             "steps": step_statuses,
+            "ran_at": None,
         }
 
     async def run(self) -> None:
@@ -122,6 +123,7 @@ class WorkflowRunner:
             except Exception as exc:
                 self.status = "error"
                 self.results.append({"ok": False, "error": str(exc)})
+                self._save_log()
                 return
 
             self.results.append(result)
@@ -136,6 +138,7 @@ class WorkflowRunner:
 
         self.current = len(self.steps)
         self.status = "done"
+        self._save_log()
 
     async def _run_step(self, step_meta: dict[str, Any]) -> dict[str, Any]:
         """Import and run a step's run() function."""
@@ -179,6 +182,36 @@ class WorkflowRunner:
             actions=result.get("actions", [{"label": "Continue", "action": "continue"}]),
         )
         self.pause_item_id = item["id"]
+
+    def _save_log(self) -> None:
+        """Save run results to disk alongside the workflow."""
+        import json
+        from datetime import datetime, timezone
+        log_path = _WORKFLOWS_DIR / self.name / "last_run.json"
+        log = {
+            "status": self.status,
+            "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "steps": [],
+        }
+        for i, step in enumerate(self.steps):
+            log["steps"].append({
+                "name": step["name"],
+                "description": step["description"],
+                "result": self.results[i] if i < len(self.results) else None,
+            })
+        log_path.write_text(json.dumps(log, indent=2))
+
+    @staticmethod
+    def load_last_run(name: str) -> dict[str, Any] | None:
+        """Load the last run log from disk."""
+        import json
+        log_path = _WORKFLOWS_DIR / name / "last_run.json"
+        if not log_path.exists():
+            return None
+        try:
+            return json.loads(log_path.read_text())
+        except (json.JSONDecodeError, KeyError):
+            return None
 
     def resume(self) -> None:
         """Resume from a pause (called when queue item is resolved)."""

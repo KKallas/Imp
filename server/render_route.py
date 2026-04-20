@@ -283,12 +283,15 @@ async def list_workflows():
         first_line = readme.strip().split("\n")[0].lstrip("# ").strip() if readme else name
         steps = workflows.get_steps(name)
         runner_state = runners.get(name, {"status": "idle"})
+        last_run = workflows.WorkflowRunner.load_last_run(name)
+        ran_at = runner_state.get("ran_at") or (last_run.get("ran_at") if last_run else None)
         result.append({
             "name": name,
             "description": first_line,
             "step_count": len(steps),
-            "status": runner_state.get("status", "idle"),
+            "status": runner_state.get("status", "idle") if name in runners else (last_run.get("status", "idle") if last_run else "idle"),
             "current_step": runner_state.get("current_step", 0),
+            "ran_at": ran_at,
         })
     return result
 
@@ -306,9 +309,25 @@ async def start_workflow(name: str):
 async def workflow_status(name: str):
     import workflows
     runner = workflows.get_runner(name)
-    if runner is None:
-        return {"name": name, "status": "idle", "steps": workflows.get_steps(name)}
-    return runner.to_dict()
+    if runner is not None:
+        return runner.to_dict()
+    # No active runner — return steps + last run log if available
+    last_run = workflows.WorkflowRunner.load_last_run(name)
+    steps = workflows.get_steps(name)
+    if last_run:
+        # Merge last run results into step data
+        for i, s in enumerate(steps):
+            lr_steps = last_run.get("steps", [])
+            if i < len(lr_steps) and lr_steps[i].get("result"):
+                s["result"] = lr_steps[i]["result"]
+                s["status"] = "done" if lr_steps[i]["result"].get("ok") else "error"
+            else:
+                s["status"] = "pending"
+        return {
+            "name": name, "status": last_run.get("status", "idle"),
+            "steps": steps, "ran_at": last_run.get("ran_at"),
+        }
+    return {"name": name, "status": "idle", "steps": steps}
 
 
 @app.post("/api/workflows/{name}/abort")
