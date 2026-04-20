@@ -180,7 +180,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   color:var(--muted); opacity:0.4; font-size:10px; }
 .wf-step-output { padding:6px 10px; border-top:1px solid var(--border); font-size:11px; }
 .wf-step-output strong { color:var(--muted); font-size:10px; text-transform:uppercase; }
-.wf-step-output pre { margin:4px 0 0; white-space:pre-wrap; color:var(--fg); max-height:200px; overflow:auto; }
+.wf-step-output pre { margin:4px 0 0; white-space:pre-wrap; color:var(--fg); max-height:300px; overflow:auto; }
+.wf-step-output table { width:100%; border-collapse:collapse; font-size:11px; margin:4px 0 0; }
+.wf-step-output th, .wf-step-output td { border:1px solid var(--border); padding:3px 8px; text-align:left; }
+.wf-step-output th { background:#161b22; font-weight:600; }
+.wf-step-output td:first-child { white-space:nowrap; }
 .wf-step-code .kw { color:#ff7b72; }
 .wf-step-code .str { color:#a5d6ff; }
 .wf-step-code .fn { color:#d2a8ff; }
@@ -692,6 +696,42 @@ function highlightPython(src) {
   }).join('');
 }
 
+function formatStepOutput(text) {
+  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const trimmed = escaped.trim();
+
+  // Try JSON — pretty-print with syntax coloring
+  if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && (trimmed.endsWith('}') || trimmed.endsWith(']'))) {
+    try {
+      const obj = JSON.parse(text.trim());
+      const pretty = JSON.stringify(obj, null, 2);
+      const colored = pretty
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"([^"]+)":/g, '<span class="kw">"$1"</span>:')
+        .replace(/: "(.*?)"/g, ': <span class="str">"$1"</span>')
+        .replace(/: (\d+)/g, ': <span style="color:#79c0ff">$1</span>')
+        .replace(/: (true|false|null)/g, ': <span class="kw">$1</span>');
+      return `<pre class="wf-step-code" style="counter-reset:line">${colored.split('\n').map(l => `<span class="line">${l}</span>`).join('')}</pre>`;
+    } catch (e) {}
+  }
+
+  // Try tab-separated table (like gh issue list output)
+  const lines = trimmed.split('\n');
+  if (lines.length > 1 && lines.every(l => l.includes('\t'))) {
+    const rows = lines.map(l => l.split('\t'));
+    let table = '<table>';
+    rows.forEach((cols, i) => {
+      const tag = i === 0 && cols.length > 2 ? 'th' : 'td';
+      table += '<tr>' + cols.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+    });
+    table += '</table>';
+    return table;
+  }
+
+  // Plain text — just wrap in pre
+  return `<pre>${escaped}</pre>`;
+}
+
 function _getOpenDetails(container) {
   // Save which <details> are open before re-render
   const open = new Set();
@@ -743,8 +783,7 @@ async function loadWorkflows() {
           if (s.result) {
             const out = s.result.output || s.result.error || '';
             if (out) {
-              const escaped = out.replace(/</g,'&lt;').replace(/>/g,'&gt;');
-              outputHtml = `<div class="wf-step-output"><strong>Output:</strong><pre>${escaped}</pre></div>`;
+              outputHtml = `<div class="wf-step-output"><strong>Output:</strong>${formatStepOutput(out)}</div>`;
             }
           }
           return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
