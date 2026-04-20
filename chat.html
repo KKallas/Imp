@@ -716,9 +716,12 @@ function formatStepOutput(text) {
         .replace(/"([^"]+)":/g, '<span class="kw">"$1"</span>:')
         .replace(/: (\d+)/g, ': <span style="color:#79c0ff">$1</span>')
         .replace(/: (true|false|null)/g, ': <span class="kw">$1</span>')
-        // Unescape \\n \\t inside strings so they render as whitespace
+        // Unescape JSON escape sequences so they render properly
         .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '  ');
+        .replace(/\\t/g, '  ')
+        .replace(/\\"/g, '"')
+        .replace(/\\`/g, '`')
+        .replace(/\\\\/g, '\\');
       return `<pre class="wf-step-code">${colored}</pre>`;
     } catch (e) {}
   }
@@ -736,8 +739,14 @@ function formatStepOutput(text) {
     return table;
   }
 
-  // Plain text — unescape \n \t and wrap in pre
-  return `<pre>${escaped.replace(/\\n/g, '\n').replace(/\\t/g, '  ')}</pre>`;
+  // Plain text — unescape JSON escape sequences and wrap in pre
+  const unescaped = escaped
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '  ')
+    .replace(/\\"/g, '"')
+    .replace(/\\`/g, '`')
+    .replace(/\\\\/g, '\\');
+  return `<pre>${unescaped}</pre>`;
 }
 
 function _getOpenDetails(container) {
