@@ -668,17 +668,23 @@ async function resolveItem(itemId, action) {
 
 // --- workflows ---
 function highlightPython(src) {
-  // Simple Python syntax highlighting
+  // Escape HTML first, then highlight with placeholders to avoid interference
   return src.split('\n').map(line => {
     let h = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    // Comments
-    h = h.replace(/(#.*)$/, '<span class="cm">$1</span>');
-    // Strings (simple — double and single quoted)
-    h = h.replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"[^"]*"|'[^']*')/g, '<span class="str">$1</span>');
+    // Replace tokens with numbered placeholders, collect spans
+    const spans = [];
+    function ph(s) { spans.push(s); return `\x00${spans.length-1}\x00`; }
+    // Comments first (so # inside strings isn't caught — good enough for display)
+    h = h.replace(/(#.*)$/, (_, c) => ph(`<span class="cm">${c}</span>`));
+    // Triple-quoted strings
+    h = h.replace(/((&quot;){3}.*?(&quot;){3}|'{3}.*?'{3})/g, (m) => ph(`<span class="str">${m}</span>`));
+    // Regular strings
+    h = h.replace(/(&quot;[^&]*?&quot;|"[^"]*?"|'[^']*?')/g, (m) => ph(`<span class="str">${m}</span>`));
     // Keywords
-    h = h.replace(/\b(def|return|import|from|if|else|elif|for|in|while|try|except|with|as|class|and|or|not|True|False|None|async|await)\b/g, '<span class="kw">$1</span>');
-    // Function calls
-    h = h.replace(/\b(\w+)(\()/g, '<span class="fn">$1</span>$2');
+    h = h.replace(/\b(def|return|import|from|if|else|elif|for|in|while|try|except|with|as|class|and|or|not|True|False|None|async|await)\b/g,
+      (m) => ph(`<span class="kw">${m}</span>`));
+    // Restore placeholders
+    h = h.replace(/\x00(\d+)\x00/g, (_, i) => spans[parseInt(i)]);
     return `<span class="line">${h}</span>`;
   }).join('');
 }
