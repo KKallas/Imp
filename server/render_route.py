@@ -170,9 +170,13 @@ _CHAT_HTML = _ROOT / "chat.html"
 
 @app.get("/")
 async def serve_chat_ui():
-    """Serve the single-file chat UI."""
+    """Serve the single-file chat UI (no caching)."""
     if _CHAT_HTML.exists():
-        return FileResponse(_CHAT_HTML, media_type="text/html")
+        return FileResponse(
+            _CHAT_HTML,
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     return Response("chat.html not found", status_code=404)
 
 
