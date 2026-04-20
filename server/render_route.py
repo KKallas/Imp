@@ -249,6 +249,14 @@ async def resolve_queue_item(item_id: str, request: Request):
     item = queue.resolve(item_id, data.get("action", "done"))
     if item is None:
         return Response("not found", status_code=404)
+    # Resume workflow if this item belongs to one
+    tool = item.get("tool", "")
+    if tool.startswith("workflow:"):
+        import workflows
+        wf_name = tool.split(":", 1)[1]
+        runner = workflows.get_runner(wf_name)
+        if runner and runner.status == "paused":
+            runner.resume()
     return item
 
 
@@ -256,6 +264,58 @@ async def resolve_queue_item(item_id: str, request: Request):
 async def delete_queue_item(item_id: str):
     from server import work_queue as queue
     return {"deleted": queue.remove(item_id)}
+
+
+# ── workflow API ────────────────────────────────────────────────────
+
+@app.get("/api/workflows")
+async def list_workflows():
+    import workflows
+    discovered = workflows.discover()
+    result = []
+    runners = workflows.list_runners()
+    for name, path in sorted(discovered.items()):
+        readme = workflows.get_readme(name)
+        first_line = readme.strip().split("\n")[0].lstrip("# ").strip() if readme else name
+        steps = workflows.get_steps(name)
+        runner_state = runners.get(name, {"status": "idle"})
+        result.append({
+            "name": name,
+            "description": first_line,
+            "step_count": len(steps),
+            "status": runner_state.get("status", "idle"),
+            "current_step": runner_state.get("current_step", 0),
+        })
+    return result
+
+
+@app.post("/api/workflows/{name}/start")
+async def start_workflow(name: str):
+    import workflows
+    runner = workflows.start(name)
+    if runner is None:
+        return Response(f"workflow {name!r} not found", status_code=404)
+    return runner.to_dict()
+
+
+@app.get("/api/workflows/{name}")
+async def workflow_status(name: str):
+    import workflows
+    runner = workflows.get_runner(name)
+    if runner is None:
+        return {"name": name, "status": "idle", "steps": workflows.get_steps(name)}
+    return runner.to_dict()
+
+
+@app.post("/api/workflows/{name}/abort")
+async def abort_workflow(name: str):
+    import workflows
+    runner = workflows.get_runner(name)
+    if runner is None:
+        return Response("not running", status_code=404)
+    runner.abort()
+    return runner.to_dict()
+
 
 
 # ── subprocess helper ───────────────────────────────────────────────
