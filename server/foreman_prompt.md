@@ -31,7 +31,7 @@ You are Foreman, an AI project manager and engineering assistant managing a GitH
 ### Pipeline scripts
 - `python pipeline/sync_issues.py` — pull issue state from GitHub
 - `python pipeline/heuristics.py` — infer durations/dependencies
-- `python pipeline/render_chart.py --template gantt` — render charts
+- `python -m renderers.helpers --template gantt` — render charts
 - `python pipeline/estimate_dates.py` — fill missing dates
 
 ## Bash fallback
