@@ -736,8 +736,8 @@ function formatStepOutput(text) {
     return table;
   }
 
-  // Plain text — just wrap in pre
-  return `<pre>${escaped}</pre>`;
+  // Plain text — unescape \n \t and wrap in pre
+  return `<pre>${escaped.replace(/\\n/g, '\n').replace(/\\t/g, '  ')}</pre>`;
 }
 
 function _getOpenDetails(container) {
