@@ -53,6 +53,7 @@ def get_steps(name: str) -> list[dict[str, Any]]:
             "name": f.stem,
             "file": str(f),
             "description": desc,
+            "source": src,
         })
     return steps
 
@@ -97,6 +98,7 @@ class WorkflowRunner:
             step_statuses.append({
                 "name": step["name"],
                 "description": step["description"],
+                "source": step.get("source", ""),
                 "status": s,
                 "result": self.results[i] if i < len(self.results) else None,
             })
