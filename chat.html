@@ -178,6 +178,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .wf-step-code .line::before { counter-increment:line; content:counter(line);
   display:inline-block; width:2.5em; text-align:right; margin-right:1em;
   color:var(--muted); opacity:0.4; font-size:10px; }
+.wf-step-output { padding:6px 10px; border-top:1px solid var(--border); font-size:11px; }
+.wf-step-output strong { color:var(--muted); font-size:10px; text-transform:uppercase; }
+.wf-step-output pre { margin:4px 0 0; white-space:pre-wrap; color:var(--fg); max-height:200px; overflow:auto; }
 .wf-step-code .kw { color:#ff7b72; }
 .wf-step-code .str { color:#a5d6ff; }
 .wf-step-code .fn { color:#d2a8ff; }
@@ -689,6 +692,23 @@ function highlightPython(src) {
   }).join('');
 }
 
+function _getOpenDetails(container) {
+  // Save which <details> are open before re-render
+  const open = new Set();
+  container.querySelectorAll('details[open]').forEach(d => {
+    const id = d.dataset.id || d.querySelector('summary')?.textContent?.trim();
+    if (id) open.add(id);
+  });
+  return open;
+}
+
+function _restoreOpenDetails(container, open) {
+  container.querySelectorAll('details').forEach(d => {
+    const id = d.dataset.id || d.querySelector('summary')?.textContent?.trim();
+    if (id && open.has(id)) d.open = true;
+  });
+}
+
 async function loadWorkflows() {
   try {
     const res = await fetch(`${API}/api/workflows`);
@@ -698,7 +718,10 @@ async function loadWorkflows() {
       el.innerHTML = '<div class="queue-empty">No workflows found.<br>Add step scripts to workflows/&lt;name&gt;/</div>';
       return;
     }
-    // Fetch full step details for each workflow
+
+    // Save open state before re-render
+    const openState = _getOpenDetails(el);
+
     let html = '';
     for (const wf of workflows) {
       const statusClass = wf.status || 'idle';
@@ -706,7 +729,6 @@ async function loadWorkflows() {
       const icon = statusIcons[wf.status] || '⚪';
       const canStart = wf.status === 'idle' || wf.status === 'done' || wf.status === 'error';
 
-      // Fetch step details with source
       let stepsHtml = '';
       try {
         const sres = await fetch(`${API}/api/workflows/${wf.name}`);
@@ -716,14 +738,24 @@ async function loadWorkflows() {
           const sIcon = {done:'✅', running:'🔄', paused:'⏸', pending:'⏳', error:'❌'}[s.status] || '⏳';
           const dur = s.result?.duration_s ? ` · ${s.result.duration_s}s` : '';
           const code = s.source ? `<pre class="wf-step-code">${highlightPython(s.source)}</pre>` : '';
-          return `<details class="wf-step-item ${s.status}">
+          // Show output from last run if available
+          let outputHtml = '';
+          if (s.result) {
+            const out = s.result.output || s.result.error || '';
+            if (out) {
+              const escaped = out.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+              outputHtml = `<div class="wf-step-output"><strong>Output:</strong><pre>${escaped}</pre></div>`;
+            }
+          }
+          return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
             <summary>${sIcon} ${s.description || s.name}${dur}</summary>
+            ${outputHtml}
             ${code}
           </details>`;
         }).join('');
       } catch (e) {}
 
-      html += `<details class="wf-item" ${wf.status !== 'idle' ? 'open' : ''}>
+      html += `<details class="wf-item" data-id="wf-${wf.name}" ${wf.status !== 'idle' ? 'open' : ''}>
         <summary>
           <span class="wf-item-name">${wf.name}</span>
           <span class="wf-item-meta">${wf.step_count} steps</span>
@@ -737,6 +769,9 @@ async function loadWorkflows() {
       </details>`;
     }
     el.innerHTML = html;
+
+    // Restore open state after re-render
+    _restoreOpenDetails(el, openState);
   } catch (e) { console.error('loadWorkflows failed:', e); }
 }
 
