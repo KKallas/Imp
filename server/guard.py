@@ -494,7 +494,7 @@ GH_READ_VERBS = {
 PIPELINE_READ_SCRIPTS: set[str] = {
     "pipeline/sync_issues.py",
     "pipeline/heuristics.py",
-    "pipeline/render_chart.py",
+    "renderers/helpers.py",
     "pipeline/scenario.py",
     "pipeline/estimate_dates.py",
 }

@@ -22,9 +22,61 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pipeline"))
+sys.path.insert(0, str(ROOT))
 
 import heuristics as h  # noqa: E402
-import render_chart as rc  # noqa: E402
+
+# Compatibility: tests reference rc.field_value, rc.build_context_for_gantt, etc.
+# These now live in renderers.helpers and renderers.<type>.renderer.
+from types import SimpleNamespace  # noqa: E402
+from renderers.helpers import (  # noqa: E402
+    field_value, IssueDates, resolve_dates, load_enriched,
+    render_html, write_html, apply_active_scenario_safe as _apply_active_scenario_safe,
+)
+from renderers.gantt.renderer import (  # noqa: E402
+    build_context as build_context_for_gantt, build_mermaid_gantt,
+    _sanitize_task_name,
+)
+from renderers.kanban.renderer import (  # noqa: E402
+    build_context as build_context_for_kanban,
+    _kanban_status, _normalize_status, _assignee_names,
+)
+from renderers.burndown.renderer import (  # noqa: E402
+    build_context as build_context_for_burndown,
+    build_burndown_plotly_figure, _burndown_series,
+)
+from renderers.comparison.renderer import (  # noqa: E402
+    build_context as build_context_for_comparison,
+    _delta_days, _gantt_end_by_number,
+)
+from renderers.helpers import iso_date_from_raw  # noqa: E402
+
+# Build a namespace that looks like the old rc module
+rc = SimpleNamespace(
+    field_value=field_value, IssueDates=IssueDates, resolve_dates=resolve_dates,
+    load_enriched=load_enriched, render_html=render_html, write_html=write_html,
+    _apply_active_scenario_safe=_apply_active_scenario_safe,
+    _iso_date_from_raw=iso_date_from_raw,
+    build_context_for_gantt=build_context_for_gantt,
+    build_mermaid_gantt=build_mermaid_gantt,
+    _sanitize_task_name=_sanitize_task_name,
+    build_context_for_kanban=build_context_for_kanban,
+    _kanban_status=_kanban_status,
+    _normalize_status=_normalize_status,
+    _assignee_names=_assignee_names,
+    build_context_for_burndown=build_context_for_burndown,
+    build_burndown_plotly_figure=build_burndown_plotly_figure,
+    _burndown_series=_burndown_series,
+    build_context_for_comparison=build_context_for_comparison,
+    _delta_days=_delta_days,
+    _gantt_end_by_number=_gantt_end_by_number,
+    CONTEXT_BUILDERS={
+        "gantt": build_context_for_gantt,
+        "kanban": build_context_for_kanban,
+        "burndown": build_context_for_burndown,
+        "comparison": build_context_for_comparison,
+    },
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_issues.json"
 TODAY = date(2026, 4, 15)
