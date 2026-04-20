@@ -395,10 +395,10 @@ function connectWs() {
         // Replace the placeholder with the final block
         const placeholder = `⏳ ${msg.name}(${formatArgs(args)})...`;
         const final = `${icon} ${msg.name}(${formatArgs(args)})${dur}`;
-        const outputText = (msg.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const formattedOutput = msg.output ? formatStepOutput(msg.output) : '<pre>(no output)</pre>';
         agentText = agentText.replace(
           `<details class="tool-block running"><summary>${placeholder}</summary><pre>Running...</pre></details>`,
-          `<details class="tool-block ${msg.status}"><summary>${final}</summary><pre>${outputText || '(no output)'}</pre></details>`
+          `<details class="tool-block ${msg.status}"><summary>${final}</summary><div class="wf-step-output">${formattedOutput}</div></details>`
         );
         renderAgentBody();
         break;
