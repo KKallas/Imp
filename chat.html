@@ -696,8 +696,20 @@ function highlightPython(src) {
   }).join('');
 }
 
+function unescapeJsonStrings(s) {
+  // Unescape JSON escape sequences: \n \t \" \` \\
+  return s.split('\\\\').map(part =>
+    part.replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\`/g, '`')
+  ).join('\\');
+}
+
 function formatStepOutput(text) {
-  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Unescape before HTML-escaping
+  const clean = unescapeJsonStrings(text);
+  const escaped = clean.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const trimmed = escaped.trim();
 
   // Try JSON — pretty-print with syntax coloring
@@ -716,12 +728,7 @@ function formatStepOutput(text) {
         .replace(/"([^"]+)":/g, '<span class="kw">"$1"</span>:')
         .replace(/: (\d+)/g, ': <span style="color:#79c0ff">$1</span>')
         .replace(/: (true|false|null)/g, ': <span class="kw">$1</span>')
-        // Unescape JSON escape sequences so they render properly
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '  ')
-        .replace(/\\"/g, '"')
-        .replace(/\\`/g, '`')
-        .replace(/\\\\/g, '\\');
+        ;
       return `<pre class="wf-step-code">${colored}</pre>`;
     } catch (e) {}
   }
@@ -739,14 +746,8 @@ function formatStepOutput(text) {
     return table;
   }
 
-  // Plain text — unescape JSON escape sequences and wrap in pre
-  const unescaped = escaped
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '  ')
-    .replace(/\\"/g, '"')
-    .replace(/\\`/g, '`')
-    .replace(/\\\\/g, '\\');
-  return `<pre>${unescaped}</pre>`;
+  // Plain text
+  return `<pre>${escaped}</pre>`;
 }
 
 function _getOpenDetails(container) {
