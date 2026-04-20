@@ -714,9 +714,11 @@ function formatStepOutput(text) {
       const colored = display
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"([^"]+)":/g, '<span class="kw">"$1"</span>:')
-        .replace(/: "([^"]*)"/g, ': <span class="str">"$1"</span>')
         .replace(/: (\d+)/g, ': <span style="color:#79c0ff">$1</span>')
-        .replace(/: (true|false|null)/g, ': <span class="kw">$1</span>');
+        .replace(/: (true|false|null)/g, ': <span class="kw">$1</span>')
+        // Unescape \\n \\t inside strings so they render as whitespace
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '  ');
       return `<pre class="wf-step-code">${colored}</pre>`;
     } catch (e) {}
   }
