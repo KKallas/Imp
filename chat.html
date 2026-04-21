@@ -707,7 +707,8 @@ function formatStepOutput(text) {
       const obj = JSON.parse(trimmed);
       const pretty = JSON.stringify(obj, null, 2);
       const MAX = 5000;
-      const display = pretty.length > MAX ? pretty.substring(0, MAX) + '\n... (truncated)' : pretty;
+      let display = pretty.length > MAX ? pretty.substring(0, MAX) + '\n... (truncated)' : pretty;
+      display = display.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
       return marked.parse('```json\n' + display + '\n```');
     } catch (e) {}
   }
@@ -724,8 +725,9 @@ function formatStepOutput(text) {
     return marked.parse(md);
   }
 
-  // Plain text — just render as markdown (handles \n, backticks, etc.)
-  return marked.parse('```\n' + trimmed + '\n```');
+  // Plain text — unescape unicode (\uXXXX) then render as markdown
+  const unescaped = trimmed.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  return marked.parse('```\n' + unescaped + '\n```');
 }
 
 function _getOpenDetails(container) {
