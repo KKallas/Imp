@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""List GitHub issues."""
+"""List GitHub issues via the `gh` CLI with optional filters.
 
+Inputs:
+  --state: str — filter by issue state ("open", "closed", or "all"; default "open").
+  --limit: int — max number of issues to return (default 30).
+  --label: str (repeatable) — filter by one or more labels.
+  --repo: str — target a specific "owner/repo" instead of the current repository.
+
+Builds and runs a `gh issue list` subprocess, prints stdout and stderr, and returns the process exit code."""
 import argparse
 import subprocess
 import sys

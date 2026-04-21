@@ -644,6 +644,601 @@ Return ONLY the Python code. No explanation. No markdown fences."""
     return {"configured": configured, "message": f"Updated {configured} of {len(steps)} steps"}
 
 
+# ── tool editing endpoints ─────────────────────────────────────────
+
+
+def _extract_tool_args(source: str) -> list[dict]:
+    """Parse argparse add_argument() calls from tool source via AST."""
+    import ast
+
+    args_info: list[dict] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return args_info
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+
+        # Extract positional flag names
+        flags = []
+        for a in node.args:
+            if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                flags.append(a.value)
+        if not flags:
+            continue
+
+        # Extract keyword arguments
+        info: dict = {"flags": flags}
+        for kw in node.keywords:
+            if kw.arg == "default" and isinstance(kw.value, ast.Constant):
+                info["default"] = kw.value.value
+            elif kw.arg == "choices" and isinstance(kw.value, (ast.List, ast.Tuple)):
+                info["choices"] = [e.value for e in kw.value.elts if isinstance(e, ast.Constant)]
+            elif kw.arg == "required" and isinstance(kw.value, ast.Constant):
+                info["required"] = kw.value.value
+            elif kw.arg == "help" and isinstance(kw.value, ast.Constant):
+                info["help"] = kw.value.value
+            elif kw.arg == "action" and isinstance(kw.value, ast.Constant):
+                info["action"] = kw.value.value
+            elif kw.arg == "type" and isinstance(kw.value, ast.Name):
+                info["type"] = kw.value.id
+        args_info.append(info)
+
+    return args_info
+
+
+def _extract_docstring(source: str) -> str:
+    """Extract module-level docstring from Python source."""
+    import ast
+    try:
+        return ast.get_docstring(ast.parse(source)) or ""
+    except SyntaxError:
+        return ""
+
+
+@app.get("/api/tool-group-readme")
+async def tool_group_readme(group: str):
+    """Return README.md content for a tool group folder."""
+    readme = _ROOT / "tools" / group / "README.md"
+    if readme.exists():
+        return {"readme": readme.read_text()}
+    return {"readme": ""}
+
+
+@app.get("/api/tools")
+async def list_tools():
+    """List all tools grouped by folder with descriptions and args."""
+    import tools as _tools
+    result = []
+    for group_name in sorted(_tools.discover()):
+        for exe in _tools.list_executables(group_name):
+            try:
+                src = Path(exe["script"]).read_text()
+                desc = _extract_docstring(src)
+                args = _extract_tool_args(src)
+            except Exception:
+                desc, args = "", []
+            result.append({
+                "group": group_name,
+                "name": exe["name"],
+                "description": desc,
+                "args": args,
+            })
+    return result
+
+
+@app.post("/api/tool-group-readme-save")
+async def save_tool_group_readme(request: Request):
+    """Save README.md for a tool group."""
+    data = await request.json()
+    group = data.get("group", "")
+    content = data.get("content", "")
+    readme = _ROOT / "tools" / group / "README.md"
+    if not (_ROOT / "tools" / group).is_dir():
+        return Response("group not found", status_code=404)
+    readme.write_text(content)
+    return {"saved": True}
+
+
+@app.post("/api/tool-group-copy")
+async def copy_tool_group(request: Request):
+    """Copy an entire tool group folder."""
+    import shutil
+    data = await request.json()
+    group = data.get("group", "")
+    new_name = data.get("new_name", "").strip()
+    if not new_name:
+        return {"error": "new_name required"}
+    src = _ROOT / "tools" / group
+    dst = _ROOT / "tools" / new_name
+    if not src.is_dir():
+        return Response("group not found", status_code=404)
+    if dst.exists():
+        return {"error": f"'{new_name}' already exists"}
+    shutil.copytree(src, dst)
+    return {"copied": new_name}
+
+
+@app.post("/api/tool-group-rename")
+async def rename_tool_group(request: Request):
+    """Rename a tool group folder."""
+    data = await request.json()
+    group = data.get("group", "")
+    new_name = data.get("new_name", "").strip()
+    if not new_name:
+        return {"error": "new_name required"}
+    src = _ROOT / "tools" / group
+    dst = _ROOT / "tools" / new_name
+    if not src.is_dir():
+        return Response("group not found", status_code=404)
+    if dst.exists():
+        return {"error": f"'{new_name}' already exists"}
+    src.rename(dst)
+    return {"renamed": new_name}
+
+
+@app.post("/api/tool-group-delete")
+async def delete_tool_group(request: Request):
+    """Delete an entire tool group folder."""
+    import shutil
+    data = await request.json()
+    group = data.get("group", "")
+    group_dir = _ROOT / "tools" / group
+    if not group_dir.is_dir():
+        return Response("group not found", status_code=404)
+    shutil.rmtree(group_dir)
+    return {"deleted": group}
+
+
+@app.post("/api/tool-copy")
+async def copy_tool(request: Request):
+    """Copy a tool script (and its .step.py template if any)."""
+    import shutil
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    new_name = data.get("new_name", "").strip()
+    if not new_name:
+        return {"error": "new_name required"}
+
+    src = _ROOT / "tools" / group / f"{name}.py"
+    dst = _ROOT / "tools" / group / f"{new_name}.py"
+    if not src.exists():
+        return Response("tool not found", status_code=404)
+    if dst.exists():
+        return {"error": f"{new_name}.py already exists"}
+    shutil.copy2(src, dst)
+    # Copy .step.py template too
+    src_tpl = _ROOT / "tools" / group / f"{name}.step.py"
+    if src_tpl.exists():
+        shutil.copy2(src_tpl, _ROOT / "tools" / group / f"{new_name}.step.py")
+    # Copy .md config too
+    src_md = _ROOT / "tools" / group / f"{name}.md"
+    if src_md.exists():
+        shutil.copy2(src_md, _ROOT / "tools" / group / f"{new_name}.md")
+    return {"copied": f"{group}/{new_name}"}
+
+
+@app.post("/api/tool-delete")
+async def delete_tool(request: Request):
+    """Delete a tool script (and its .step.py template and .md config)."""
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+
+    tool_path = _ROOT / "tools" / group / f"{name}.py"
+    if not tool_path.exists():
+        return Response("tool not found", status_code=404)
+    tool_path.unlink()
+    # Also remove related files
+    for ext in [".step.py", ".md"]:
+        related = _ROOT / "tools" / group / f"{name}{ext}"
+        if related.exists():
+            related.unlink()
+    return {"deleted": f"{group}/{name}"}
+
+
+@app.get("/api/tool-detail")
+async def tool_detail(group: str, name: str):
+    """Full tool detail: source, docstring, parsed args, step template."""
+    import tools as _tools
+    for exe in _tools.list_executables(group):
+        if exe["name"] == name:
+            try:
+                src = Path(exe["script"]).read_text()
+                # Check for .step.py template
+                step_tpl = _ROOT / "tools" / group / f"{name}.step.py"
+                step_template = step_tpl.read_text() if step_tpl.exists() else ""
+                return {
+                    "group": group,
+                    "name": name,
+                    "source": src,
+                    "docstring": _extract_docstring(src),
+                    "args": _extract_tool_args(src),
+                    "step_template": step_template,
+                }
+            except Exception:
+                return {"group": group, "name": name, "source": "", "docstring": "", "args": [], "step_template": ""}
+    return Response("tool not found", status_code=404)
+
+
+@app.post("/api/tool-group-describe")
+async def describe_tool_group(request: Request):
+    """LLM generates a README for a tool group based on all its tool scripts."""
+    data = await request.json()
+    group = data.get("group", "")
+    user_prompt = data.get("user_prompt", "")
+
+    group_dir = _ROOT / "tools" / group
+    if not group_dir.is_dir():
+        return Response("group not found", status_code=404)
+
+    # Collect all tool summaries
+    import tools as _tools
+    tool_summaries = []
+    for exe in _tools.list_executables(group):
+        try:
+            src = Path(exe["script"]).read_text()
+            doc = _extract_docstring(src)
+            args = _extract_tool_args(src)
+            arg_desc = ", ".join(a["flags"][0] for a in args) if args else "none"
+            tool_summaries.append(f"- {exe['name']}.py: {doc or 'no description'} (args: {arg_desc})")
+        except Exception:
+            tool_summaries.append(f"- {exe['name']}.py: (could not read)")
+
+    tools_text = "\n".join(tool_summaries)
+
+    prompt = f"""Write a README.md for the "{group}" tool group folder.
+
+This folder contains these tool scripts:
+{tools_text}
+
+The README should:
+- Start with `# {group}` heading
+- One-line summary of what this group does
+- A table or list of all scripts with their purpose and key arguments
+- Brief usage examples showing how to run the most common tools
+- Keep it concise and practical — under 40 lines
+
+Return ONLY the markdown content.{chr(10) + chr(10) + "ADDITIONAL USER INSTRUCTIONS:" + chr(10) + user_prompt if user_prompt else ""}"""
+
+    print(f"[tool-group-describe] {group}", file=sys.stderr)
+
+    try:
+        from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+
+        options = ClaudeAgentOptions(
+            system_prompt="You write concise README.md files. Return only markdown.",
+            max_turns=1,
+        )
+
+        chunks = []
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        chunks.append(block.text)
+
+        new_readme = "".join(chunks).strip()
+        if not new_readme:
+            return {"error": "LLM returned empty README"}
+
+        readme_path = group_dir / "README.md"
+        readme_path.write_text(new_readme + "\n")
+        print(f"[tool-group-describe] {group}: README updated", file=sys.stderr)
+        return {"updated": True}
+
+    except Exception as exc:
+        print(f"[tool-group-describe] error: {exc}", file=sys.stderr)
+        return {"error": str(exc)}
+
+
+@app.post("/api/tool-move")
+async def move_tool(request: Request):
+    """Move a tool (and its .step.py and .md) to a different group."""
+    import shutil
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    new_group = data.get("new_group", "").strip()
+    if not new_group:
+        return {"error": "new_group required"}
+
+    src_dir = _ROOT / "tools" / group
+    dst_dir = _ROOT / "tools" / new_group
+    if not src_dir.is_dir():
+        return Response("source group not found", status_code=404)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    if (dst_dir / f"{name}.py").exists():
+        return {"error": f"{name}.py already exists in {new_group}"}
+
+    for ext in [".py", ".step.py", ".md"]:
+        src = src_dir / f"{name}{ext}"
+        if src.exists():
+            shutil.move(str(src), str(dst_dir / f"{name}{ext}"))
+
+    return {"moved": f"{new_group}/{name}"}
+
+
+@app.post("/api/tool-describe")
+async def describe_tool(request: Request):
+    """LLM generates a description from the tool's source code."""
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    user_prompt = data.get("user_prompt", "")
+
+    tool_path = _ROOT / "tools" / group / f"{name}.py"
+    if not tool_path.exists():
+        return Response("tool not found", status_code=404)
+
+    source = tool_path.read_text()
+
+    extra = f"\n\nADDITIONAL USER INSTRUCTIONS:\n{user_prompt}" if user_prompt else ""
+    prompt = f"""Write a short but descriptive docstring for this Python tool.
+
+```python
+{source}
+```
+
+The docstring must cover:
+- What the tool does (one sentence)
+- Inputs: list each CLI argument/flag, its type, and purpose
+- Process: what it does internally
+- Output: what it prints/returns
+
+Keep it concise — no more than 8 lines. Return ONLY the docstring text (no triple quotes, no code).{extra}"""
+
+    print(f"[tool-describe] {group}/{name}" + (f" (prompt: {user_prompt[:80]})" if user_prompt else ""), file=sys.stderr)
+
+    try:
+        from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+
+        options = ClaudeAgentOptions(
+            system_prompt="You write concise Python docstrings. Return only the docstring text.",
+            max_turns=1,
+        )
+
+        chunks = []
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        chunks.append(block.text)
+
+        new_docstring = "".join(chunks).strip().strip('"').strip("'").strip()
+        if not new_docstring:
+            return {"error": "LLM returned empty description"}
+
+        # Update the docstring in the file using AST for precise location
+        import ast as _ast
+        try:
+            tree = _ast.parse(source)
+            first_node = tree.body[0] if tree.body else None
+            if (first_node
+                and isinstance(first_node, _ast.Expr)
+                and isinstance(first_node.value, (_ast.Constant, _ast.Str))):
+                # Found existing module docstring — replace it precisely
+                # AST gives 1-based line numbers
+                start_line = first_node.lineno - 1  # 0-based
+                end_line = first_node.end_lineno     # exclusive (1-based end = exclusive 0-based)
+                lines = source.splitlines(keepends=True)
+                new_source = "".join(lines[:start_line]) + f'"""{new_docstring}"""\n' + "".join(lines[end_line:])
+            else:
+                # No docstring — insert after shebang/comments
+                import re
+                header_match = re.match(r'^((?:#!/.*\n)?(?:#.*\n)*)', source)
+                prefix = header_match.group(1) if header_match else ""
+                rest = source[len(prefix):]
+                new_source = prefix + f'"""{new_docstring}"""\n\n' + rest
+        except SyntaxError:
+            # Fallback: prepend
+            new_source = f'"""{new_docstring}"""\n\n' + source
+
+        tool_path.write_text(new_source)
+        print(f"[tool-describe] {group}/{name}: docstring updated", file=sys.stderr)
+        return {"updated": True, "docstring": new_docstring}
+
+    except Exception as exc:
+        print(f"[tool-describe] error: {exc}", file=sys.stderr)
+        return {"error": str(exc)}
+
+
+@app.post("/api/tool-edit")
+async def edit_tool(request: Request):
+    """LLM-powered tool code update based on description change.
+
+    Updates the tool script and creates/updates the .step.py template.
+    """
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    new_description = data.get("new_description", "")
+    user_prompt = data.get("user_prompt", "")
+
+    tool_path = _ROOT / "tools" / group / f"{name}.py"
+    if not tool_path.exists():
+        return Response("tool not found", status_code=404)
+
+    current_source = tool_path.read_text()
+    current_docstring = _extract_docstring(current_source)
+
+    # Check for existing step template
+    tpl_path = _ROOT / "tools" / group / f"{name}.step.py"
+    current_template = tpl_path.read_text() if tpl_path.exists() else ""
+
+    # Build prompt — ask LLM to return both the tool script AND the workflow template
+    tpl_section = ""
+    if current_template:
+        tpl_section = f"""
+CURRENT WORKFLOW TEMPLATE ({name}.step.py):
+```python
+{current_template}
+```"""
+    else:
+        tpl_section = f"""
+There is NO workflow template yet. Create one as {name}.step.py.
+A workflow template has `def run(context):` and calls the tool via subprocess.
+context["previous_results"] contains results from earlier workflow steps."""
+
+    prompt = f"""Update this tool based on the new description.
+
+CURRENT DESCRIPTION:
+{current_docstring}
+
+NEW DESCRIPTION (user's instruction):
+{new_description}
+
+CURRENT TOOL SCRIPT ({name}.py):
+```python
+{current_source}
+```
+{tpl_section}
+
+Return TWO code blocks separated by the exact line: ---TEMPLATE---
+
+FIRST block: the updated tool script ({name}.py)
+- PRESERVE the existing code structure (argparse, imports, main function, entry point)
+- Keep the same CLI interface unless the description explicitly changes it
+- Update the module docstring to match the new description
+- Do NOT change the if __name__ == "__main__" pattern
+
+SECOND block: the workflow template ({name}.step.py)
+- Must have `def run(context):` (NOT def main)
+- Call the tool via subprocess.run(["python", "tools/{group}/{name}.py", ...])
+- Read from context["previous_results"] if needed
+- Return {{"ok": bool, "output": str}} plus any structured keys
+
+Return ONLY the two Python code blocks separated by ---TEMPLATE---. No explanation. No markdown fences.{chr(10) + chr(10) + "ADDITIONAL USER INSTRUCTIONS:" + chr(10) + user_prompt if user_prompt else ""}"""
+
+    print(f"\n[tool-edit] {group}/{name}: editing...", file=sys.stderr)
+
+    try:
+        from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+
+        options = ClaudeAgentOptions(
+            system_prompt="You are a code generator. Return only Python code, nothing else.",
+            max_turns=1,
+        )
+
+        chunks = []
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        chunks.append(block.text)
+
+        raw = "".join(chunks).strip()
+
+        # Strip outer markdown fences
+        if raw.startswith("```python"):
+            raw = raw[len("```python"):].strip()
+        if raw.startswith("```"):
+            raw = raw[3:].strip()
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+
+        # Split on ---TEMPLATE---
+        parts = raw.split("---TEMPLATE---")
+        new_tool_code = parts[0].strip()
+        new_tpl_code = parts[1].strip() if len(parts) > 1 else ""
+
+        # Clean each part of markdown fences
+        for fence in ["```python", "```"]:
+            if new_tool_code.startswith(fence):
+                new_tool_code = new_tool_code[len(fence):].strip()
+            if new_tpl_code.startswith(fence):
+                new_tpl_code = new_tpl_code[len(fence):].strip()
+        if new_tool_code.endswith("```"):
+            new_tool_code = new_tool_code[:-3].strip()
+        if new_tpl_code.endswith("```"):
+            new_tpl_code = new_tpl_code[:-3].strip()
+
+        updated = {}
+
+        # Write tool script
+        if new_tool_code and ("def main" in new_tool_code or "if __name__" in new_tool_code):
+            print(f"[tool-edit] {group}/{name}.py: updating", file=sys.stderr)
+            tool_path.write_text(new_tool_code + "\n")
+            updated["script"] = True
+        else:
+            print(f"[tool-edit] {group}/{name}.py: LLM returned invalid tool code, skipped", file=sys.stderr)
+
+        # Write template
+        if new_tpl_code and "def run" in new_tpl_code:
+            print(f"[tool-edit] {group}/{name}.step.py: {'updating' if current_template else 'creating'}", file=sys.stderr)
+            tpl_path.write_text(new_tpl_code + "\n")
+            updated["template"] = True
+        else:
+            print(f"[tool-edit] {group}/{name}.step.py: LLM returned invalid template, skipped", file=sys.stderr)
+
+        if not updated:
+            return {"updated": False, "error": "LLM returned invalid code for both files"}
+
+        return {"updated": True, **updated, "docstring": _extract_docstring(new_tool_code or current_source)}
+
+    except Exception as exc:
+        print(f"[tool-edit] error: {exc}", file=sys.stderr)
+        return {"error": str(exc)}
+
+
+@app.post("/api/tool-run")
+async def run_tool(request: Request):
+    """Debug execution: run a tool with user-provided arguments."""
+    import asyncio
+
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    args = data.get("args", {})  # {"--repo": "KKallas/Imp", "--limit": "10"}
+
+    tool_path = _ROOT / "tools" / group / f"{name}.py"
+    if not tool_path.exists():
+        return Response("tool not found", status_code=404)
+
+    cmd = [sys.executable, str(tool_path)]
+    for flag, value in args.items():
+        if value is None or value == "":
+            continue
+        if flag.startswith("_pos_"):
+            # Raw positional argument (from free-text input)
+            cmd.append(str(value))
+        elif isinstance(value, bool):
+            if value:
+                cmd.append(flag)
+        else:
+            cmd.append(flag)
+            cmd.append(str(value))
+
+    print(f"[tool-run] {group}/{name}: {' '.join(cmd)}", file=sys.stderr)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(_ROOT),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        return {
+            "ok": proc.returncode == 0,
+            "returncode": proc.returncode,
+            "stdout": stdout.decode()[:5000],
+            "stderr": stderr.decode()[:2000],
+        }
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "error": "Timed out after 30 seconds"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def _renumber_steps(wf_dir: Path) -> None:
     import re
     steps = sorted(wf_dir.glob("step_*.py"))

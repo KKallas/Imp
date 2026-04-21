@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""Open a pull request."""
+"""Open a GitHub pull request via the gh CLI.
 
+Inputs:
+--title (str): PR title (required).
+--body (str): PR description; defaults to empty.
+--base (str): Target branch; omitted if unset.
+--head (str): Source branch; omitted if unset.
+--repo (str): Optional "owner/repo" target; defaults to the current repo.
+
+Process: Builds and runs gh pr create with the provided arguments.
+Output: Prints gh stdout/stderr and returns the process exit code."""
 import argparse
 import subprocess
 import sys

@@ -221,6 +221,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .wf-step-code .fn { color:#d2a8ff; }
 .wf-step-code .cm { color:#8b949e; font-style:italic; }
 
+/* --- tools tab --- */
+#tools-tab { flex:1; overflow:hidden; }
+#tools-editor { flex:1; overflow-y:auto; padding:16px 24px; }
+
 /* --- responsive --- */
 @media(max-width:700px) {
   #sidebar { display:none; }
@@ -233,6 +237,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   <button class="tab active" onclick="switchTab('queue')">Queue</button>
   <button class="tab" onclick="switchTab('chat')">Chat</button>
   <button class="tab" onclick="switchTab('workflows')">Workflows</button>
+  <button class="tab" onclick="switchTab('tools')">Tools</button>
   <div id="version" style="margin-left:auto;"></div>
   <script>
     fetch(location.origin + '/api/version').then(r => r.json()).then(d => {
@@ -265,6 +270,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
       <div id="wf-editor"><div id="workflows-list"></div></div>
       <div id="wf-tools" style="display:none;"><div id="tools-list"></div></div>
     </div>
+  </div>
+
+  <!-- Tools tab -->
+  <div id="tools-tab" class="tab-content" style="display:none;">
+    <div id="tools-editor"><div id="tools-list-panel"></div></div>
   </div>
 
   <!-- Chat tab -->
@@ -627,9 +637,11 @@ function switchTab(tab) {
   document.getElementById('queue-tab').style.display = tab === 'queue' ? '' : 'none';
   document.getElementById('chat-tab').style.display = tab === 'chat' ? '' : 'none';
   document.getElementById('workflows-tab').style.display = tab === 'workflows' ? '' : 'none';
+  document.getElementById('tools-tab').style.display = tab === 'tools' ? '' : 'none';
   document.getElementById('sidebar').style.display = tab === 'chat' ? '' : 'none';
   if (tab === 'queue') loadQueue();
   if (tab === 'workflows') loadWorkflows();
+  if (tab === 'tools') loadToolsPanel();
 }
 
 // --- queue ---
@@ -1042,6 +1054,407 @@ function saveReadme(el) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({content}),
   }).catch(e => console.error('Save readme failed:', e));
+}
+
+// --- tools panel ---
+let _toolsCache = [];
+let _editingToolGroup = null;
+let _editingTool = null;  // {group, name}
+let _describingGroup = null;
+let _promptingTool = null;  // {group, name, mode: 'describe'|'edit'}
+let _promptingGroup = null; // group name
+
+async function loadToolsPanel() {
+  const el = document.getElementById('tools-list-panel');
+  const openState = _getOpenDetails(el);
+  try {
+    const res = await fetch(`${API}/api/tools`);
+    _toolsCache = await res.json();
+
+    // Group by folder
+    const groups = {};
+    for (const t of _toolsCache) {
+      if (!groups[t.group]) groups[t.group] = [];
+      groups[t.group].push(t);
+    }
+
+    let html = '';
+    for (const [group, tools] of Object.entries(groups).sort()) {
+      // Fetch group README if it exists
+      let readmeHtml = '';
+      let rawReadme = '';
+      try {
+        const rres = await fetch(`${API}/api/tool-group-readme?group=${group}`);
+        const rdata = await rres.json();
+        rawReadme = rdata.readme || '';
+        if (rawReadme) readmeHtml = marked.parse(rawReadme);
+      } catch (e) {}
+
+      const isEditing = _editingToolGroup === group;
+      const isDescribing = _describingGroup === group;
+      const isGroupPrompting = _promptingGroup === group;
+      html += `<details class="wf-item" data-id="tg-${group}">
+        <summary>
+          <span class="wf-item-name">${group}</span>
+          <span class="wf-item-meta">${tools.length} tools</span>
+          ${isDescribing || isGroupPrompting
+            ? ``
+            : isEditing
+            ? `<button class="wf-btn" style="color:#3fb950;border-color:#3fb950;" onclick="event.stopPropagation();saveToolGroupReadme('${group}')">OK</button>
+               <button class="wf-btn" onclick="event.stopPropagation();cancelToolGroupEdit()">Cancel</button>`
+            : `<button class="wf-btn" onclick="event.stopPropagation();editToolGroup('${group}')">Edit</button>
+               <button class="wf-btn" onclick="event.stopPropagation();describeToolGroup('${group}')">Tools→Desc</button>
+               <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();openPromptGroup('${group}')" title="Instruct AI">P</button>
+               <button class="wf-btn" onclick="event.stopPropagation();copyToolGroup('${group}')">Copy</button>
+               <button class="wf-btn" onclick="event.stopPropagation();renameToolGroup('${group}')">Rename</button>
+               <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteToolGroup('${group}')">Delete</button>`}
+        </summary>
+        <div class="wf-body">
+          ${isDescribing
+            ? '<div class="wf-readme"><div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is generating group description...</span></div></div>'
+            : isGroupPrompting
+            ? `<div class="wf-readme">
+                <textarea class="wf-readme-edit" id="group-prompt-area" style="min-height:80px;" placeholder="Tell the AI what to write for this group description..."></textarea>
+                <div style="margin-top:6px;display:flex;gap:8px;">
+                  <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptGroup('${group}')">Run AI</button>
+                  <button class="wf-btn" onclick="cancelPromptGroup()">Cancel</button>
+                </div>
+              </div>`
+            : isEditing
+            ? '<div class="wf-readme"><textarea class="wf-readme-edit" id="tg-readme-edit" style="min-height:150px;">'+rawReadme.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea></div>'
+            : (readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : '')}
+          <div class="wf-steps">
+            ${tools.map(t => {
+              const isToolEditing = _editingTool && _editingTool.group === group && _editingTool.name === t.name;
+              const isToolPrompting = _promptingTool && _promptingTool.group === group && _promptingTool.name === t.name;
+              return `<details class="wf-step-item" data-id="tool-${group}-${t.name}">
+                <summary style="display:flex;align-items:center;gap:6px;">
+                  <span style="flex:1;">${t.name}</span>
+                  ${isToolEditing
+                    ? `<button class="wf-btn" style="color:#3fb950;border-color:#3fb950;" onclick="event.stopPropagation();event.preventDefault();saveToolScript('${group}','${t.name}')">OK</button>
+                       <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();cancelToolScriptEdit()">Cancel</button>`
+                    : `<button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();editToolScript('${group}','${t.name}')">Edit</button>
+                       <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();describeToolScript('${group}','${t.name}')">Code→Desc</button>
+                       <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();event.preventDefault();openPromptTool('${group}','${t.name}','describe')" title="Instruct AI">P</button>
+                       <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();copyToolScript('${group}','${t.name}')">Copy</button>
+                       <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();event.preventDefault();deleteToolScript('${group}','${t.name}')">Delete</button>`}
+                </summary>
+                <div class="wf-step-output" id="tool-detail-${group}-${t.name}" style="padding:8px 10px;" ${(isToolEditing || isToolPrompting) ? 'data-loaded="1"' : ''}>
+                  ${isToolPrompting
+                    ? `<textarea class="wf-readme-edit" id="tool-prompt-area" style="min-height:80px;" placeholder="Tell the AI what to do with this tool..."></textarea>
+                       <div style="margin-top:6px;display:flex;gap:8px;">
+                         <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptTool('${group}','${t.name}')">Run AI</button>
+                         <button class="wf-btn" onclick="cancelPromptTool()">Cancel</button>
+                       </div>`
+                    : isToolEditing
+                    ? `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+                        <label style="font-size:12px;color:var(--muted);">Group:</label>
+                        <select id="tool-move-group" style="padding:3px 8px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;">
+                          ${Object.keys(groups).sort().map(g => `<option value="${g}" ${g === group ? 'selected' : ''}>${g}</option>`).join('')}
+                        </select>
+                      </div>
+                      <textarea class="wf-readme-edit" id="tool-desc-edit" style="min-height:80px;">${(t.description || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>`
+                    : ``}
+                </div>
+              </details>`;
+            }).join('')}
+          </div>
+        </div>
+      </details>`;
+    }
+    el.innerHTML = html;
+
+    // Restore open state + force open for editing items
+    _restoreOpenDetails(el, openState);
+    if (_editingToolGroup) {
+      const tgEl = el.querySelector(`[data-id="tg-${_editingToolGroup}"]`);
+      if (tgEl) tgEl.open = true;
+    }
+    if (_editingTool) {
+      const tgEl = el.querySelector(`[data-id="tg-${_editingTool.group}"]`);
+      if (tgEl) tgEl.open = true;
+      const tEl = el.querySelector(`[data-id="tool-${_editingTool.group}-${_editingTool.name}"]`);
+      if (tEl) tEl.open = true;
+    }
+    if (_promptingTool) {
+      const tgEl = el.querySelector(`[data-id="tg-${_promptingTool.group}"]`);
+      if (tgEl) tgEl.open = true;
+      const tEl = el.querySelector(`[data-id="tool-${_promptingTool.group}-${_promptingTool.name}"]`);
+      if (tEl) tEl.open = true;
+    }
+    if (_promptingGroup) {
+      const tgEl = el.querySelector(`[data-id="tg-${_promptingGroup}"]`);
+      if (tgEl) tgEl.open = true;
+    }
+
+    // Lazy-load tool detail on toggle
+    el.querySelectorAll('.wf-step-item').forEach(det => {
+      det.addEventListener('toggle', async function() {
+        if (!this.open) return;
+        const id = this.dataset.id;  // tool-github-list_issues
+        const parts = id.split('-');
+        const tGroup = parts[1];
+        const tName = parts.slice(2).join('-');
+        const container = this.querySelector('.wf-step-output');
+        if (container.dataset.loaded) return;
+        container.dataset.loaded = '1';
+        container.innerHTML = '<div class="wf-spinner" style="width:14px;height:14px;"></div>';
+        try {
+          const res = await fetch(`${API}/api/tool-detail?group=${tGroup}&name=${tName}`);
+          const data = await res.json();
+          let inner = '';
+          if (data.docstring) inner += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">${marked.parse(data.docstring)}</div>`;
+          if (data.source) inner += `<details style="margin-bottom:8px;"><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Script</summary><pre class="wf-step-code">${highlightPython(data.source)}</pre></details>`;
+          if (data.step_template) inner += `<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Workflow template</summary><pre class="wf-step-code">${highlightPython(data.step_template)}</pre></details>`;
+          container.innerHTML = inner || '<em style="color:var(--muted);">No source</em>';
+        } catch (e) {
+          container.innerHTML = `<em style="color:#da3633;">Failed to load</em>`;
+        }
+      });
+    });
+  } catch (e) { console.error('loadToolsPanel failed:', e); el.innerHTML = '<div style="padding:20px;color:#da3633;">Failed to load tools</div>'; }
+}
+
+function openPromptTool(group, name, mode) {
+  _promptingTool = {group, name, mode};
+  _editingTool = null;
+  loadToolsPanel();
+}
+
+function cancelPromptTool() {
+  _promptingTool = null;
+  loadToolsPanel();
+}
+
+async function submitPromptTool(group, name) {
+  const textarea = document.getElementById('tool-prompt-area');
+  if (!textarea) return;
+  const userPrompt = textarea.value.trim();
+  if (!userPrompt) { alert('Please enter instructions for the AI'); return; }
+
+  const mode = _promptingTool?.mode || 'describe';
+  _promptingTool = null;
+
+  // Show spinner, hide buttons
+  const det = document.querySelector(`[data-id="tool-${group}-${name}"]`);
+  if (det) {
+    det.querySelectorAll('.wf-btn, .wf-start').forEach(b => b.style.display = 'none');
+    const container = det.querySelector('.wf-step-output');
+    if (container) container.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is working...</span></div>';
+  }
+
+  try {
+    if (mode === 'describe') {
+      const res = await fetch(`${API}/api/tool-describe`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group, name, user_prompt: userPrompt}),
+      });
+      const data = await res.json();
+      if (data.error) alert('Failed: ' + data.error);
+    } else {
+      const res = await fetch(`${API}/api/tool-edit`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group, name, new_description: userPrompt, user_prompt: userPrompt}),
+      });
+      const data = await res.json();
+      if (data.error) alert('Failed: ' + data.error);
+    }
+  } catch (e) { alert('Failed: ' + e); }
+  loadToolsPanel();
+}
+
+function openPromptGroup(group) {
+  _promptingGroup = group;
+  loadToolsPanel();
+}
+
+function cancelPromptGroup() {
+  _promptingGroup = null;
+  loadToolsPanel();
+}
+
+async function submitPromptGroup(group) {
+  const textarea = document.getElementById('group-prompt-area');
+  if (!textarea) return;
+  const userPrompt = textarea.value.trim();
+  if (!userPrompt) { alert('Please enter instructions for the AI'); return; }
+
+  _promptingGroup = null;
+  _describingGroup = group;
+  loadToolsPanel();
+
+  try {
+    const res = await fetch(`${API}/api/tool-group-describe`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({group, user_prompt: userPrompt}),
+    });
+    const data = await res.json();
+    if (data.error) alert('Failed: ' + data.error);
+  } catch (e) { alert('Failed: ' + e); }
+  _describingGroup = null;
+  loadToolsPanel();
+}
+
+async function describeToolGroup(group) {
+  _describingGroup = group;
+  loadToolsPanel();
+  try {
+    const res = await fetch(`${API}/api/tool-group-describe`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({group}),
+    });
+    const data = await res.json();
+    if (data.error) alert('Describe failed: ' + data.error);
+  } catch (e) { alert('Describe failed: ' + e); }
+  _describingGroup = null;
+  loadToolsPanel();
+}
+
+function editToolGroup(group) {
+  _editingToolGroup = group;
+  loadToolsPanel();
+}
+
+function cancelToolGroupEdit() {
+  _editingToolGroup = null;
+  loadToolsPanel();
+}
+
+function saveToolGroupReadme(group) {
+  const textarea = document.getElementById('tg-readme-edit');
+  if (!textarea) return;
+  fetch(`${API}/api/tool-group-readme-save`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({group, content: textarea.value}),
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert('Save failed: ' + d.error);
+    _editingToolGroup = null;
+    loadToolsPanel();
+  }).catch(e => alert('Save failed: ' + e));
+}
+
+function copyToolGroup(group) {
+  const newName = prompt(`Copy "${group}" as:`, group + '_copy');
+  if (!newName || !newName.trim()) return;
+  fetch(`${API}/api/tool-group-copy`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({group, new_name: newName.trim()}),
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert('Copy failed: ' + d.error);
+    loadToolsPanel();
+  }).catch(e => alert('Copy failed: ' + e));
+}
+
+function renameToolGroup(group) {
+  const newName = prompt(`Rename "${group}" to:`, group);
+  if (!newName || !newName.trim() || newName.trim() === group) return;
+  fetch(`${API}/api/tool-group-rename`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({group, new_name: newName.trim()}),
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert('Rename failed: ' + d.error);
+    loadToolsPanel();
+  }).catch(e => alert('Rename failed: ' + e));
+}
+
+function deleteToolGroup(group) {
+  if (!confirm(`Delete entire "${group}" group and ALL its tools?`)) return;
+  fetch(`${API}/api/tool-group-delete`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({group}),
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert('Delete failed: ' + d.error);
+    loadToolsPanel();
+  }).catch(e => alert('Delete failed: ' + e));
+}
+
+async function describeToolScript(group, name) {
+  const det = document.querySelector(`[data-id="tool-${group}-${name}"]`);
+  if (det) {
+    det.open = true;
+    det.querySelectorAll('.wf-btn, .wf-start').forEach(b => b.style.display = 'none');
+    const container = det.querySelector('.wf-step-output');
+    if (container) container.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is generating description...</span></div>';
+  }
+  try {
+    const res = await fetch(`${API}/api/tool-describe`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({group, name}),
+    });
+    const data = await res.json();
+    if (data.error) alert('Describe failed: ' + data.error);
+  } catch (e) { alert('Describe failed: ' + e); }
+  loadToolsPanel();
+}
+
+function editToolScript(group, name) {
+  _editingTool = {group, name};
+  loadToolsPanel();
+}
+
+function cancelToolScriptEdit() {
+  _editingTool = null;
+  loadToolsPanel();
+}
+
+async function saveToolScript(group, name) {
+  const textarea = document.getElementById('tool-desc-edit');
+  if (!textarea) return;
+  const newDesc = textarea.value.trim();
+  const newGroup = document.getElementById('tool-move-group')?.value || group;
+
+  // Show spinner, hide buttons
+  const det = document.querySelector(`[data-id="tool-${group}-${name}"]`);
+  if (det) {
+    det.querySelectorAll('.wf-btn, .wf-start').forEach(b => b.style.display = 'none');
+    const container = det.querySelector('.wf-step-output');
+    if (container) container.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is updating code...</span></div>';
+  }
+
+  try {
+    // Move to different group first if changed
+    if (newGroup !== group) {
+      const mres = await fetch(`${API}/api/tool-move`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group, name, new_group: newGroup}),
+      });
+      const mdata = await mres.json();
+      if (mdata.error) { alert('Move failed: ' + mdata.error); _editingTool = null; loadToolsPanel(); return; }
+    }
+
+    // Then edit via LLM
+    const res = await fetch(`${API}/api/tool-edit`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({group: newGroup, name, new_description: newDesc}),
+    });
+    const data = await res.json();
+    if (data.error) alert('Edit failed: ' + data.error);
+  } catch (e) { alert('Edit failed: ' + e); }
+  _editingTool = null;
+  loadToolsPanel();
+}
+
+function copyToolScript(group, name) {
+  const newName = prompt(`Copy "${name}" as:`, name + '_copy');
+  if (!newName || !newName.trim()) return;
+  fetch(`${API}/api/tool-copy`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({group, name, new_name: newName.trim()}),
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert('Copy failed: ' + d.error);
+    loadToolsPanel();
+  }).catch(e => alert('Copy failed: ' + e));
+}
+
+function deleteToolScript(group, name) {
+  if (!confirm(`Delete tool "${group}/${name}"?`)) return;
+  fetch(`${API}/api/tool-delete`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({group, name}),
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert('Delete failed: ' + d.error);
+    loadToolsPanel();
+  }).catch(e => alert('Delete failed: ' + e));
 }
 
 connectWs();

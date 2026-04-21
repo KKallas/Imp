@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Open a new GitHub issue."""
+"""Create a GitHub issue via the `gh` CLI.
+
+Inputs:
+  --title (str, required): Issue title.
+  --body (str): Issue body text (default: empty).
+  --label (str, repeatable): Labels to apply to the issue.
+  --repo (str): Target repository in OWNER/REPO format.
+Process: Builds and runs a `gh issue create` command with the given arguments.
+Output: Prints the command's stdout (typically the new issue URL) and returns the exit code."""
 
 import argparse
 import subprocess

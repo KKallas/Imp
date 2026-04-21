@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Close a GitHub issue."""
+"""Close a GitHub issue via the `gh` CLI, optionally adding a comment first.
 
+Inputs:
+  issue (int): Issue number to close.
+  --reason (str): Close reason, "completed" (default) or "not_planned".
+  --comment (str): Optional comment to post before closing.
+  --repo (str): Optional "owner/repo" target; defaults to the current repo.
+
+Process: Posts the comment (if given) then closes the issue using `gh issue close`.
+Output: Prints gh stdout/stderr and returns the process exit code."""
 import argparse
 import subprocess
 import sys

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Merge a pull request."""
+"""Merge a GitHub pull request via the `gh` CLI.
+
+Inputs:
+  pr (int): Pull request number to merge.
+  --method (str): Merge strategy — "merge", "squash", or "rebase" (default: "squash").
+  --repo (str, optional): Target repository in OWNER/REPO format.
+
+Runs `gh pr merge` as a subprocess with the specified options.
+Prints stdout/stderr from the command and returns its exit code."""
 
 import argparse
 import subprocess

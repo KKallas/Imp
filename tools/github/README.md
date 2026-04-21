@@ -1,42 +1,44 @@
 # github
 
-GitHub operations — from atomic git/gh commands to multi-step AI workflows.
+CLI tools for managing GitHub issues, pull requests, and repositories via the `gh` and `git` CLIs.
 
-Each `.py` file is an executable. Each `.md` file is the prompt/config
-for the matching executable (where applicable).
+## Scripts
 
-## Executables
-
-### Atomic operations
-| Script | Purpose |
-|--------|---------|
-| `push.py` | Push local commits to remote |
-| `pull.py` | Pull latest changes from remote |
-| `fork.py` | Fork a GitHub repository |
-| `open_issue.py` | Open a new issue |
-| `close_issue.py` | Close an issue |
-| `list_issues.py` | List issues (filterable) |
-| `open_pr.py` | Open a pull request |
-| `merge_pr.py` | Merge a pull request |
-| `list_prs.py` | List pull requests |
-
-### AI-powered workflows
-| Script | Config | Purpose |
-|--------|--------|---------|
-| `moderate_issues.py` | `moderate_issues.md` | Format messy issues into structured tasks |
-| `solve_issues.py` | `solve_issues.md` | Read an issue, write code, open a PR |
-| `fix_prs.py` | `fix_prs_analysis.md`, `fix_prs_fix.md` | Read PR reviews, push fixes |
+| Script | Purpose | Key Args |
+|---|---|---|
+| `list_issues.py` | List issues with optional filters | `--state`, `--limit`, `--label`, `--repo` |
+| `open_issue.py` | Create a new issue | `--title` (required), `--body`, `--label`, `--repo` |
+| `close_issue.py` | Close an issue, optionally with a comment | `issue`, `--reason`, `--comment`, `--repo` |
+| `moderate_issues.py` | Send issues to Claude for LLM-ready formatting | `--dry-run`, `--test`, `--issue`, `--max` |
+| `solve_issues.py` | Auto-solve `llm-ready` issues with Claude and open PRs | `--dry-run`, `--test`, `--issue`, `--max` |
+| `list_prs.py` | List pull requests | `--state`, `--limit`, `--repo` |
+| `open_pr.py` | Create a pull request | `--title` (required), `--body`, `--base`, `--head`, `--repo` |
+| `merge_pr.py` | Merge a pull request | `pr`, `--method`, `--repo` |
+| `fork.py` | Fork a repo without cloning | `owner/repo` |
+| `pull.py` | Pull latest changes | `branch` (optional) |
+| `push.py` | Push commits to remote | `branch` (optional) |
 
 ## Usage
 
 ```bash
-# Atomic
-python tools/github/push.py
-python tools/github/open_issue.py --title "Bug report" --body "Details..."
-python tools/github/list_issues.py --state open --limit 10
+# List open issues
+python github/list_issues.py
 
-# AI workflows
-python tools/github/moderate_issues.py --issue 42
-python tools/github/solve_issues.py --issue 42
-python tools/github/fix_prs.py --pr 42
+# Create an issue with labels
+python github/open_issue.py --title "Fix login bug" --body "Details here" --label bug
+
+# Close an issue as completed with a comment
+python github/close_issue.py 42 --comment "Fixed in #43"
+
+# Open a PR
+python github/open_pr.py --title "Fix login bug" --base main --head fix/login
+
+# Merge a PR with squash
+python github/merge_pr.py 43 --method squash
+
+# Moderate issues — dry-run first
+python github/moderate_issues.py --dry-run
+
+# Solve LLM-ready issues — dry-run first
+python github/solve_issues.py --dry-run
 ```

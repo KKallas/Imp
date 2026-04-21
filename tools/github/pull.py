@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Pull latest changes from remote."""
+"""Pull latest changes from a Git remote, optionally targeting a specific branch.
 
+Args:
+    branch (str, optional): Branch name passed as the first CLI argument. If omitted, pulls the current tracking branch.
+
+Runs ``git pull [origin <branch>]`` as a subprocess, printing stdout and stderr.
+
+Returns:
+    int: The git process exit code (0 on success, non-zero on failure)."""
 import subprocess
 import sys
 

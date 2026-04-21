@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""List pull requests."""
+"""List GitHub pull requests by invoking the `gh pr list` command.
+
+Inputs:
+  --state: str — Filter by PR state: "open", "closed", "merged", or "all" (default: "open").
+  --limit: int — Maximum number of PRs to return (default: 30).
+  --repo: str | None — Target repository in OWNER/REPO format; defaults to the current repo.
+
+Process: Builds and runs a `gh pr list` subprocess with the given filters.
+Output: Prints PR listing to stdout, errors to stderr; returns the process exit code."""
 
 import argparse
 import subprocess
