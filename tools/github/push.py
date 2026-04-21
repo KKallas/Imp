@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Push local commits to remote."""
+"""Push local commits to a remote repository via git push.
 
+Inputs:
+branch (str, optional): Target branch name; omitted means push the current branch to its default remote.
+
+Process: Builds a git push command (appending origin <branch> if provided) and runs it as a subprocess.
+Output: Prints git stdout/stderr and returns the process exit code."""
 import subprocess
 import sys
 

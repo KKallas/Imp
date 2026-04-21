@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Fork a GitHub repository."""
+"""Fork a GitHub repository without cloning it locally.
 
+Args:
+    owner/repo (str): The GitHub repository identifier to fork (e.g. "octocat/Hello-World").
+
+Process:
+    Invokes `gh repo fork` via subprocess with `--clone=false` to create a remote fork.
+
+Output:
+    Prints gh stdout on success, stderr on failure. Returns the gh exit code."""
 import subprocess
 import sys
 

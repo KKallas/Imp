@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
-"""
-Issue Moderator for Robot Arena
+"""Moderate GitHub issues by sending them to Claude for formatting into LLM-ready specifications.
 
-Finds issues that need formatting, uses Claude to ask clarifying questions
-or propose formatted versions, then labels them as llm-ready.
+Inputs:
+--dry-run (flag): Preview issues without running Claude or posting to GitHub.
+--test (flag): Run Claude but suppress actual GitHub commands.
+--issue (int): Process a single issue by number instead of scanning all open issues.
+--max (int): Maximum number of issues to process; defaults to 10.
+--max-tokens (int): Stop processing after exceeding this cumulative token budget.
 
-Usage:
-    python moderate_issues.py              # Process all unformatted issues
-    python moderate_issues.py --dry-run    # Show what would be done (no Claude, no GitHub)
-    python moderate_issues.py --test       # Test mode (runs Claude but doesn't post to GitHub)
-    python moderate_issues.py --issue 123  # Process specific issue
-
-Requirements:
-    - gh CLI installed and authenticated
-    - claude CLI installed (npm install -g @anthropic-ai/claude-code)
-"""
+Process: Fetches open issues lacking `llm-ready`/`needs-human`/`in-progress` labels, builds a prompt from Markdown templates and project context, then streams each issue through the Claude CLI to post clarifying questions or formatted proposals.
+Output: Prints per-issue status, streamed Claude responses, and a final processed/total summary; records token usage to `.state.json`."""
 
 import subprocess
 import json

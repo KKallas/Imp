@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
-"""
-Issue Solver for Robot Arena
+"""Fetch issues labeled "llm-ready" from GitHub, solve each with Claude Code, and open PRs with the fixes.
 
-Finds llm-ready issues, uses Claude to solve them, and creates PRs.
+Inputs:
+--dry-run (flag): Preview issues without running Claude or touching GitHub.
+--test (flag): Run Claude but skip pushing and PR creation.
+--issue (int): Process a single issue by number instead of the full queue.
+--max (int): Maximum issues to process in one run (default: 5).
+--max-tokens (int): Stop after exceeding this cumulative token budget.
 
-Usage:
-    python solve_issues.py              # Process all llm-ready issues
-    python solve_issues.py --dry-run    # Show what would be done (no Claude, no GitHub)
-    python solve_issues.py --test       # Test mode (runs Claude but doesn't push/PR)
-    python solve_issues.py --issue 123  # Process specific issue
-
-Requirements:
-    - gh CLI installed and authenticated
-    - claude CLI installed (npm install -g @anthropic-ai/claude-code)
-    - git
-"""
+Process: For each issue, claims it with an "in-progress" label, clones the repo into a temp directory, builds a prompt from external templates, streams Claude's output, validates changes, commits, pushes a branch, and opens a PR. Releases the issue back to the queue on failure.
+Output: Streams Claude's response and prints per-issue status lines; logs token usage to .state.json."""
 
 import subprocess
 import json
@@ -378,7 +373,7 @@ def create_pr(issue: dict, branch_name: str, repo_dir: str, dry_run: bool = Fals
 
 
 def process_issue(issue: dict, dry_run: bool = False, test_mode: bool = False) -> bool:
-    """Process a single issue."""
+    """Process a single issue: claim, clone, run Claude, commit, push, PR."""
     print(f"\n{'='*60}")
     print(f"Processing issue #{issue['number']}: {issue['title']}")
     if test_mode:
