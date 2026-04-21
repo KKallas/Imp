@@ -380,9 +380,8 @@ function connectWs() {
 
       case 'tool_start':
         ensureAgentMsg();
-        pendingTools[msg.name] = msg.args || {};
-        // Insert a placeholder in the text stream
-        agentText += `\n\n<details class="tool-block running"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
+        pendingTools[msg.id] = {name: msg.name, args: msg.args || {}};
+        agentText += `\n\n<details class="tool-block running" data-tool-id="${msg.id}"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
         renderAgentBody();
         break;
 
@@ -390,16 +389,13 @@ function connectWs() {
         ensureAgentMsg();
         const icon = msg.status === 'ok' ? '✅' : '❌';
         const dur = msg.duration ? ` · ${msg.duration.toFixed(1)}s` : '';
-        const args = pendingTools[msg.name] || {};
-        delete pendingTools[msg.name];
-        // Replace the placeholder with the final block
-        const placeholder = `⏳ ${msg.name}(${formatArgs(args)})...`;
-        const final = `${icon} ${msg.name}(${formatArgs(args)})${dur}`;
+        const info = pendingTools[msg.id] || {name: msg.name, args: {}};
+        delete pendingTools[msg.id];
         const formattedOutput = msg.output ? formatStepOutput(msg.output) : '<pre>(no output)</pre>';
-        agentText = agentText.replace(
-          `<details class="tool-block running"><summary>${placeholder}</summary><pre>Running...</pre></details>`,
-          `<details class="tool-block ${msg.status}"><summary>${final}</summary><div class="wf-step-output">${formattedOutput}</div></details>`
-        );
+        // Replace by data-tool-id attribute (unique per call)
+        const oldBlock = `<details class="tool-block running" data-tool-id="${msg.id}"><summary>⏳ ${info.name}(${formatArgs(info.args)})...</summary><pre>Running...</pre></details>`;
+        const newBlock = `<details class="tool-block ${msg.status}" data-tool-id="${msg.id}"><summary>${icon} ${info.name}(${formatArgs(info.args)})${dur}</summary><div class="wf-step-output">${formattedOutput}</div></details>`;
+        agentText = agentText.replace(oldBlock, newBlock);
         renderAgentBody();
         break;
       }
