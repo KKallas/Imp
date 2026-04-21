@@ -112,24 +112,31 @@ class WorkflowRunner:
         }
 
     async def run(self) -> None:
-        """Execute all steps in order."""
+        """Execute all steps from the beginning."""
+        await self.run_from(0)
+
+    async def run_from(self, start_index: int) -> None:
+        """Execute steps starting from start_index."""
         self.status = "running"
-        for i, step_meta in enumerate(self.steps):
+        for i in range(start_index, len(self.steps)):
+            step_meta = self.steps[i]
             self.current = i
             self.status = "running"
+            self._save_log()  # save progress before each step
 
             result = await self._run_step(step_meta)
             self.results.append(result)
 
-            # Stop workflow on step failure
+            # Stop on failure
             if not result.get("ok", True) and not result.get("pause"):
                 self.status = "error"
                 self._save_log()
                 return
 
-            # Handle pause
+            # Pause
             if result.get("pause"):
                 self.status = "paused"
+                self._save_log()
                 await self._push_to_queue(result)
                 await self._resume_event.wait()
                 self._resume_event.clear()
@@ -197,6 +204,7 @@ class WorkflowRunner:
         log_path = _WORKFLOWS_DIR / self.name / "last_run.json"
         log = {
             "status": self.status,
+            "current_step": self.current,
             "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "steps": [],
         }
@@ -224,6 +232,13 @@ class WorkflowRunner:
         """Resume from a pause (called when queue item is resolved)."""
         self._resume_event.set()
 
+    async def _wait_and_continue(self) -> None:
+        """Wait for queue resolution then continue from next step."""
+        await self._resume_event.wait()
+        self._resume_event.clear()
+        self.pause_item_id = None
+        await self.run_from(self.current + 1)
+
     def abort(self) -> None:
         """Cancel the workflow."""
         self.status = "error"
@@ -238,10 +253,61 @@ def start(name: str) -> WorkflowRunner | None:
         return None
     if name in _runners and _runners[name].status in ("running", "paused"):
         return _runners[name]  # already running
+    # Fresh start
     runner = WorkflowRunner(name)
     _runners[name] = runner
     asyncio.create_task(runner.run())
     return runner
+
+
+def resume_interrupted() -> None:
+    """On server startup, resume any workflows that were paused or running.
+
+    Called once at import/startup. Re-creates the runner from last_run.json
+    and re-pushes the pause queue item if it was paused.
+    """
+    for name in discover():
+        last_run = WorkflowRunner.load_last_run(name)
+        if not last_run or last_run.get("status") not in ("running", "paused"):
+            continue
+        runner = WorkflowRunner(name)
+        resume_from = last_run.get("current_step", 0)
+        for i, lr_step in enumerate(last_run.get("steps", [])):
+            if i < resume_from and lr_step.get("result"):
+                runner.results.append(lr_step["result"])
+        runner.current = resume_from
+        runner.status = last_run["status"]
+        _runners[name] = runner
+        print(f"[workflows] {name}: interrupted at step {resume_from}, status={runner.status}", file=__import__('sys').stderr)
+
+
+async def resume_paused_async() -> None:
+    """Resume paused workflows by re-pushing queue items if needed.
+
+    Called from the server's startup event when the event loop is available.
+    """
+    from server import work_queue
+
+    for name, runner in list(_runners.items()):
+        if runner.status == "paused":
+            tool_key = f"workflow:{name}"
+            # Check if queue item already exists for this workflow
+            existing = [q for q in work_queue.list_pending() if q.get("tool") == tool_key]
+            if not existing:
+                # Re-run the pause step to re-push to queue
+                step_meta = runner.steps[runner.current] if runner.current < len(runner.steps) else None
+                if step_meta:
+                    result = await runner._run_step(step_meta)
+                    if result.get("pause"):
+                        await runner._push_to_queue(result)
+            # Wait for queue resolution then continue
+            asyncio.create_task(runner._wait_and_continue())
+        elif runner.status == "running":
+            asyncio.create_task(runner.run_from(runner.current))
+
+
+# Detect interrupted workflows at import time (sync — just loads state)
+resume_interrupted()
 
 
 def get_runner(name: str) -> WorkflowRunner | None:

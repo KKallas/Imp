@@ -42,8 +42,21 @@ import renderers as _renderers
 
 DEFAULT_PORT = int(os.environ.get("RENDER_PORT", "8421"))
 
-app = FastAPI(title="Imp Render Server", docs_url=None, redoc_url=None)
+from contextlib import asynccontextmanager as _acm
+
+@_acm
+async def _lifespan(app):
+    # Startup: resume interrupted workflows
+    try:
+        import workflows
+        await workflows.resume_paused_async()
+    except Exception as exc:
+        print(f"[render] workflow resume failed: {exc}", file=sys.stderr)
+    yield
+
+app = FastAPI(title="Imp Render Server", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"])
+
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -308,26 +321,34 @@ async def start_workflow(name: str):
 @app.get("/api/workflows/{name}")
 async def workflow_status(name: str):
     import workflows
+    readme = workflows.get_readme(name)
     runner = workflows.get_runner(name)
     if runner is not None:
-        return runner.to_dict()
+        d = runner.to_dict()
+        d["readme"] = readme
+        return d
     # No active runner — return steps + last run log if available
     last_run = workflows.WorkflowRunner.load_last_run(name)
     steps = workflows.get_steps(name)
     if last_run:
-        # Merge last run results into step data
         for i, s in enumerate(steps):
             lr_steps = last_run.get("steps", [])
             if i < len(lr_steps) and lr_steps[i].get("result"):
-                s["result"] = lr_steps[i]["result"]
-                s["status"] = "done" if lr_steps[i]["result"].get("ok") else "error"
+                r = lr_steps[i]["result"]
+                s["result"] = r
+                if r.get("pause"):
+                    s["status"] = "done"  # pause steps completed (were resolved)
+                elif r.get("ok") is False:
+                    s["status"] = "error"
+                else:
+                    s["status"] = "done"
             else:
                 s["status"] = "pending"
         return {
             "name": name, "status": last_run.get("status", "idle"),
-            "steps": steps, "ran_at": last_run.get("ran_at"),
+            "steps": steps, "ran_at": last_run.get("ran_at"), "readme": readme,
         }
-    return {"name": name, "status": "idle", "steps": steps}
+    return {"name": name, "status": "idle", "steps": steps, "readme": readme}
 
 
 @app.post("/api/workflows/{name}/abort")

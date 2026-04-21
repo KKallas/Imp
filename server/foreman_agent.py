@@ -232,7 +232,9 @@ async def dispatch(
                         # Register new tool calls in the tracker
                         if msg_tools and tracker is not None:
                             for block in msg_tools:
-                                print(f"[TRACE] ToolUseBlock id={block.id} name={_clean_tool_name(block.name)} already_pending={block.id in _pending_tool_ids}", file=sys.stderr)
+                                cmd = (block.input or {}).get('command', '')[:80]
+                                desc = (block.input or {}).get('description', '')
+                                print(f"[TRACE] ToolUseBlock id={block.id} name={_clean_tool_name(block.name)} cmd={cmd!r} desc={desc!r}", file=sys.stderr)
                             new_items = tracker.register_batch(msg_tools)
                             if not has_plan:
                                 await ui.show_plan(tracker.plan_items)

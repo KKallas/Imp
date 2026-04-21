@@ -160,6 +160,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; }
 .wf-start:disabled { opacity:0.4; cursor:not-allowed; }
 .wf-body { padding:0 16px 12px; }
+.wf-readme { font-size:13px; color:var(--muted); border-bottom:1px solid var(--border);
+  padding-bottom:10px; margin-bottom:10px; line-height:1.5; }
+.wf-readme h1,.wf-readme h2,.wf-readme h3 { font-size:13px; color:var(--fg); margin:4px 0; }
+.wf-readme p { margin:4px 0; }
+.wf-readme ol,.wf-readme ul { margin:4px 0; padding-left:20px; }
 .wf-steps { font-size:12px; }
 .wf-step-item { border:1px solid var(--border); border-radius:6px;
   margin-bottom:6px; background:#0d1117; }
@@ -380,13 +385,12 @@ function connectWs() {
 
       case 'tool_start': {
         ensureAgentMsg();
-        // Use a counter so each placeholder is unique even for the same tool
         const toolSeq = (pendingTools._seq = (pendingTools._seq || 0) + 1);
         const tag = `tool-${toolSeq}`;
-        // Queue per tool name (FIFO)
         if (!pendingTools[msg.name]) pendingTools[msg.name] = [];
-        pendingTools[msg.name].push({args: msg.args || {}, tag});
-        agentText += `\n\n<details class="tool-block running ${tag}"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
+        const desc = (msg.args || {}).description || msg.name;
+        pendingTools[msg.name].push({args: msg.args || {}, tag, desc});
+        agentText += `\n\n<details class="tool-block running ${tag}"><summary>⏳ ${desc}...</summary><pre>Running...</pre></details>\n\n`;
         renderAgentBody();
         break;
       }
@@ -395,16 +399,15 @@ function connectWs() {
         ensureAgentMsg();
         const icon = msg.status === 'ok' ? '✅' : '❌';
         const dur = msg.duration ? ` · ${msg.duration.toFixed(1)}s` : '';
-        // Pop the first pending entry for this tool name (FIFO)
         const queue = pendingTools[msg.name] || [];
         const entry = queue.shift();
         if (!queue.length) delete pendingTools[msg.name];
-        const args = entry ? entry.args : {};
+        const desc = entry ? entry.desc : msg.name;
         const tag = entry ? entry.tag : '';
         const formattedOutput = msg.output ? formatStepOutput(msg.output) : '<pre>(no output)</pre>';
         if (tag) {
-          const oldBlock = `<details class="tool-block running ${tag}"><summary>⏳ ${msg.name}(${formatArgs(args)})...</summary><pre>Running...</pre></details>`;
-          const newBlock = `<details class="tool-block ${msg.status} ${tag}"><summary>${icon} ${msg.name}(${formatArgs(args)})${dur}</summary><div class="wf-step-output">${formattedOutput}</div></details>`;
+          const oldBlock = `<details class="tool-block running ${tag}"><summary>⏳ ${desc}...</summary><pre>Running...</pre></details>`;
+          const newBlock = `<details class="tool-block ${msg.status} ${tag}"><summary>${icon} ${desc}${dur}</summary><div class="wf-step-output">${formattedOutput}</div></details>`;
           agentText = agentText.replace(oldBlock, newBlock);
         }
         renderAgentBody();
@@ -769,9 +772,11 @@ async function loadWorkflows() {
       const canStart = wf.status === 'idle' || wf.status === 'done' || wf.status === 'error';
 
       let stepsHtml = '';
+      let readmeHtml = '';
       try {
         const sres = await fetch(`${API}/api/workflows/${wf.name}`);
         const sdata = await sres.json();
+        if (sdata.readme) readmeHtml = marked.parse(sdata.readme);
         const steps = sdata.steps || [];
         stepsHtml = steps.map(s => {
           const sIcon = {done:'✅', running:'🔄', paused:'⏸', pending:'⏳', error:'❌'}[s.status] || '⏳';
@@ -780,7 +785,7 @@ async function loadWorkflows() {
           // Show output from last run if available
           let outputHtml = '';
           if (s.result) {
-            const ok = s.result.ok ? '✅' : '❌';
+            const ok = (s.result.ok === false) ? '❌' : '✅';
             const dur = s.result.duration_s ? ` · ${s.result.duration_s}s` : '';
             const content = s.result.output || s.result.error || '';
             const tb = s.result.traceback || '';
@@ -807,6 +812,7 @@ async function loadWorkflows() {
         </summary>
         <div class="wf-body">
           <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}</div>
+          ${readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : ''}
           <div class="wf-steps">${stepsHtml}</div>
         </div>
       </details>`;
@@ -821,6 +827,8 @@ async function loadWorkflows() {
 async function startWorkflow(name) {
   try {
     await fetch(`${API}/api/workflows/${name}/start`, {method:'POST'});
+    // Small delay so the runner has time to initialize before we poll
+    await new Promise(r => setTimeout(r, 200));
     loadWorkflows();
     const poll = setInterval(async () => {
       if (activeTab !== 'workflows') { clearInterval(poll); return; }

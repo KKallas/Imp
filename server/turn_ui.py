@@ -1,6 +1,26 @@
-"""server/turn_ui.py — structured turn UI types.
+"""server/turn_ui.py — per-event callback interface for agent turn rendering.
 
-Extracted from foreman_agent.py so the agent stays UI-agnostic.
+The agent dispatch loop in foreman_agent.py fires callbacks on a TurnUI
+implementation at specific moments during a turn. A ToolTracker sits in
+between, translating raw tool-use blocks into structured PlanItem lifecycle
+events.
+
+Typical call sequence within a single turn::
+
+    thinking_update
+    show_plan          (first batch of tool calls discovered)
+    tool_started       ─┐
+    tool_finished       │  repeated per tool in the batch
+    tool_started        │
+    tool_finished      ─┘
+    append_plan        (if the model issues more tool calls)
+    tool_started / tool_finished …
+    stream_token       ─┐
+    stream_token        │  repeated per chunk of the reply
+    stream_token       ─┘
+    stream_end
+
+Implementors: WebSocketTurnUI (chat_ws.py), RecordingUI (tests).
 """
 
 from __future__ import annotations
@@ -37,19 +57,51 @@ class PlanItem:
 
 
 class TurnUI:
-    """Callback interface for structured tool-call rendering."""
+    """Per-event callback interface for rendering an agent turn.
 
-    async def show_plan(self, items: list[PlanItem]) -> None: ...
-    async def append_plan(self, items: list[PlanItem]) -> None: ...
-    async def tool_started(self, index: int, item: PlanItem) -> None: ...
-    async def tool_finished(self, index: int, item: PlanItem) -> None: ...
-    async def stream_token(self, token: str) -> None: ...
-    async def stream_end(self, full_text: str) -> None: ...
-    async def thinking_update(self, text: str) -> None: ...
+    Each method fires once per event during the turn lifecycle.
+    Subclass and override to push events to a specific transport
+    (e.g. WebSocket, test recorder).  The default implementations
+    are no-ops so consumers can override only what they need.
+    """
+
+    async def show_plan(self, items: list[PlanItem]) -> None:
+        """Called once when the first batch of tool calls is known."""
+        ...
+
+    async def append_plan(self, items: list[PlanItem]) -> None:
+        """Called when additional tool calls are discovered mid-turn."""
+        ...
+
+    async def tool_started(self, index: int, item: PlanItem) -> None:
+        """Called once per tool, right before execution begins."""
+        ...
+
+    async def tool_finished(self, index: int, item: PlanItem) -> None:
+        """Called once per tool, after execution completes (ok or error)."""
+        ...
+
+    async def stream_token(self, token: str) -> None:
+        """Called for each text chunk as the model streams its reply."""
+        ...
+
+    async def stream_end(self, full_text: str) -> None:
+        """Called once when the full reply text has been assembled."""
+        ...
+
+    async def thinking_update(self, text: str) -> None:
+        """Called once per thinking block emitted by the model."""
+        ...
 
 
 class ToolTracker:
-    """Wraps tool handlers to emit per-tool start/finish events."""
+    """Bridge between the agent dispatch loop and a TurnUI.
+
+    The dispatch loop in foreman_agent.py hands raw tool-use blocks to
+    register_batch(), which converts them into PlanItems. As each tool
+    executes, on_start() and on_done() fire the corresponding
+    tool_started / tool_finished callbacks on the TurnUI.
+    """
 
     def __init__(self, turn_ui: TurnUI) -> None:
         self.turn_ui = turn_ui
