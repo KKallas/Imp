@@ -141,7 +141,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 
 /* --- workflows --- */
 #workflows-tab { flex:1; overflow:hidden; }
-#wf-split { display:flex; height:100%; }
+#wf-split { display:flex; height:100%; position:relative; }
 #wf-editor { flex:1; overflow-y:auto; padding:16px 24px; border-right:1px solid var(--border); }
 #wf-tools { width:280px; overflow-y:auto; padding:12px 16px; flex-shrink:0; }
 @media(max-width:800px) { #wf-split { flex-direction:column; } #wf-tools { width:100%; border-right:none; border-top:1px solid var(--border); } }
@@ -178,6 +178,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .wf-btn { padding:3px 8px; background:none; border:1px solid var(--border); color:var(--muted);
   border-radius:4px; cursor:pointer; font-size:11px; }
 .wf-btn:hover { color:var(--fg); border-color:var(--fg); }
+.wf-spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent);
+  border-radius:50%; animation:spin 0.8s linear infinite; display:inline-block; }
+@keyframes spin { to { transform:rotate(360deg); } }
 .wf-body { padding:0 16px 12px; }
 .wf-readme { font-size:13px; color:var(--muted); border-bottom:1px solid var(--border);
   padding-bottom:10px; margin-bottom:10px; line-height:1.5; }
@@ -843,6 +846,7 @@ async function loadWorkflows() {
           <button class="wf-btn" onclick="event.stopPropagation();toggleEditWorkflow('${wf.name}')">${editingWorkflow === wf.name ? 'Done' : 'Edit'}</button>
           <button class="wf-btn" onclick="event.stopPropagation();cloneWorkflow('${wf.name}')">Clone</button>
           <button class="wf-btn" onclick="event.stopPropagation();renameWorkflow('${wf.name}')">Rename</button>
+          <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteWorkflow('${wf.name}')">Delete</button>
         </summary>
         <div class="wf-body">
           <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}</div>
@@ -862,19 +866,37 @@ async function loadWorkflows() {
 
 async function startWorkflow(name) {
   try {
+    // Instant feedback: gray out button, spinner, reset all steps to pending
+    const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
+    if (wfEl) {
+      wfEl.setAttribute('open', '');
+      const btn = wfEl.querySelector('.wf-start');
+      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+      const statusEl = wfEl.querySelector('.wf-item-status');
+      if (statusEl) statusEl.innerHTML = '<div class="wf-spinner" style="width:14px;height:14px;"></div> running';
+      // Clear old step results, times, and reset icons to pending
+      wfEl.querySelectorAll('.wf-step-output').forEach(el => el.remove());
+      wfEl.querySelectorAll('.wf-step-item').forEach(el => {
+        el.className = 'wf-step-item pending';
+        el.querySelector('summary').innerHTML = el.querySelector('summary').innerHTML.replace(/[✅❌🔄⏸⏳]/g, '⏳').replace(/ · [\d.]+s/g, '');
+      });
+      const meta = wfEl.querySelector('.wf-body > .wf-item-meta');
+      if (meta) meta.querySelectorAll('em').forEach(el => el.remove());
+    }
+
     await fetch(`${API}/api/workflows/${name}/start`, {method:'POST'});
-    // Small delay so the runner has time to initialize before we poll
-    await new Promise(r => setTimeout(r, 200));
-    loadWorkflows();
+
+    // Poll for step-by-step updates
     const poll = setInterval(async () => {
       if (activeTab !== 'workflows') { clearInterval(poll); return; }
       await loadWorkflows();
       try {
         const res = await fetch(`${API}/api/workflows/${name}`);
         const data = await res.json();
-        if (data.status === 'done' || data.status === 'error' || data.status === 'idle') clearInterval(poll);
+        if (data.status === 'done' || data.status === 'error' || data.status === 'idle' || data.status === 'paused')
+          clearInterval(poll);
       } catch(e) { clearInterval(poll); }
-    }, 2000);
+    }, 800);
   } catch (e) { console.error('startWorkflow failed:', e); }
 }
 
@@ -938,6 +960,8 @@ function toggleEditWorkflow(name) {
   if (editingWorkflow === name) {
     editingWorkflow = null;
     document.getElementById('wf-tools').style.display = 'none';
+    loadWorkflows().then(() => configureWorkflow(name));
+    return;
   } else {
     editingWorkflow = name;
     document.getElementById('wf-tools').style.display = '';
@@ -972,6 +996,13 @@ function renameWorkflow(name) {
     .catch(e => alert('Rename failed: ' + e));
 }
 
+function deleteWorkflow(name) {
+  if (!confirm(`Delete workflow "${name}" and all its steps?`)) return;
+  fetch(`${API}/api/workflows/${name}/delete`, {method: 'POST'})
+    .then(() => { if (editingWorkflow === name) { editingWorkflow = null; document.getElementById('wf-tools').style.display = 'none'; } loadWorkflows(); })
+    .catch(e => alert('Delete failed: ' + e));
+}
+
 function moveStep(wfName, stepName, direction) {
   fetch(`${API}/api/workflows/${wfName}/move-step`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -985,6 +1016,23 @@ function removeStep(wfName, stepName) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({step_name: stepName}),
   }).then(() => loadWorkflows()).catch(e => alert('Remove failed: ' + e));
+}
+
+function configureWorkflow(name) {
+  // Show spinner on just this workflow's item, don't block others
+  const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
+  if (wfEl) {
+    const body = wfEl.querySelector('.wf-body');
+    if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:16px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is configuring steps...</span></div>';
+  }
+
+  fetch(`${API}/api/workflows/${name}/configure`, {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) alert('Configuration failed: ' + data.error);
+      loadWorkflows();
+    })
+    .catch(e => { console.error('Configure failed:', e); loadWorkflows(); });
 }
 
 function saveReadme(el) {

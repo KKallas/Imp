@@ -328,6 +328,10 @@ async def list_workflows():
 
 @app.post("/api/workflows/{name}/start")
 async def start_workflow(name: str):
+    # Clear previous run results so UI starts clean
+    last_run = _ROOT / "workflows" / name / "last_run.json"
+    if last_run.exists():
+        last_run.unlink()
     import workflows
     runner = workflows.start(name)
     if runner is None:
@@ -376,6 +380,21 @@ async def abort_workflow(name: str):
         return Response("not running", status_code=404)
     runner.abort()
     return runner.to_dict()
+
+
+@app.post("/api/workflows/{name}/delete")
+async def delete_workflow(name: str):
+    import shutil
+    wf_dir = _ROOT / "workflows" / name
+    if not wf_dir.is_dir():
+        return Response("not found", status_code=404)
+    shutil.rmtree(wf_dir)
+    # Purge cached modules so re-creating with same name starts fresh
+    import sys as _sys
+    stale = [k for k in _sys.modules if k.startswith(f"step_") or k.startswith(f"workflows.{name}")]
+    for k in stale:
+        del _sys.modules[k]
+    return {"deleted": name}
 
 
 @app.post("/api/workflows/{name}/clone")
@@ -440,8 +459,17 @@ async def add_step(name: str, request: Request):
                 pass
             tool_script = exe["script"]
             break
-    code = f'"""{tool_desc}"""\n\nimport subprocess\n\n\ndef run(context):\n    result = subprocess.run(\n        ["python", "{tool_script}"],\n        capture_output=True, text=True,\n    )\n    return {{\n        "ok": result.returncode == 0,\n        "output": result.stdout[:2000] or result.stderr[:2000],\n    }}\n'
+    # Use step template if it exists, otherwise generate generic code
+    template_file = _ROOT / "tools" / tool_group / f"{tool_name}.step.py"
+    if template_file.exists():
+        code = template_file.read_text()
+    else:
+        code = f'"""{tool_desc}"""\n\nimport subprocess\n\n\ndef run(context):\n    result = subprocess.run(\n        ["python", "{tool_script}"],\n        capture_output=True, text=True,\n    )\n    return {{\n        "ok": result.returncode == 0,\n        "output": result.stdout[:2000] or result.stderr[:2000],\n    }}\n'
     step_file.write_text(code)
+    # Clear stale run results — step structure changed
+    last_run = wf_dir / "last_run.json"
+    if last_run.exists():
+        last_run.unlink()
     return {"added": step_file.name}
 
 
@@ -453,6 +481,10 @@ async def remove_step(name: str, request: Request):
     step_file = wf_dir / f"{step_name}.py"
     if step_file.exists():
         step_file.unlink()
+        # Clear stale run results — step structure changed
+        last_run = wf_dir / "last_run.json"
+        if last_run.exists():
+            last_run.unlink()
         _renumber_steps(wf_dir)
         return {"removed": step_name}
     return Response("step not found", status_code=404)
@@ -504,6 +536,112 @@ async def tool_source(group: str, name: str):
             except Exception:
                 return {"source": "", "docstring": ""}
     return {"source": "", "docstring": ""}
+
+
+@app.post("/api/workflows/{name}/configure")
+async def configure_workflow(name: str):
+    """Use Claude to update step Python code based on README + step descriptions."""
+    import re
+    import workflows
+
+    wf_dir = _ROOT / "workflows" / name
+    if not wf_dir.is_dir():
+        return Response("not found", status_code=404)
+
+    readme = workflows.get_readme(name)
+    steps = workflows.get_steps(name)
+
+    if not steps:
+        return {"configured": 0, "message": "No steps to configure"}
+
+    # Build step summary for context
+    step_summary = "\n".join(f"  Step {i+1}: {s.get('description', s['name'])}" for i, s in enumerate(steps))
+
+    configured = 0
+    for i, step in enumerate(steps):
+        src = step.get("source", "")
+        desc = step.get("description", "")
+        if not desc:
+            continue
+
+        prev_steps = "\n".join(f"  Step {j+1}: {s.get('description', s['name'])}" for j, s in enumerate(steps[:i]))
+
+        prompt = f"""Update this workflow step's Python code so it actually does what the workflow needs.
+
+WORKFLOW GOAL (from README):
+{readme}
+
+ALL STEPS IN THIS WORKFLOW:
+{step_summary}
+
+THIS IS STEP {i+1}: {desc}
+{f"PREVIOUS STEPS (their output is in context['previous_results']):" + chr(10) + prev_steps if prev_steps else "This is the first step."}
+
+CURRENT CODE:
+```python
+{src}
+```
+
+INSTRUCTIONS:
+- The code must implement what step {i+1} needs to do FOR THIS SPECIFIC WORKFLOW
+- PRESERVE the existing code structure — improve it, don't rewrite from scratch
+- Previous step results are in context["previous_results"] — each is a dict with structured keys (e.g. "issue_number", "issue_title", "output", "ok"), NOT just a string. Use dict keys directly, never parse strings with regex.
+- Check the CURRENT CODE carefully — if it already returns structured keys or reads them from context, keep that pattern
+- Pass the right CLI arguments to the tool (check the current code for the correct flags)
+- Use subprocess.run with the actual tool script path (keep the path from current code)
+- Return {{"ok": bool, "output": str}} plus any structured keys that later steps might need
+- Keep the docstring as: \"\"\"{desc}\"\"\"
+- Use real values based on the workflow README, not placeholder/generic calls
+- For dates use: from datetime import datetime; datetime.now().strftime(...)
+
+Return ONLY the Python code. No explanation. No markdown fences."""
+
+        print(f"\n[configure] === Step {i+1}: {desc} ===", file=sys.stderr)
+        print(f"[configure] Prompt length: {len(prompt)} chars", file=sys.stderr)
+
+        try:
+            from claude_agent_sdk import ClaudeAgentOptions, query, TextBlock
+
+            options = ClaudeAgentOptions(
+                system_prompt="You are a code generator. Return only Python code, nothing else.",
+                max_turns=1,
+            )
+
+            chunks = []
+            async for message in query(prompt=prompt, options=options):
+                from claude_agent_sdk import AssistantMessage
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            chunks.append(block.text)
+
+            new_code = "".join(chunks).strip()
+            print(f"[configure] LLM response ({len(new_code)} chars):", file=sys.stderr)
+            print(new_code[:500], file=sys.stderr)
+            if len(new_code) > 500:
+                print("...(truncated)", file=sys.stderr)
+
+            # Strip markdown fences if Claude added them
+            if new_code.startswith("```python"):
+                new_code = new_code[len("```python"):].strip()
+            if new_code.startswith("```"):
+                new_code = new_code[3:].strip()
+            if new_code.endswith("```"):
+                new_code = new_code[:-3].strip()
+
+            if new_code and "def run" in new_code:
+                step_file = Path(step["file"])
+                step_file.write_text(new_code + "\n")
+                configured += 1
+                print(f"[configure] {name}/{step['name']}: updated", file=sys.stderr)
+            else:
+                print(f"[configure] {name}/{step['name']}: LLM returned invalid code, skipped", file=sys.stderr)
+
+        except Exception as exc:
+            print(f"[configure] {name}/{step['name']}: error: {exc}", file=sys.stderr)
+            return {"error": str(exc), "configured": configured}
+
+    return {"configured": configured, "message": f"Updated {configured} of {len(steps)} steps"}
 
 
 def _renumber_steps(wf_dir: Path) -> None:

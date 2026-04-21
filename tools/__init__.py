@@ -42,7 +42,7 @@ def list_executables(tool_name: str) -> list[dict[str, Any]]:
         return []
     results: list[dict[str, Any]] = []
     for path in sorted(d.glob("*.py")):
-        if path.name == "__init__.py":
+        if path.name == "__init__.py" or path.name.endswith(".step.py"):
             continue
         name = path.stem
         # Check for matching .md config
