@@ -8,7 +8,8 @@ def run(context):
         ["python", "pipeline/heuristics.py"],
         capture_output=True, text=True,
     )
+    summary = result.stderr.strip().split("\n")[-1] if result.stderr.strip() else "Heuristics complete"
     return {
         "ok": result.returncode == 0,
-        "output": result.stdout[:2000],
+        "output": summary,
     }

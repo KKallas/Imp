@@ -697,37 +697,31 @@ function highlightPython(src) {
 }
 
 function formatStepOutput(text) {
-  // Wrap output in a markdown code block and render via marked.js
+  // Render output as markdown via marked.js
   const trimmed = text.trim();
   if (!trimmed) return '<pre>(no output)</pre>';
 
-  // Detect JSON — wrap in ```json block
-  if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && (trimmed.endsWith('}') || trimmed.endsWith(']'))) {
-    try {
-      const obj = JSON.parse(trimmed);
-      const pretty = JSON.stringify(obj, null, 2);
-      const MAX = 5000;
-      let display = pretty.length > MAX ? pretty.substring(0, MAX) + '\n... (truncated)' : pretty;
-      display = display.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-      return marked.parse('```json\n' + display + '\n```');
-    } catch (e) {}
-  }
+  // Try JSON — pretty-print and render as ```json
+  try {
+    const obj = JSON.parse(trimmed);
+    let pretty = JSON.stringify(obj, null, 2);
+    // Truncate huge output
+    if (pretty.length > 5000) pretty = pretty.substring(0, 5000) + '\n... (truncated)';
+    return marked.parse('```json\n' + pretty + '\n```');
+  } catch (e) {}
 
-  // Detect tab-separated (gh issue list) — render as table
+  // Tab-separated → markdown table
   const lines = trimmed.split('\n');
   if (lines.length > 1 && lines.every(l => l.includes('\t'))) {
     const rows = lines.map(l => l.split('\t'));
     let md = '| ' + rows[0].map(c => c.trim()).join(' | ') + ' |\n';
     md += '| ' + rows[0].map(() => '---').join(' | ') + ' |\n';
-    rows.slice(1).forEach(cols => {
-      md += '| ' + cols.map(c => c.trim()).join(' | ') + ' |\n';
-    });
+    rows.slice(1).forEach(cols => { md += '| ' + cols.map(c => c.trim()).join(' | ') + ' |\n'; });
     return marked.parse(md);
   }
 
-  // Plain text — unescape unicode (\uXXXX) then render as markdown
-  const unescaped = trimmed.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-  return marked.parse('```\n' + unescaped + '\n```');
+  // Plain text
+  return marked.parse('```\n' + trimmed + '\n```');
 }
 
 function _getOpenDetails(container) {
@@ -779,10 +773,7 @@ async function loadWorkflows() {
           // Show output from last run if available
           let outputHtml = '';
           if (s.result) {
-            const out = s.result.output || s.result.error || '';
-            if (out) {
-              outputHtml = `<div class="wf-step-output"><strong>Output:</strong>${formatStepOutput(out)}</div>`;
-            }
+            outputHtml = `<div class="wf-step-output"><strong>Result:</strong>${formatStepOutput(JSON.stringify(s.result, null, 2))}</div>`;
           }
           return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
             <summary>${sIcon} ${s.description || s.name}${dur}</summary>
