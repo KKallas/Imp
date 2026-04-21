@@ -42,8 +42,21 @@ import renderers as _renderers
 
 DEFAULT_PORT = int(os.environ.get("RENDER_PORT", "8421"))
 
-app = FastAPI(title="Imp Render Server", docs_url=None, redoc_url=None)
+from contextlib import asynccontextmanager as _acm
+
+@_acm
+async def _lifespan(app):
+    # Startup: resume interrupted workflows
+    try:
+        import workflows
+        await workflows.resume_paused_async()
+    except Exception as exc:
+        print(f"[render] workflow resume failed: {exc}", file=sys.stderr)
+    yield
+
+app = FastAPI(title="Imp Render Server", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"])
+
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -170,9 +183,13 @@ _CHAT_HTML = _ROOT / "chat.html"
 
 @app.get("/")
 async def serve_chat_ui():
-    """Serve the single-file chat UI."""
+    """Serve the single-file chat UI (no caching)."""
     if _CHAT_HTML.exists():
-        return FileResponse(_CHAT_HTML, media_type="text/html")
+        return FileResponse(
+            _CHAT_HTML,
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     return Response("chat.html not found", status_code=404)
 
 
@@ -249,6 +266,14 @@ async def resolve_queue_item(item_id: str, request: Request):
     item = queue.resolve(item_id, data.get("action", "done"))
     if item is None:
         return Response("not found", status_code=404)
+    # Resume workflow if this item belongs to one
+    tool = item.get("tool", "")
+    if tool.startswith("workflow:"):
+        import workflows
+        wf_name = tool.split(":", 1)[1]
+        runner = workflows.get_runner(wf_name)
+        if runner and runner.status == "paused":
+            runner.resume()
     return item
 
 
@@ -256,6 +281,85 @@ async def resolve_queue_item(item_id: str, request: Request):
 async def delete_queue_item(item_id: str):
     from server import work_queue as queue
     return {"deleted": queue.remove(item_id)}
+
+
+# ── workflow API ────────────────────────────────────────────────────
+
+@app.get("/api/workflows")
+async def list_workflows():
+    import workflows
+    discovered = workflows.discover()
+    result = []
+    runners = workflows.list_runners()
+    for name, path in sorted(discovered.items()):
+        readme = workflows.get_readme(name)
+        first_line = readme.strip().split("\n")[0].lstrip("# ").strip() if readme else name
+        steps = workflows.get_steps(name)
+        runner_state = runners.get(name, {"status": "idle"})
+        last_run = workflows.WorkflowRunner.load_last_run(name)
+        ran_at = runner_state.get("ran_at") or (last_run.get("ran_at") if last_run else None)
+        result.append({
+            "name": name,
+            "description": first_line,
+            "step_count": len(steps),
+            "status": runner_state.get("status", "idle") if name in runners else (last_run.get("status", "idle") if last_run else "idle"),
+            "current_step": runner_state.get("current_step", 0),
+            "ran_at": ran_at,
+        })
+    return result
+
+
+@app.post("/api/workflows/{name}/start")
+async def start_workflow(name: str):
+    import workflows
+    runner = workflows.start(name)
+    if runner is None:
+        return Response(f"workflow {name!r} not found", status_code=404)
+    return runner.to_dict()
+
+
+@app.get("/api/workflows/{name}")
+async def workflow_status(name: str):
+    import workflows
+    readme = workflows.get_readme(name)
+    runner = workflows.get_runner(name)
+    if runner is not None:
+        d = runner.to_dict()
+        d["readme"] = readme
+        return d
+    # No active runner — return steps + last run log if available
+    last_run = workflows.WorkflowRunner.load_last_run(name)
+    steps = workflows.get_steps(name)
+    if last_run:
+        for i, s in enumerate(steps):
+            lr_steps = last_run.get("steps", [])
+            if i < len(lr_steps) and lr_steps[i].get("result"):
+                r = lr_steps[i]["result"]
+                s["result"] = r
+                if r.get("pause"):
+                    s["status"] = "done"  # pause steps completed (were resolved)
+                elif r.get("ok") is False:
+                    s["status"] = "error"
+                else:
+                    s["status"] = "done"
+            else:
+                s["status"] = "pending"
+        return {
+            "name": name, "status": last_run.get("status", "idle"),
+            "steps": steps, "ran_at": last_run.get("ran_at"), "readme": readme,
+        }
+    return {"name": name, "status": "idle", "steps": steps, "readme": readme}
+
+
+@app.post("/api/workflows/{name}/abort")
+async def abort_workflow(name: str):
+    import workflows
+    runner = workflows.get_runner(name)
+    if runner is None:
+        return Response("not running", status_code=404)
+    runner.abort()
+    return runner.to_dict()
+
 
 
 # ── subprocess helper ───────────────────────────────────────────────

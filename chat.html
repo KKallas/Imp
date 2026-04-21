@@ -139,6 +139,62 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 #queue-popup-actions .action-secondary { background:var(--border); color:var(--fg); }
 #queue-popup-actions .action-close { background:#da3633; color:#fff; }
 
+/* --- workflows --- */
+#workflows-tab { flex:1; overflow-y:auto; padding:16px 24px; }
+.wf-item { border:1px solid var(--border); border-radius:8px;
+  margin-bottom:10px; background:var(--agent-bg); }
+.wf-item > summary { padding:12px 16px; cursor:pointer; list-style:none;
+  display:flex; align-items:center; gap:12px; }
+.wf-item > summary::-webkit-details-marker { display:none; }
+.wf-item > summary::before { content:"▶ "; font-size:10px; color:var(--muted); }
+.wf-item[open] > summary::before { content:"▼ "; }
+.wf-item-name { font-size:14px; font-weight:600; flex:1; }
+.wf-item-meta { font-size:12px; color:var(--muted); }
+.wf-item-status { font-size:12px; font-weight:600; }
+.wf-item-status.idle { color:var(--muted); }
+.wf-item-status.running { color:var(--accent); }
+.wf-item-status.paused { color:#f0883e; }
+.wf-item-status.done { color:#3fb950; }
+.wf-item-status.error { color:#da3633; }
+.wf-start { padding:4px 12px; background:var(--accent); color:#fff; border:none;
+  border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; }
+.wf-start:disabled { opacity:0.4; cursor:not-allowed; }
+.wf-body { padding:0 16px 12px; }
+.wf-readme { font-size:13px; color:var(--muted); border-bottom:1px solid var(--border);
+  padding-bottom:10px; margin-bottom:10px; line-height:1.5; }
+.wf-readme h1,.wf-readme h2,.wf-readme h3 { font-size:13px; color:var(--fg); margin:4px 0; }
+.wf-readme p { margin:4px 0; }
+.wf-readme ol,.wf-readme ul { margin:4px 0; padding-left:20px; }
+.wf-steps { font-size:12px; }
+.wf-step-item { border:1px solid var(--border); border-radius:6px;
+  margin-bottom:6px; background:#0d1117; }
+.wf-step-item > summary { padding:6px 10px; cursor:pointer; list-style:none;
+  font-size:12px; color:var(--muted); }
+.wf-step-item > summary::-webkit-details-marker { display:none; }
+.wf-step-item > summary::before { content:"▶ "; font-size:9px; }
+.wf-step-item[open] > summary::before { content:"▼ "; }
+.wf-step-item.done > summary { color:#3fb950; }
+.wf-step-item.running > summary { color:var(--accent); }
+.wf-step-item.paused > summary { color:#f0883e; }
+.wf-step-code { margin:0; padding:8px 10px; border-top:1px solid var(--border);
+  font-size:11px; line-height:1.5; overflow-x:auto; white-space:pre;
+  font-family:"SF Mono",Consolas,monospace; color:var(--fg); counter-reset:line; }
+.wf-step-code .line { display:block; }
+.wf-step-code .line::before { counter-increment:line; content:counter(line);
+  display:inline-block; width:2.5em; text-align:right; margin-right:1em;
+  color:var(--muted); opacity:0.4; font-size:10px; }
+.wf-step-output { padding:6px 10px; border-top:1px solid var(--border); font-size:11px; }
+.wf-step-output strong { color:var(--muted); font-size:10px; text-transform:uppercase; }
+.wf-step-output pre { margin:4px 0 0; white-space:pre-wrap; color:var(--fg); max-height:300px; overflow:auto; }
+.wf-step-output table { width:100%; border-collapse:collapse; font-size:11px; margin:4px 0 0; }
+.wf-step-output th, .wf-step-output td { border:1px solid var(--border); padding:3px 8px; text-align:left; }
+.wf-step-output th { background:#161b22; font-weight:600; }
+.wf-step-output td:first-child { white-space:nowrap; }
+.wf-step-code .kw { color:#ff7b72; }
+.wf-step-code .str { color:#a5d6ff; }
+.wf-step-code .fn { color:#d2a8ff; }
+.wf-step-code .cm { color:#8b949e; font-style:italic; }
+
 /* --- responsive --- */
 @media(max-width:700px) {
   #sidebar { display:none; }
@@ -150,6 +206,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 <div id="tab-bar">
   <button class="tab active" onclick="switchTab('queue')">Queue</button>
   <button class="tab" onclick="switchTab('chat')">Chat</button>
+  <button class="tab" onclick="switchTab('workflows')">Workflows</button>
   <div id="version" style="margin-left:auto;"></div>
   <script>
     fetch(location.origin + '/api/version').then(r => r.json()).then(d => {
@@ -174,6 +231,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
   <!-- Queue tab (default) -->
   <div id="queue-tab" class="tab-content">
     <div id="queue-list"></div>
+  </div>
+
+  <!-- Workflows tab -->
+  <div id="workflows-tab" class="tab-content" style="display:none;">
+    <div id="workflows-list"></div>
   </div>
 
   <!-- Chat tab -->
@@ -321,28 +383,33 @@ function connectWs() {
         renderAgentBody();
         break;
 
-      case 'tool_start':
+      case 'tool_start': {
         ensureAgentMsg();
-        pendingTools[msg.name] = msg.args || {};
-        // Insert a placeholder in the text stream
-        agentText += `\n\n<details class="tool-block running"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
+        const toolSeq = (pendingTools._seq = (pendingTools._seq || 0) + 1);
+        const tag = `tool-${toolSeq}`;
+        if (!pendingTools[msg.name]) pendingTools[msg.name] = [];
+        const desc = (msg.args || {}).description || msg.name;
+        pendingTools[msg.name].push({args: msg.args || {}, tag, desc});
+        agentText += `\n\n<details class="tool-block running ${tag}"><summary>⏳ ${desc}...</summary><pre>Running...</pre></details>\n\n`;
         renderAgentBody();
         break;
+      }
 
       case 'tool_done': {
         ensureAgentMsg();
         const icon = msg.status === 'ok' ? '✅' : '❌';
         const dur = msg.duration ? ` · ${msg.duration.toFixed(1)}s` : '';
-        const args = pendingTools[msg.name] || {};
-        delete pendingTools[msg.name];
-        // Replace the placeholder with the final block
-        const placeholder = `⏳ ${msg.name}(${formatArgs(args)})...`;
-        const final = `${icon} ${msg.name}(${formatArgs(args)})${dur}`;
-        const outputText = (msg.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        agentText = agentText.replace(
-          `<details class="tool-block running"><summary>${placeholder}</summary><pre>Running...</pre></details>`,
-          `<details class="tool-block ${msg.status}"><summary>${final}</summary><pre>${outputText || '(no output)'}</pre></details>`
-        );
+        const queue = pendingTools[msg.name] || [];
+        const entry = queue.shift();
+        if (!queue.length) delete pendingTools[msg.name];
+        const desc = entry ? entry.desc : msg.name;
+        const tag = entry ? entry.tag : '';
+        const formattedOutput = msg.output ? formatStepOutput(msg.output) : '<pre>(no output)</pre>';
+        if (tag) {
+          const oldBlock = `<details class="tool-block running ${tag}"><summary>⏳ ${desc}...</summary><pre>Running...</pre></details>`;
+          const newBlock = `<details class="tool-block ${msg.status} ${tag}"><summary>${icon} ${desc}${dur}</summary><div class="wf-step-output">${formattedOutput}</div></details>`;
+          agentText = agentText.replace(oldBlock, newBlock);
+        }
         renderAgentBody();
         break;
       }
@@ -530,9 +597,10 @@ function switchTab(tab) {
   document.querySelector(`.tab[onclick*="${tab}"]`).classList.add('active');
   document.getElementById('queue-tab').style.display = tab === 'queue' ? '' : 'none';
   document.getElementById('chat-tab').style.display = tab === 'chat' ? '' : 'none';
-  // Hide sidebar for queue, show for chat
+  document.getElementById('workflows-tab').style.display = tab === 'workflows' ? '' : 'none';
   document.getElementById('sidebar').style.display = tab === 'chat' ? '' : 'none';
   if (tab === 'queue') loadQueue();
+  if (tab === 'workflows') loadWorkflows();
 }
 
 // --- queue ---
@@ -613,6 +681,165 @@ async function resolveItem(itemId, action) {
     closePopup();
     loadQueue();
   } catch (e) { console.error('resolveItem failed:', e); }
+}
+
+// --- workflows ---
+function highlightPython(src) {
+  // Escape HTML first, then highlight with placeholders to avoid interference
+  return src.split('\n').map(line => {
+    let h = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Replace tokens with numbered placeholders, collect spans
+    const spans = [];
+    function ph(s) { spans.push(s); return `\x00${spans.length-1}\x00`; }
+    // Comments first (so # inside strings isn't caught — good enough for display)
+    h = h.replace(/(#.*)$/, (_, c) => ph(`<span class="cm">${c}</span>`));
+    // Triple-quoted strings
+    h = h.replace(/((&quot;){3}.*?(&quot;){3}|'{3}.*?'{3})/g, (m) => ph(`<span class="str">${m}</span>`));
+    // Regular strings
+    h = h.replace(/(&quot;[^&]*?&quot;|"[^"]*?"|'[^']*?')/g, (m) => ph(`<span class="str">${m}</span>`));
+    // Keywords
+    h = h.replace(/\b(def|return|import|from|if|else|elif|for|in|while|try|except|with|as|class|and|or|not|True|False|None|async|await)\b/g,
+      (m) => ph(`<span class="kw">${m}</span>`));
+    // Restore placeholders
+    h = h.replace(/\x00(\d+)\x00/g, (_, i) => spans[parseInt(i)]);
+    return `<span class="line">${h}</span>`;
+  }).join('');
+}
+
+function formatStepOutput(text) {
+  // Render output as markdown via marked.js
+  const trimmed = text.trim();
+  if (!trimmed) return '<pre>(no output)</pre>';
+
+  // Try JSON — pretty-print and render as ```json
+  try {
+    const obj = JSON.parse(trimmed);
+    let pretty = JSON.stringify(obj, null, 2);
+    // Truncate huge output
+    if (pretty.length > 5000) pretty = pretty.substring(0, 5000) + '\n... (truncated)';
+    return marked.parse('```json\n' + pretty + '\n```');
+  } catch (e) {}
+
+  // Tab-separated → markdown table
+  const lines = trimmed.split('\n');
+  if (lines.length > 1 && lines.every(l => l.includes('\t'))) {
+    const rows = lines.map(l => l.split('\t'));
+    let md = '| ' + rows[0].map(c => c.trim()).join(' | ') + ' |\n';
+    md += '| ' + rows[0].map(() => '---').join(' | ') + ' |\n';
+    rows.slice(1).forEach(cols => { md += '| ' + cols.map(c => c.trim()).join(' | ') + ' |\n'; });
+    return marked.parse(md);
+  }
+
+  // Plain text
+  return marked.parse('```\n' + trimmed + '\n```');
+}
+
+function _getOpenDetails(container) {
+  // Save which <details> are open before re-render
+  const open = new Set();
+  container.querySelectorAll('details[open]').forEach(d => {
+    const id = d.dataset.id || d.querySelector('summary')?.textContent?.trim();
+    if (id) open.add(id);
+  });
+  return open;
+}
+
+function _restoreOpenDetails(container, open) {
+  container.querySelectorAll('details').forEach(d => {
+    const id = d.dataset.id || d.querySelector('summary')?.textContent?.trim();
+    if (id && open.has(id)) d.open = true;
+  });
+}
+
+async function loadWorkflows() {
+  try {
+    const res = await fetch(`${API}/api/workflows`);
+    const workflows = await res.json();
+    const el = document.getElementById('workflows-list');
+    if (!workflows.length) {
+      el.innerHTML = '<div class="queue-empty">No workflows found.<br>Add step scripts to workflows/&lt;name&gt;/</div>';
+      return;
+    }
+
+    // Save open state before re-render
+    const openState = _getOpenDetails(el);
+
+    let html = '';
+    for (const wf of workflows) {
+      const statusClass = wf.status || 'idle';
+      const statusIcons = {idle:'⚪', running:'🔄', paused:'⏸', done:'✅', error:'❌'};
+      const icon = statusIcons[wf.status] || '⚪';
+      const canStart = wf.status === 'idle' || wf.status === 'done' || wf.status === 'error';
+
+      let stepsHtml = '';
+      let readmeHtml = '';
+      try {
+        const sres = await fetch(`${API}/api/workflows/${wf.name}`);
+        const sdata = await sres.json();
+        if (sdata.readme) readmeHtml = marked.parse(sdata.readme);
+        const steps = sdata.steps || [];
+        stepsHtml = steps.map(s => {
+          const sIcon = {done:'✅', running:'🔄', paused:'⏸', pending:'⏳', error:'❌'}[s.status] || '⏳';
+          const dur = s.result?.duration_s ? ` · ${s.result.duration_s}s` : '';
+          const code = s.source ? `<pre class="wf-step-code">${highlightPython(s.source)}</pre>` : '';
+          // Show output from last run if available
+          let outputHtml = '';
+          if (s.result) {
+            const ok = (s.result.ok === false) ? '❌' : '✅';
+            const dur = s.result.duration_s ? ` · ${s.result.duration_s}s` : '';
+            const content = s.result.output || s.result.error || '';
+            const tb = s.result.traceback || '';
+            let bodyHtml = '';
+            if (content) bodyHtml += formatStepOutput(content);
+            if (tb) bodyHtml += '<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Traceback</summary>' + formatStepOutput(tb) + '</details>';
+            outputHtml = `<div class="wf-step-output"><strong>${ok} ${s.result.ok !== false ? 'OK' : 'Error'}${dur}</strong>${bodyHtml}</div>`;
+          }
+          return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
+            <summary>${sIcon} ${s.description || s.name}${dur}</summary>
+            ${outputHtml}
+            ${code}
+          </details>`;
+        }).join('');
+      } catch (e) {}
+
+      const ranAt = wf.ran_at ? `Last run: ${new Date(wf.ran_at).toLocaleString()}` : '';
+      html += `<details class="wf-item" data-id="wf-${wf.name}" ${wf.status !== 'idle' ? 'open' : ''}>
+        <summary>
+          <span class="wf-item-name">${wf.name}</span>
+          <span class="wf-item-meta">${wf.step_count} steps</span>
+          <span class="wf-item-status ${statusClass}">${icon} ${wf.status}</span>
+          <button class="wf-start" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation();startWorkflow('${wf.name}')">Start</button>
+        </summary>
+        <div class="wf-body">
+          <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}</div>
+          ${readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : ''}
+          <div class="wf-steps">${stepsHtml}</div>
+        </div>
+      </details>`;
+    }
+    el.innerHTML = html;
+
+    // Restore open state after re-render
+    _restoreOpenDetails(el, openState);
+  } catch (e) { console.error('loadWorkflows failed:', e); }
+}
+
+async function startWorkflow(name) {
+  try {
+    await fetch(`${API}/api/workflows/${name}/start`, {method:'POST'});
+    // Small delay so the runner has time to initialize before we poll
+    await new Promise(r => setTimeout(r, 200));
+    loadWorkflows();
+    const poll = setInterval(async () => {
+      if (activeTab !== 'workflows') { clearInterval(poll); return; }
+      await loadWorkflows();
+      try {
+        const res = await fetch(`${API}/api/workflows/${name}`);
+        const data = await res.json();
+        if (data.status === 'done' || data.status === 'error' || data.status === 'idle') clearInterval(poll);
+      } catch(e) { clearInterval(poll); }
+    }, 2000);
+  } catch (e) { console.error('startWorkflow failed:', e); }
 }
 
 // --- init ---
