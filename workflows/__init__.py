@@ -118,15 +118,14 @@ class WorkflowRunner:
             self.current = i
             self.status = "running"
 
-            try:
-                result = await self._run_step(step_meta)
-            except Exception as exc:
+            result = await self._run_step(step_meta)
+            self.results.append(result)
+
+            # Stop workflow on step failure
+            if not result.get("ok", True) and not result.get("pause"):
                 self.status = "error"
-                self.results.append({"ok": False, "error": str(exc)})
                 self._save_log()
                 return
-
-            self.results.append(result)
 
             # Handle pause
             if result.get("pause"):
@@ -160,10 +159,18 @@ class WorkflowRunner:
         }
 
         t0 = time.monotonic()
-        if asyncio.iscoroutinefunction(run_fn):
-            result = await run_fn(context)
-        else:
-            result = run_fn(context)
+        try:
+            if asyncio.iscoroutinefunction(run_fn):
+                result = await run_fn(context)
+            else:
+                result = run_fn(context)
+        except Exception as exc:
+            import traceback
+            result = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            }
         duration = time.monotonic() - t0
 
         if not isinstance(result, dict):
