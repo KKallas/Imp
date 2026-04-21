@@ -10,9 +10,11 @@ def run(context):
         capture_output=True, text=True,
     )
     summary = "sync failed"
+    issues = []
     try:
         data = json.loads(result.stdout)
-        count = data.get("issue_count", len(data.get("issues", [])))
+        issues = data.get("issues", [])
+        count = data.get("issue_count", len(issues))
         repo = data.get("repo", "")
         summary = f"Synced {count} issues from {repo}"
     except (json.JSONDecodeError, TypeError):
@@ -21,4 +23,5 @@ def run(context):
     return {
         "ok": result.returncode == 0,
         "output": summary,
+        "issues": issues,
     }

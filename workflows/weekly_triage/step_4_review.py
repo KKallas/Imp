@@ -3,9 +3,13 @@
 
 def run(context):
     chart = ""
+    chart_path = ""
     prev = context.get("previous_results", [])
-    if prev and prev[-1].get("output"):
-        chart = f'<p>Chart at: <code>{prev[-1]["output"]}</code></p>'
+    if prev and len(prev) >= 3:
+        step3_result = prev[2]
+        if step3_result.get("output"):
+            chart_path = step3_result["output"]
+            chart = f'<p>Chart at: <code>{chart_path}</code></p>'
 
     return {
         "pause": True,
@@ -22,4 +26,7 @@ def run(context):
             {"label": "Approve & Post", "action": "approve"},
             {"label": "Skip Posting", "action": "skip"},
         ],
+        "ok": True,
+        "output": chart_path if chart_path else "Burndown chart ready for review",
+        "approved": None,
     }

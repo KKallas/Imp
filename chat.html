@@ -140,7 +140,23 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 #queue-popup-actions .action-close { background:#da3633; color:#fff; }
 
 /* --- workflows --- */
-#workflows-tab { flex:1; overflow-y:auto; padding:16px 24px; }
+#workflows-tab { flex:1; overflow:hidden; }
+#wf-split { display:flex; height:100%; position:relative; }
+#wf-editor { flex:1; overflow-y:auto; padding:16px 24px; border-right:1px solid var(--border); }
+#wf-tools { width:280px; overflow-y:auto; padding:12px 16px; flex-shrink:0; }
+@media(max-width:800px) { #wf-split { flex-direction:column; } #wf-tools { width:100%; border-right:none; border-top:1px solid var(--border); } }
+.tool-group { margin-bottom:12px; }
+.tool-group-header { font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase;
+  letter-spacing:0.03em; padding:4px 0; margin-bottom:4px; }
+.tool-item { padding:6px 8px; border-radius:4px; cursor:pointer; font-size:12px;
+  color:var(--fg); margin-bottom:2px; }
+.tool-item:hover { background:var(--border); }
+.tool-item .tool-name { font-weight:600; }
+.tool-item .tool-desc { color:var(--muted); font-size:11px; margin-top:1px; }
+.tool-add { width:20px; height:20px; border-radius:4px; border:1px solid var(--border);
+  background:none; color:var(--accent); cursor:pointer; font-size:14px; line-height:1;
+  display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.tool-add:hover { background:var(--accent); color:#fff; }
 .wf-item { border:1px solid var(--border); border-radius:8px;
   margin-bottom:10px; background:var(--agent-bg); }
 .wf-item > summary { padding:12px 16px; cursor:pointer; list-style:none;
@@ -159,12 +175,22 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .wf-start { padding:4px 12px; background:var(--accent); color:#fff; border:none;
   border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; }
 .wf-start:disabled { opacity:0.4; cursor:not-allowed; }
+.wf-btn { padding:3px 8px; background:none; border:1px solid var(--border); color:var(--muted);
+  border-radius:4px; cursor:pointer; font-size:11px; }
+.wf-btn:hover { color:var(--fg); border-color:var(--fg); }
+.wf-spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent);
+  border-radius:50%; animation:spin 0.8s linear infinite; display:inline-block; }
+@keyframes spin { to { transform:rotate(360deg); } }
 .wf-body { padding:0 16px 12px; }
 .wf-readme { font-size:13px; color:var(--muted); border-bottom:1px solid var(--border);
   padding-bottom:10px; margin-bottom:10px; line-height:1.5; }
 .wf-readme h1,.wf-readme h2,.wf-readme h3 { font-size:13px; color:var(--fg); margin:4px 0; }
 .wf-readme p { margin:4px 0; }
 .wf-readme ol,.wf-readme ul { margin:4px 0; padding-left:20px; }
+.wf-readme-edit { width:100%; min-height:100px; background:var(--input-bg); color:var(--fg);
+  border:1px solid var(--border); border-radius:6px; padding:8px 10px; font-size:12px;
+  font-family:"SF Mono",Consolas,monospace; resize:vertical; outline:none; }
+.wf-readme-edit:focus { border-color:var(--accent); }
 .wf-steps { font-size:12px; }
 .wf-step-item { border:1px solid var(--border); border-radius:6px;
   margin-bottom:6px; background:#0d1117; }
@@ -235,7 +261,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 
   <!-- Workflows tab -->
   <div id="workflows-tab" class="tab-content" style="display:none;">
-    <div id="workflows-list"></div>
+    <div id="wf-split">
+      <div id="wf-editor"><div id="workflows-list"></div></div>
+      <div id="wf-tools" style="display:none;"><div id="tools-list"></div></div>
+    </div>
   </div>
 
   <!-- Chat tab -->
@@ -754,7 +783,10 @@ function _restoreOpenDetails(container, open) {
 async function loadWorkflows() {
   try {
     const res = await fetch(`${API}/api/workflows`);
-    const workflows = await res.json();
+    const data = await res.json();
+    const workflows = data.workflows || [];
+    const toolsList = data.tools || [];
+    renderToolBrowser(toolsList);
     const el = document.getElementById('workflows-list');
     if (!workflows.length) {
       el.innerHTML = '<div class="queue-empty">No workflows found.<br>Add step scripts to workflows/&lt;name&gt;/</div>';
@@ -773,9 +805,11 @@ async function loadWorkflows() {
 
       let stepsHtml = '';
       let readmeHtml = '';
+      let rawReadme = '';
       try {
         const sres = await fetch(`${API}/api/workflows/${wf.name}`);
         const sdata = await sres.json();
+        rawReadme = sdata.readme || '';
         if (sdata.readme) readmeHtml = marked.parse(sdata.readme);
         const steps = sdata.steps || [];
         stepsHtml = steps.map(s => {
@@ -795,7 +829,7 @@ async function loadWorkflows() {
             outputHtml = `<div class="wf-step-output"><strong>${ok} ${s.result.ok !== false ? 'OK' : 'Error'}${dur}</strong>${bodyHtml}</div>`;
           }
           return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
-            <summary>${sIcon} ${s.description || s.name}${dur}</summary>
+            <summary style="display:flex;align-items:center;gap:4px;">${editingWorkflow === wf.name ? '<button class="tool-add" style="font-size:10px;" onclick="event.stopPropagation();moveStep(\''+wf.name+'\',\''+s.name+'\',\'up\')">▲</button><button class="tool-add" style="font-size:10px;" onclick="event.stopPropagation();moveStep(\''+wf.name+'\',\''+s.name+'\',\'down\')">▼</button><button class="tool-add" style="background:#da3633;color:#fff;border-color:#da3633;" onclick="event.stopPropagation();removeStep(\''+wf.name+'\',\''+s.name+'\')">−</button>' : ''}${sIcon} ${s.description || s.name}${dur}</summary>
             ${outputHtml}
             ${code}
           </details>`;
@@ -809,10 +843,16 @@ async function loadWorkflows() {
           <span class="wf-item-meta">${wf.step_count} steps</span>
           <span class="wf-item-status ${statusClass}">${icon} ${wf.status}</span>
           <button class="wf-start" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation();startWorkflow('${wf.name}')">Start</button>
+          <button class="wf-btn" onclick="event.stopPropagation();toggleEditWorkflow('${wf.name}')">${editingWorkflow === wf.name ? 'Done' : 'Edit'}</button>
+          <button class="wf-btn" onclick="event.stopPropagation();cloneWorkflow('${wf.name}')">Clone</button>
+          <button class="wf-btn" onclick="event.stopPropagation();renameWorkflow('${wf.name}')">Rename</button>
+          <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteWorkflow('${wf.name}')">Delete</button>
         </summary>
         <div class="wf-body">
           <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}</div>
-          ${readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : ''}
+          ${editingWorkflow === wf.name
+            ? '<div class="wf-readme"><textarea class="wf-readme-edit" data-wf="'+wf.name+'" onblur="saveReadme(this)">'+rawReadme.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea></div>'
+            : (readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : '')}
           <div class="wf-steps">${stepsHtml}</div>
         </div>
       </details>`;
@@ -826,23 +866,184 @@ async function loadWorkflows() {
 
 async function startWorkflow(name) {
   try {
+    // Instant feedback: gray out button, spinner, reset all steps to pending
+    const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
+    if (wfEl) {
+      wfEl.setAttribute('open', '');
+      const btn = wfEl.querySelector('.wf-start');
+      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+      const statusEl = wfEl.querySelector('.wf-item-status');
+      if (statusEl) statusEl.innerHTML = '<div class="wf-spinner" style="width:14px;height:14px;"></div> running';
+      // Clear old step results, times, and reset icons to pending
+      wfEl.querySelectorAll('.wf-step-output').forEach(el => el.remove());
+      wfEl.querySelectorAll('.wf-step-item').forEach(el => {
+        el.className = 'wf-step-item pending';
+        el.querySelector('summary').innerHTML = el.querySelector('summary').innerHTML.replace(/[✅❌🔄⏸⏳]/g, '⏳').replace(/ · [\d.]+s/g, '');
+      });
+      const meta = wfEl.querySelector('.wf-body > .wf-item-meta');
+      if (meta) meta.querySelectorAll('em').forEach(el => el.remove());
+    }
+
     await fetch(`${API}/api/workflows/${name}/start`, {method:'POST'});
-    // Small delay so the runner has time to initialize before we poll
-    await new Promise(r => setTimeout(r, 200));
-    loadWorkflows();
+
+    // Poll for step-by-step updates
     const poll = setInterval(async () => {
       if (activeTab !== 'workflows') { clearInterval(poll); return; }
       await loadWorkflows();
       try {
         const res = await fetch(`${API}/api/workflows/${name}`);
         const data = await res.json();
-        if (data.status === 'done' || data.status === 'error' || data.status === 'idle') clearInterval(poll);
+        if (data.status === 'done' || data.status === 'error' || data.status === 'idle' || data.status === 'paused')
+          clearInterval(poll);
       } catch(e) { clearInterval(poll); }
-    }, 2000);
+    }, 800);
   } catch (e) { console.error('startWorkflow failed:', e); }
 }
 
 // --- init ---
+// --- tool browser + workflow editing ---
+let _allTools = [];
+let editingWorkflow = null;
+
+function renderToolBrowser(tools) {
+  _allTools = tools;
+  const el = document.getElementById('tools-list');
+  let html = '<input id="tool-search" type="text" placeholder="Search tools..." oninput="filterTools()" style="width:100%;padding:6px 10px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:10px;outline:none;">';
+  html += '<div id="tools-filtered"></div>';
+  el.innerHTML = html;
+  filterTools();
+}
+
+function filterTools() {
+  const q = (document.getElementById('tool-search')?.value || '').toLowerCase();
+  const filtered = q ? _allTools.filter(t => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q) || t.group.toLowerCase().includes(q)) : _allTools;
+  const el = document.getElementById('tools-filtered');
+  if (!filtered.length) { el.innerHTML = '<div class="queue-empty" style="padding:16px 0;">No matches</div>'; return; }
+  const groups = {};
+  filtered.forEach(t => { if (!groups[t.group]) groups[t.group] = []; groups[t.group].push(t); });
+  let html = '';
+  for (const [group, items] of Object.entries(groups)) {
+    html += `<div class="tool-group"><div class="tool-group-header">${group}/</div>`;
+    items.forEach(t => {
+      html += `<div class="tool-item" onclick="showToolDetail('${t.group}','${t.name}')">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="tool-add" onclick="event.stopPropagation();addToolToWorkflow('${t.group}','${t.name}')">+</button>
+          <div class="tool-name">${t.name}</div>
+        </div>
+        <div class="tool-desc">${t.description}</div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function showToolDetail(group, name) {
+  document.getElementById('queue-popup-title').textContent = `${group}/${name}`;
+  document.getElementById('queue-popup-body').innerHTML = '<em>Loading...</em>';
+  document.getElementById('queue-popup-actions').innerHTML = '';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.className = 'action-close';
+  closeBtn.onclick = closePopup;
+  document.getElementById('queue-popup-actions').appendChild(closeBtn);
+  document.getElementById('queue-popup').style.display = '';
+  fetch(`${API}/api/tool-source?group=${group}&name=${name}`)
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('queue-popup-body').innerHTML = d.docstring ? marked.parse(d.docstring) : `<pre>${(d.source||'').replace(/</g,'&lt;')}</pre>`;
+    })
+    .catch(() => { document.getElementById('queue-popup-body').innerHTML = '<em>Could not load</em>'; });
+}
+
+function toggleEditWorkflow(name) {
+  if (editingWorkflow === name) {
+    editingWorkflow = null;
+    document.getElementById('wf-tools').style.display = 'none';
+    loadWorkflows().then(() => configureWorkflow(name));
+    return;
+  } else {
+    editingWorkflow = name;
+    document.getElementById('wf-tools').style.display = '';
+  }
+  loadWorkflows();
+}
+
+function addToolToWorkflow(group, name) {
+  if (!editingWorkflow) { alert('Click Edit on a workflow first'); return; }
+  fetch(`${API}/api/workflows/${editingWorkflow}/add-step`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tool_group: group, tool_name: name}),
+  }).then(() => loadWorkflows()).catch(e => alert('Add failed: ' + e));
+}
+
+function cloneWorkflow(name) {
+  const newName = prompt(`Clone "${name}" as:`, name + '_copy');
+  if (!newName || !newName.trim()) return;
+  fetch(`${API}/api/workflows/${name}/clone`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({new_name: newName.trim()}),
+  }).then(() => loadWorkflows()).catch(e => alert('Clone failed: ' + e));
+}
+
+function renameWorkflow(name) {
+  const newName = prompt(`Rename "${name}" to:`, name);
+  if (!newName || !newName.trim() || newName.trim() === name) return;
+  fetch(`${API}/api/workflows/${name}/rename`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({new_name: newName.trim()}),
+  }).then(() => { if (editingWorkflow === name) editingWorkflow = newName.trim(); loadWorkflows(); })
+    .catch(e => alert('Rename failed: ' + e));
+}
+
+function deleteWorkflow(name) {
+  if (!confirm(`Delete workflow "${name}" and all its steps?`)) return;
+  fetch(`${API}/api/workflows/${name}/delete`, {method: 'POST'})
+    .then(() => { if (editingWorkflow === name) { editingWorkflow = null; document.getElementById('wf-tools').style.display = 'none'; } loadWorkflows(); })
+    .catch(e => alert('Delete failed: ' + e));
+}
+
+function moveStep(wfName, stepName, direction) {
+  fetch(`${API}/api/workflows/${wfName}/move-step`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({step_name: stepName, direction}),
+  }).then(() => loadWorkflows()).catch(e => alert('Move failed: ' + e));
+}
+
+function removeStep(wfName, stepName) {
+  if (!confirm(`Remove step "${stepName}" from ${wfName}?`)) return;
+  fetch(`${API}/api/workflows/${wfName}/remove-step`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({step_name: stepName}),
+  }).then(() => loadWorkflows()).catch(e => alert('Remove failed: ' + e));
+}
+
+function configureWorkflow(name) {
+  // Show spinner on just this workflow's item, don't block others
+  const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
+  if (wfEl) {
+    const body = wfEl.querySelector('.wf-body');
+    if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:16px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is configuring steps...</span></div>';
+  }
+
+  fetch(`${API}/api/workflows/${name}/configure`, {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) alert('Configuration failed: ' + data.error);
+      loadWorkflows();
+    })
+    .catch(e => { console.error('Configure failed:', e); loadWorkflows(); });
+}
+
+function saveReadme(el) {
+  const wfName = el.dataset.wf;
+  const content = el.value;
+  fetch(`${API}/api/workflows/${wfName}/save-readme`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({content}),
+  }).catch(e => console.error('Save readme failed:', e));
+}
+
 connectWs();
 loadChats();
 loadQueue();

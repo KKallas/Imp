@@ -25,9 +25,7 @@ def discover() -> dict[str, Path]:
     for subdir in sorted(_WORKFLOWS_DIR.iterdir()):
         if not subdir.is_dir() or subdir.name.startswith(("_", ".")):
             continue
-        steps = sorted(subdir.glob("step_*.py"))
-        if steps:
-            found[subdir.name] = subdir
+        found[subdir.name] = subdir
     return found
 
 
