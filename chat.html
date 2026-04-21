@@ -378,24 +378,35 @@ function connectWs() {
         renderAgentBody();
         break;
 
-      case 'tool_start':
+      case 'tool_start': {
         ensureAgentMsg();
-        pendingTools[msg.id] = {name: msg.name, args: msg.args || {}};
-        agentText += `\n\n<details class="tool-block running" data-tool-id="${msg.id}"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
+        // Use a counter so each placeholder is unique even for the same tool
+        const toolSeq = (pendingTools._seq = (pendingTools._seq || 0) + 1);
+        const tag = `tool-${toolSeq}`;
+        // Queue per tool name (FIFO)
+        if (!pendingTools[msg.name]) pendingTools[msg.name] = [];
+        pendingTools[msg.name].push({args: msg.args || {}, tag});
+        agentText += `\n\n<details class="tool-block running ${tag}"><summary>⏳ ${msg.name}(${formatArgs(msg.args)})...</summary><pre>Running...</pre></details>\n\n`;
         renderAgentBody();
         break;
+      }
 
       case 'tool_done': {
         ensureAgentMsg();
         const icon = msg.status === 'ok' ? '✅' : '❌';
         const dur = msg.duration ? ` · ${msg.duration.toFixed(1)}s` : '';
-        const info = pendingTools[msg.id] || {name: msg.name, args: {}};
-        delete pendingTools[msg.id];
+        // Pop the first pending entry for this tool name (FIFO)
+        const queue = pendingTools[msg.name] || [];
+        const entry = queue.shift();
+        if (!queue.length) delete pendingTools[msg.name];
+        const args = entry ? entry.args : {};
+        const tag = entry ? entry.tag : '';
         const formattedOutput = msg.output ? formatStepOutput(msg.output) : '<pre>(no output)</pre>';
-        // Replace by data-tool-id attribute (unique per call)
-        const oldBlock = `<details class="tool-block running" data-tool-id="${msg.id}"><summary>⏳ ${info.name}(${formatArgs(info.args)})...</summary><pre>Running...</pre></details>`;
-        const newBlock = `<details class="tool-block ${msg.status}" data-tool-id="${msg.id}"><summary>${icon} ${info.name}(${formatArgs(info.args)})${dur}</summary><div class="wf-step-output">${formattedOutput}</div></details>`;
-        agentText = agentText.replace(oldBlock, newBlock);
+        if (tag) {
+          const oldBlock = `<details class="tool-block running ${tag}"><summary>⏳ ${msg.name}(${formatArgs(args)})...</summary><pre>Running...</pre></details>`;
+          const newBlock = `<details class="tool-block ${msg.status} ${tag}"><summary>${icon} ${msg.name}(${formatArgs(args)})${dur}</summary><div class="wf-step-output">${formattedOutput}</div></details>`;
+          agentText = agentText.replace(oldBlock, newBlock);
+        }
         renderAgentBody();
         break;
       }

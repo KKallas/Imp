@@ -56,7 +56,6 @@ class WebSocketTurnUI(TurnUI):
         })
         await self._send({
             "type": "tool_start",
-            "id": index,
             "name": item.name,
             "args": item.args,
         })
@@ -72,7 +71,6 @@ class WebSocketTurnUI(TurnUI):
         })
         await self._send({
             "type": "tool_done",
-            "id": index,
             "name": item.name,
             "status": item.status,
             "duration": item.duration_s,

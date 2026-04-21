@@ -231,6 +231,8 @@ async def dispatch(
 
                         # Register new tool calls in the tracker
                         if msg_tools and tracker is not None:
+                            for block in msg_tools:
+                                print(f"[TRACE] ToolUseBlock id={block.id} name={_clean_tool_name(block.name)} already_pending={block.id in _pending_tool_ids}", file=sys.stderr)
                             new_items = tracker.register_batch(msg_tools)
                             if not has_plan:
                                 await ui.show_plan(tracker.plan_items)
@@ -238,17 +240,18 @@ async def dispatch(
                             else:
                                 await ui.append_plan(new_items)
                             for block in msg_tools:
-                                if block.id not in _pending_tool_ids:
-                                    _pending_tool_ids[block.id] = (
-                                        _clean_tool_name(block.name),
-                                        time.monotonic(),
-                                    )
-                                    await tracker.on_start(
-                                        _clean_tool_name(block.name)
-                                    )
+                                _pending_tool_ids[block.id] = (
+                                    _clean_tool_name(block.name),
+                                    time.monotonic(),
+                                )
+                                print(f"[TRACE] on_start id={block.id} name={_clean_tool_name(block.name)} pending_count={len(_pending_tool_ids)}", file=sys.stderr)
+                                await tracker.on_start(
+                                    _clean_tool_name(block.name)
+                                )
 
                         # Match tool results to their calls (same message)
                         for result_block in msg_results:
+                            print(f"[TRACE] ToolResultBlock(AssistantMsg) tool_use_id={result_block.tool_use_id} found={result_block.tool_use_id in _pending_tool_ids}", file=sys.stderr)
                             entry = _pending_tool_ids.pop(
                                 result_block.tool_use_id, None
                             )
@@ -261,6 +264,7 @@ async def dispatch(
                                 elif isinstance(result_block.content, list):
                                     output = str(result_block.content)
                                 ok = not result_block.is_error
+                                print(f"[TRACE] on_done(AssistantMsg) name={tool_name} ok={ok}", file=sys.stderr)
                                 await tracker.on_done(
                                     tool_name, ok, duration, output[:4000]
                                 )
@@ -271,9 +275,9 @@ async def dispatch(
                                 await ui.stream_token(b.text)
 
                     elif isinstance(message, UserMessage):
-                        # Tool results arrive inside UserMessage
                         for block in message.content:
                             if isinstance(block, ToolResultBlock):
+                                print(f"[TRACE] ToolResultBlock(UserMsg) tool_use_id={block.tool_use_id} found={block.tool_use_id in _pending_tool_ids}", file=sys.stderr)
                                 entry = _pending_tool_ids.pop(
                                     block.tool_use_id, None
                                 )
@@ -286,6 +290,7 @@ async def dispatch(
                                     elif isinstance(block.content, list):
                                         output = str(block.content)
                                     ok = not block.is_error
+                                    print(f"[TRACE] on_done(UserMsg) name={tool_name} ok={ok}", file=sys.stderr)
                                     await tracker.on_done(
                                         tool_name, ok, duration, output[:4000]
                                     )
