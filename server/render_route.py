@@ -306,7 +306,24 @@ async def list_workflows():
             "current_step": runner_state.get("current_step", 0),
             "ran_at": ran_at,
         })
-    return result
+
+    import tools as _tools
+    tool_list = []
+    for tname in sorted(_tools.discover()):
+        for exe in _tools.list_executables(tname):
+            desc = ""
+            try:
+                src = open(exe["script"]).read()
+                for line in src.splitlines():
+                    l = line.strip()
+                    if l.startswith('"""') or l.startswith("'''"):
+                        desc = l.strip('"').strip("'").strip()
+                        break
+            except Exception:
+                pass
+            tool_list.append({"group": tname, "name": exe["name"], "description": desc or exe["name"], "script": exe["script"]})
+
+    return {"workflows": result, "tools": tool_list}
 
 
 @app.post("/api/workflows/{name}/start")
@@ -359,6 +376,145 @@ async def abort_workflow(name: str):
         return Response("not running", status_code=404)
     runner.abort()
     return runner.to_dict()
+
+
+@app.post("/api/workflows/{name}/clone")
+async def clone_workflow(name: str, request: Request):
+    import shutil
+    data = await request.json()
+    new_name = data.get("new_name", "").strip()
+    if not new_name:
+        return Response("new_name required", status_code=400)
+    src = _ROOT / "workflows" / name
+    dst = _ROOT / "workflows" / new_name
+    if not src.is_dir():
+        return Response("not found", status_code=404)
+    if dst.exists():
+        return Response("already exists", status_code=409)
+    shutil.copytree(src, dst)
+    lr = dst / "last_run.json"
+    if lr.exists():
+        lr.unlink()
+    return {"cloned": new_name}
+
+
+@app.post("/api/workflows/{name}/rename")
+async def rename_workflow(name: str, request: Request):
+    data = await request.json()
+    new_name = data.get("new_name", "").strip()
+    if not new_name:
+        return Response("new_name required", status_code=400)
+    src = _ROOT / "workflows" / name
+    dst = _ROOT / "workflows" / new_name
+    if not src.is_dir():
+        return Response("not found", status_code=404)
+    if dst.exists():
+        return Response("already exists", status_code=409)
+    src.rename(dst)
+    return {"renamed": new_name}
+
+
+@app.post("/api/workflows/{name}/add-step")
+async def add_step(name: str, request: Request):
+    import re
+    data = await request.json()
+    tool_group = data.get("tool_group", "")
+    tool_name = data.get("tool_name", "")
+    wf_dir = _ROOT / "workflows" / name
+    if not wf_dir.is_dir():
+        wf_dir.mkdir(parents=True)
+    existing = sorted(wf_dir.glob("step_*.py"))
+    next_num = len(existing) + 1
+    step_file = wf_dir / f"step_{next_num}_{tool_name}.py"
+    tool_desc = tool_name
+    tool_script = f"tools/{tool_group}/{tool_name}.py"
+    import tools as _tools
+    for exe in _tools.list_executables(tool_group):
+        if exe["name"] == tool_name:
+            try:
+                src = open(exe["script"]).read()
+                m = re.match(r'^(?:#!/.*\n)?(?:#.*\n)*\s*(?:"""(.*?)"""|\'\'\'(.*?)\'\'\')', src, re.DOTALL)
+                if m:
+                    tool_desc = (m.group(1) or m.group(2)).strip().split('\n')[0]
+            except Exception:
+                pass
+            tool_script = exe["script"]
+            break
+    code = f'"""{tool_desc}"""\n\nimport subprocess\n\n\ndef run(context):\n    result = subprocess.run(\n        ["python", "{tool_script}"],\n        capture_output=True, text=True,\n    )\n    return {{\n        "ok": result.returncode == 0,\n        "output": result.stdout[:2000] or result.stderr[:2000],\n    }}\n'
+    step_file.write_text(code)
+    return {"added": step_file.name}
+
+
+@app.post("/api/workflows/{name}/remove-step")
+async def remove_step(name: str, request: Request):
+    data = await request.json()
+    step_name = data.get("step_name", "").strip()
+    wf_dir = _ROOT / "workflows" / name
+    step_file = wf_dir / f"{step_name}.py"
+    if step_file.exists():
+        step_file.unlink()
+        _renumber_steps(wf_dir)
+        return {"removed": step_name}
+    return Response("step not found", status_code=404)
+
+
+@app.post("/api/workflows/{name}/move-step")
+async def move_step(name: str, request: Request):
+    data = await request.json()
+    step_name = data.get("step_name", "")
+    direction = data.get("direction", "")
+    wf_dir = _ROOT / "workflows" / name
+    steps = sorted(wf_dir.glob("step_*.py"))
+    names = [s.stem for s in steps]
+    if step_name not in names:
+        return Response("step not found", status_code=404)
+    idx = names.index(step_name)
+    if direction == "up" and idx > 0:
+        steps[idx].rename(wf_dir / "tmp_swap.py")
+        steps[idx - 1].rename(steps[idx])
+        (wf_dir / "tmp_swap.py").rename(steps[idx - 1])
+    elif direction == "down" and idx < len(steps) - 1:
+        steps[idx].rename(wf_dir / "tmp_swap.py")
+        steps[idx + 1].rename(steps[idx])
+        (wf_dir / "tmp_swap.py").rename(steps[idx + 1])
+    _renumber_steps(wf_dir)
+    return {"moved": step_name, "direction": direction}
+
+
+@app.post("/api/workflows/{name}/save-readme")
+async def save_readme(name: str, request: Request):
+    data = await request.json()
+    content = data.get("content", "")
+    readme = _ROOT / "workflows" / name / "README.md"
+    readme.write_text(content)
+    return {"saved": True}
+
+
+@app.get("/api/tool-source")
+async def tool_source(group: str, name: str):
+    import re
+    import tools as _tools
+    for exe in _tools.list_executables(group):
+        if exe["name"] == name:
+            try:
+                src = open(exe["script"]).read()
+                m = re.match(r'^(?:#!/.*\n)?(?:#.*\n)*\s*(?:"""(.*?)"""|\'\'\'(.*?)\'\'\')', src, re.DOTALL)
+                docstring = (m.group(1) or m.group(2)).strip() if m else ""
+                return {"source": src, "docstring": docstring}
+            except Exception:
+                return {"source": "", "docstring": ""}
+    return {"source": "", "docstring": ""}
+
+
+def _renumber_steps(wf_dir: Path) -> None:
+    import re
+    steps = sorted(wf_dir.glob("step_*.py"))
+    for i, step in enumerate(steps):
+        m = re.match(r"step_\d+_(.*)", step.stem)
+        suffix = m.group(1) if m else step.stem
+        new_name = f"step_{i+1}_{suffix}.py"
+        if step.name != new_name:
+            step.rename(wf_dir / new_name)
 
 
 
