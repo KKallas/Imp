@@ -773,7 +773,14 @@ async function loadWorkflows() {
           // Show output from last run if available
           let outputHtml = '';
           if (s.result) {
-            outputHtml = `<div class="wf-step-output"><strong>Result:</strong>${formatStepOutput(JSON.stringify(s.result, null, 2))}</div>`;
+            const ok = s.result.ok ? '✅' : '❌';
+            const dur = s.result.duration_s ? ` · ${s.result.duration_s}s` : '';
+            const content = s.result.output || s.result.error || '';
+            const tb = s.result.traceback || '';
+            let bodyHtml = '';
+            if (content) bodyHtml += formatStepOutput(content);
+            if (tb) bodyHtml += '<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Traceback</summary>' + formatStepOutput(tb) + '</details>';
+            outputHtml = `<div class="wf-step-output"><strong>${ok} ${s.result.ok !== false ? 'OK' : 'Error'}${dur}</strong>${bodyHtml}</div>`;
           }
           return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
             <summary>${sIcon} ${s.description || s.name}${dur}</summary>
