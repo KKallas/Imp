@@ -237,17 +237,17 @@ async def dispatch(
                                 has_plan = True
                             else:
                                 await ui.append_plan(new_items)
-                            # Track start times
                             for block in msg_tools:
-                                _pending_tool_ids[block.id] = (
-                                    _clean_tool_name(block.name),
-                                    time.monotonic(),
-                                )
-                                await tracker.on_start(
-                                    _clean_tool_name(block.name)
-                                )
+                                if block.id not in _pending_tool_ids:
+                                    _pending_tool_ids[block.id] = (
+                                        _clean_tool_name(block.name),
+                                        time.monotonic(),
+                                    )
+                                    await tracker.on_start(
+                                        _clean_tool_name(block.name)
+                                    )
 
-                        # Match tool results to their calls
+                        # Match tool results to their calls (same message)
                         for result_block in msg_results:
                             entry = _pending_tool_ids.pop(
                                 result_block.tool_use_id, None
