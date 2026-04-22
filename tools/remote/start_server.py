@@ -1,29 +1,18 @@
 #!/usr/bin/env python3
-"""Start the Imp render server on port 8421.
+"""Check the Imp server is running and return its URL.
 
 Inputs:
-  --port (int, optional): Port to run on (default: 8421).
+  --port (int, optional): Port to check (default: 8421).
 
-Process: Checks if the server is already running. If not, spawns it as a
-background process. Waits for the health endpoint to respond.
+Process: Checks the health endpoint. If responding, returns the server URL.
+If not, reports the error.
 
-Output: Prints the server URL or reports that it's already running."""
+Output: Prints the server URL or error details."""
 
 import argparse
 import socket
-import subprocess
 import sys
-import time
 import urllib.request
-
-
-def is_running(port):
-    """Check if the server is already responding."""
-    try:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
-        return True
-    except Exception:
-        return False
 
 
 def get_lan_ip():
@@ -38,69 +27,27 @@ def get_lan_ip():
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Start the Imp server")
+    parser = argparse.ArgumentParser(description="Check the Imp server")
     parser.add_argument("--port", type=int, default=8421)
     args = parser.parse_args()
 
-    if is_running(args.port):
-        ip = get_lan_ip()
-        print(f"Server already running at http://{ip}:{args.port}")
+    ip = get_lan_ip()
+    url = f"http://{ip}:{args.port}"
+
+    try:
+        resp = urllib.request.urlopen(f"http://127.0.0.1:{args.port}/health", timeout=3)
+        print(f"Server running at {url}")
+        print(f"Sync download: {url}/imp-sync.py")
         return 0
-
-    # Check if port is in use by something else
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(("127.0.0.1", args.port))
-        s.close()
-        print(f"Port {args.port} is in use but not responding to /health")
-        print("Another process may be using this port. Check with: lsof -i :{args.port}")
+    except urllib.error.URLError as e:
+        print(f"Server not responding on port {args.port}")
+        print(f"Error: {e.reason}")
+        print(f"Start with: python -m server.render_route --port {args.port}")
         return 1
-    except (ConnectionRefusedError, OSError):
-        pass  # port is free
-
-    print(f"Starting server on port {args.port}...")
-    log_file = f"/tmp/imp-server-{args.port}.log"
-    log_fh = open(log_file, "w")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "server.render_route", "--port", str(args.port)],
-        stdout=log_fh,
-        stderr=log_fh,
-        start_new_session=True,
-    )
-
-    # Wait for it to come up
-    for i in range(10):
-        time.sleep(1)
-        # Check if process died
-        if proc.poll() is not None:
-            log_fh.close()
-            try:
-                log_content = open(log_file).read().strip()
-            except Exception:
-                log_content = ""
-            print(f"Server process exited with code {proc.returncode}")
-            if log_content:
-                print(f"Log output:\n{log_content[-1000:]}")
-            return 1
-        if is_running(args.port):
-            log_fh.close()
-            ip = get_lan_ip()
-            print(f"Server started at http://{ip}:{args.port}")
-            print(f"Log: {log_file}")
-            return 0
-
-    log_fh.close()
-    try:
-        log_content = open(log_file).read().strip()
-    except Exception:
-        log_content = ""
-    print(f"Server failed to respond within 10 seconds (PID {proc.pid})")
-    if log_content:
-        print(f"Log output:\n{log_content[-1000:]}")
-    else:
-        print(f"No log output. Check: {log_file}")
-    return 1
+    except Exception as e:
+        print(f"Server not responding on port {args.port}")
+        print(f"Error: {e}")
+        return 1
 
 
 if __name__ == "__main__":
