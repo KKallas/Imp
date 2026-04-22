@@ -47,23 +47,59 @@ def main() -> int:
         print(f"Server already running at http://{ip}:{args.port}")
         return 0
 
+    # Check if port is in use by something else
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(("127.0.0.1", args.port))
+        s.close()
+        print(f"Port {args.port} is in use but not responding to /health")
+        print("Another process may be using this port. Check with: lsof -i :{args.port}")
+        return 1
+    except (ConnectionRefusedError, OSError):
+        pass  # port is free
+
     print(f"Starting server on port {args.port}...")
-    subprocess.Popen(
+    log_file = f"/tmp/imp-server-{args.port}.log"
+    log_fh = open(log_file, "w")
+    proc = subprocess.Popen(
         [sys.executable, "-m", "server.render_route", "--port", str(args.port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=log_fh,
         start_new_session=True,
     )
 
     # Wait for it to come up
-    for _ in range(10):
+    for i in range(10):
         time.sleep(1)
+        # Check if process died
+        if proc.poll() is not None:
+            log_fh.close()
+            try:
+                log_content = open(log_file).read().strip()
+            except Exception:
+                log_content = ""
+            print(f"Server process exited with code {proc.returncode}")
+            if log_content:
+                print(f"Log output:\n{log_content[-1000:]}")
+            return 1
         if is_running(args.port):
+            log_fh.close()
             ip = get_lan_ip()
             print(f"Server started at http://{ip}:{args.port}")
+            print(f"Log: {log_file}")
             return 0
 
-    print("Server failed to start within 10 seconds")
+    log_fh.close()
+    try:
+        log_content = open(log_file).read().strip()
+    except Exception:
+        log_content = ""
+    print(f"Server failed to respond within 10 seconds (PID {proc.pid})")
+    if log_content:
+        print(f"Log output:\n{log_content[-1000:]}")
+    else:
+        print(f"No log output. Check: {log_file}")
     return 1
 
 
