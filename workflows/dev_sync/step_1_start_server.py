@@ -1,6 +1,7 @@
-"""Start developer sync session — pause with download link."""
+"""Start the Imp server and pause with sync download link."""
 
 import socket
+import subprocess
 
 
 def _get_server_url():
@@ -15,6 +16,18 @@ def _get_server_url():
 
 
 def run(context):
+    # Start the server if not running
+    result = subprocess.run(
+        ["python", "tools/remote/start_server.py"],
+        capture_output=True, text=True,
+    )
+
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "output": result.stdout.strip() or result.stderr.strip() or "Server failed to start",
+        }
+
     server_url = _get_server_url()
     download_url = f"{server_url}/imp-sync.py"
 
@@ -41,5 +54,7 @@ def run(context):
             {"label": "Stop sync", "action": "continue"},
         ],
         "ok": True,
-        "output": f"Sync active at {server_url} — download: {download_url}",
+        "output": result.stdout.strip() or f"Server at {server_url}",
+        "server_url": server_url,
+        "download_url": download_url,
     }

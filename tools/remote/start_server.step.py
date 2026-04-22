@@ -22,6 +22,12 @@ def run(context):
         capture_output=True, text=True,
     )
 
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "output": result.stdout.strip() or result.stderr.strip() or "Server failed to start",
+        }
+
     server_url = _get_server_url()
     download_url = f"{server_url}/imp-sync.py"
 
