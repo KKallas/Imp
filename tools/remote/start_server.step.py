@@ -23,9 +23,14 @@ def run(context):
     )
 
     if result.returncode != 0:
+        parts = []
+        if result.stdout.strip():
+            parts.append(result.stdout.strip())
+        if result.stderr.strip():
+            parts.append(result.stderr.strip())
         return {
             "ok": False,
-            "output": result.stdout.strip() or result.stderr.strip() or "Server failed to start",
+            "output": "\n".join(parts) if parts else "Server failed to start",
         }
 
     server_url = _get_server_url()
