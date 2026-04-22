@@ -639,7 +639,8 @@ Return ONLY the Python code. No explanation. No markdown fences."""
 
         except Exception as exc:
             print(f"[configure] {name}/{step['name']}: error: {exc}", file=sys.stderr)
-            return {"error": str(exc), "configured": configured}
+            # Continue to next step instead of aborting
+            continue
 
     return {"configured": configured, "message": f"Updated {configured} of {len(steps)} steps"}
 
