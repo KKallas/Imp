@@ -8,7 +8,6 @@ Remote access tools — sync files between the Imp server and developer machines
 |--------|---------|
 | `start_server.py` | Start the Imp server (checks if already running) |
 | `stop_server.py` | Stop the Imp server (SIGTERM, falls back to SIGKILL) |
-| `sync.py` | Print the sync client download URL |
 
 ## Usage
 
