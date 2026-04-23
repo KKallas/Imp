@@ -967,6 +967,43 @@ async def move_tool(request: Request):
     return {"moved": f"{new_group}/{name}"}
 
 
+@app.post("/api/tool-describe-save")
+async def save_tool_docstring(request: Request):
+    """Save a tool's docstring without LLM — just update the text."""
+    import ast as _ast
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    new_docstring = data.get("docstring", "").strip()
+
+    tool_path = _ROOT / "tools" / group / f"{name}.py"
+    if not tool_path.exists():
+        return Response("tool not found", status_code=404)
+
+    source = tool_path.read_text()
+    try:
+        tree = _ast.parse(source)
+        first_node = tree.body[0] if tree.body else None
+        if (first_node
+            and isinstance(first_node, _ast.Expr)
+            and isinstance(first_node.value, (_ast.Constant, _ast.Str))):
+            start_line = first_node.lineno - 1
+            end_line = first_node.end_lineno
+            lines = source.splitlines(keepends=True)
+            new_source = "".join(lines[:start_line]) + f'"""{new_docstring}"""\n' + "".join(lines[end_line:])
+        else:
+            import re
+            header_match = re.match(r'^((?:#!/.*\n)?(?:#.*\n)*)', source)
+            prefix = header_match.group(1) if header_match else ""
+            rest = source[len(prefix):]
+            new_source = prefix + f'"""{new_docstring}"""\n\n' + rest
+    except SyntaxError:
+        new_source = f'"""{new_docstring}"""\n\n' + source
+
+    tool_path.write_text(new_source)
+    return {"saved": True, "docstring": new_docstring}
+
+
 @app.post("/api/tool-describe")
 async def describe_tool(request: Request):
     """LLM generates a description from the tool's source code."""

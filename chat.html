@@ -1403,14 +1403,6 @@ async function saveToolScript(group, name) {
   const newDesc = textarea.value.trim();
   const newGroup = document.getElementById('tool-move-group')?.value || group;
 
-  // Show spinner, hide buttons
-  const det = document.querySelector(`[data-id="tool-${group}-${name}"]`);
-  if (det) {
-    det.querySelectorAll('.wf-btn, .wf-start').forEach(b => b.style.display = 'none');
-    const container = det.querySelector('.wf-step-output');
-    if (container) container.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is updating code...</span></div>';
-  }
-
   try {
     // Move to different group first if changed
     if (newGroup !== group) {
@@ -1422,14 +1414,14 @@ async function saveToolScript(group, name) {
       if (mdata.error) { alert('Move failed: ' + mdata.error); _editingTool = null; loadToolsPanel(); return; }
     }
 
-    // Then edit via LLM
-    const res = await fetch(`${API}/api/tool-edit`, {
+    // Save docstring only — no LLM
+    const res = await fetch(`${API}/api/tool-describe-save`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({group: newGroup, name, new_description: newDesc}),
+      body: JSON.stringify({group: newGroup, name, docstring: newDesc}),
     });
     const data = await res.json();
-    if (data.error) alert('Edit failed: ' + data.error);
-  } catch (e) { alert('Edit failed: ' + e); }
+    if (data.error) alert('Save failed: ' + data.error);
+  } catch (e) { alert('Save failed: ' + e); }
   _editingTool = null;
   loadToolsPanel();
 }
