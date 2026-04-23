@@ -539,10 +539,18 @@ async def tool_source(group: str, name: str):
 
 
 @app.post("/api/workflows/{name}/configure")
-async def configure_workflow(name: str):
+async def configure_workflow(name: str, request: Request):
     """Use Claude to update step Python code based on README + step descriptions."""
     import re
     import workflows
+
+    # Accept optional user prompt
+    user_prompt = ""
+    try:
+        data = await request.json()
+        user_prompt = data.get("user_prompt", "")
+    except Exception:
+        pass
 
     wf_dir = _ROOT / "workflows" / name
     if not wf_dir.is_dir():
@@ -594,7 +602,7 @@ INSTRUCTIONS:
 - Use real values based on the workflow README, not placeholder/generic calls
 - For dates use: from datetime import datetime; datetime.now().strftime(...)
 
-Return ONLY the Python code. No explanation. No markdown fences."""
+Return ONLY the Python code. No explanation. No markdown fences.{chr(10) + chr(10) + "ADDITIONAL USER INSTRUCTIONS:" + chr(10) + user_prompt if user_prompt else ""}"""
 
         print(f"\n[configure] === Step {i+1}: {desc} ===", file=sys.stderr)
         print(f"[configure] Prompt length: {len(prompt)} chars", file=sys.stderr)

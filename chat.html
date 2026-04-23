@@ -856,6 +856,7 @@ async function loadWorkflows() {
           <span class="wf-item-status ${statusClass}">${icon} ${wf.status}</span>
           <button class="wf-start" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation();startWorkflow('${wf.name}')">Start</button>
           <button class="wf-btn" onclick="event.stopPropagation();toggleEditWorkflow('${wf.name}')">${editingWorkflow === wf.name ? 'Done' : 'Edit'}</button>
+          <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();promptConfigureWorkflow('${wf.name}')" title="AI configures steps">P</button>
           <button class="wf-btn" onclick="event.stopPropagation();cloneWorkflow('${wf.name}')">Clone</button>
           <button class="wf-btn" onclick="event.stopPropagation();renameWorkflow('${wf.name}')">Rename</button>
           <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteWorkflow('${wf.name}')">Delete</button>
@@ -1030,7 +1031,29 @@ function removeStep(wfName, stepName) {
   }).then(() => loadWorkflows()).catch(e => alert('Remove failed: ' + e));
 }
 
-function configureWorkflow(name) {
+function promptConfigureWorkflow(name) {
+  const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
+  if (!wfEl) return;
+  wfEl.open = true;
+  const body = wfEl.querySelector('.wf-body');
+  if (body) {
+    body.innerHTML = `<div style="padding:8px 16px 16px;">
+      <textarea class="wf-readme-edit" id="wf-prompt-area" style="min-height:80px;" placeholder="Instructions for AI (leave empty for auto-configure)..."></textarea>
+      <div style="margin-top:6px;display:flex;gap:8px;">
+        <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptWorkflow('${name}')">Run AI</button>
+        <button class="wf-btn" onclick="loadWorkflows()">Cancel</button>
+      </div>
+    </div>`;
+  }
+}
+
+async function submitPromptWorkflow(name) {
+  const textarea = document.getElementById('wf-prompt-area');
+  const userPrompt = textarea ? textarea.value.trim() : '';
+  configureWorkflow(name, userPrompt);
+}
+
+function configureWorkflow(name, userPrompt) {
   // Show spinner on just this workflow's item, don't block others
   const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
   if (wfEl) {
@@ -1038,7 +1061,10 @@ function configureWorkflow(name) {
     if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:16px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is configuring steps...</span></div>';
   }
 
-  fetch(`${API}/api/workflows/${name}/configure`, {method: 'POST'})
+  fetch(`${API}/api/workflows/${name}/configure`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({user_prompt: userPrompt || ''}),
+  })
     .then(r => r.json())
     .then(data => {
       if (data.error) alert('Configuration failed: ' + data.error);
