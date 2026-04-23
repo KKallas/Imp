@@ -1053,24 +1053,56 @@ async function submitPromptWorkflow(name) {
   configureWorkflow(name, userPrompt);
 }
 
-function configureWorkflow(name, userPrompt) {
-  // Show spinner on just this workflow's item, don't block others
+async function configureWorkflow(name, userPrompt) {
   const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
+  let statusEl = null;
   if (wfEl) {
+    wfEl.open = true;
     const body = wfEl.querySelector('.wf-body');
-    if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:16px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is configuring steps...</span></div>';
+    if (body) {
+      body.innerHTML = '<div style="padding:12px 16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div class="wf-spinner"></div><span id="configure-status" style="font-size:12px;color:var(--muted);">Starting AI configuration...</span></div><pre id="configure-log" style="font-size:11px;color:var(--muted);white-space:pre-wrap;max-height:300px;overflow:auto;margin:0;"></pre></div>';
+      statusEl = document.getElementById('configure-status');
+    }
   }
+  const logEl = document.getElementById('configure-log');
 
-  fetch(`${API}/api/workflows/${name}/configure`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({user_prompt: userPrompt || ''}),
-  })
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) alert('Configuration failed: ' + data.error);
-      loadWorkflows();
-    })
-    .catch(e => { console.error('Configure failed:', e); loadWorkflows(); });
+  try {
+    const res = await fetch(`${API}/api/workflows/${name}/configure`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_prompt: userPrompt || ''}),
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const evt = JSON.parse(line);
+          if (evt.type === 'step_start' && statusEl) {
+            statusEl.textContent = `Configuring step ${evt.step}: ${evt.description}...`;
+          } else if (evt.type === 'step_done' && logEl) {
+            logEl.textContent += `✓ Step ${evt.step}: ${evt.description}\n`;
+          } else if (evt.type === 'step_skip' && logEl) {
+            logEl.textContent += `— Step ${evt.step}: skipped (no description)\n`;
+          } else if (evt.type === 'step_error' && logEl) {
+            logEl.textContent += `✕ Step ${evt.step}: ${evt.error}\n`;
+          } else if (evt.type === 'done' && statusEl) {
+            statusEl.textContent = `Done — ${evt.configured} of ${evt.total} steps updated`;
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (e) { console.error('Configure failed:', e); }
+
+  setTimeout(() => loadWorkflows(), 1500);
 }
 
 function saveReadme(el) {

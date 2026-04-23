@@ -540,9 +540,10 @@ async def tool_source(group: str, name: str):
 
 @app.post("/api/workflows/{name}/configure")
 async def configure_workflow(name: str, request: Request):
-    """Use Claude to update step Python code based on README + step descriptions."""
+    """Use Claude to update step Python code — streams progress as JSON lines."""
     import re
     import workflows
+    from starlette.responses import StreamingResponse
 
     # Accept optional user prompt
     user_prompt = ""
@@ -560,21 +561,25 @@ async def configure_workflow(name: str, request: Request):
     steps = workflows.get_steps(name)
 
     if not steps:
-        return {"configured": 0, "message": "No steps to configure"}
+        return Response(json.dumps({"type": "done", "configured": 0, "total": 0}) + "\n",
+                        media_type="application/x-ndjson")
 
-    # Build step summary for context
-    step_summary = "\n".join(f"  Step {i+1}: {s.get('description', s['name'])}" for i, s in enumerate(steps))
+    async def generate():
+        step_summary = "\n".join(f"  Step {i+1}: {s.get('description', s['name'])}" for i, s in enumerate(steps))
+        configured = 0
 
-    configured = 0
-    for i, step in enumerate(steps):
-        src = step.get("source", "")
-        desc = step.get("description", "")
-        if not desc:
-            continue
+        for i, step in enumerate(steps):
+            src = step.get("source", "")
+            desc = step.get("description", "")
+            if not desc:
+                yield json.dumps({"type": "step_skip", "step": i + 1, "description": step["name"]}) + "\n"
+                continue
 
-        prev_steps = "\n".join(f"  Step {j+1}: {s.get('description', s['name'])}" for j, s in enumerate(steps[:i]))
+            yield json.dumps({"type": "step_start", "step": i + 1, "description": desc}) + "\n"
 
-        prompt = f"""Update this workflow step's Python code so it actually does what the workflow needs.
+            prev_steps = "\n".join(f"  Step {j+1}: {s.get('description', s['name'])}" for j, s in enumerate(steps[:i]))
+
+            prompt = f"""Update this workflow step's Python code so it actually does what the workflow needs.
 
 WORKFLOW GOAL (from README):
 {readme}
@@ -604,53 +609,52 @@ INSTRUCTIONS:
 
 Return ONLY the Python code. No explanation. No markdown fences.{chr(10) + chr(10) + "ADDITIONAL USER INSTRUCTIONS:" + chr(10) + user_prompt if user_prompt else ""}"""
 
-        print(f"\n[configure] === Step {i+1}: {desc} ===", file=sys.stderr)
-        print(f"[configure] Prompt length: {len(prompt)} chars", file=sys.stderr)
+            print(f"\n[configure] === Step {i+1}: {desc} ===", file=sys.stderr)
 
-        try:
-            from claude_agent_sdk import ClaudeAgentOptions, query, TextBlock
+            try:
+                from claude_agent_sdk import ClaudeAgentOptions, query, TextBlock
 
-            options = ClaudeAgentOptions(
-                system_prompt="You are a code generator. Return only Python code, nothing else.",
-                max_turns=1,
-            )
+                options = ClaudeAgentOptions(
+                    system_prompt="You are a code generator. Return only Python code, nothing else.",
+                    max_turns=1,
+                )
 
-            chunks = []
-            async for message in query(prompt=prompt, options=options):
-                from claude_agent_sdk import AssistantMessage
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            chunks.append(block.text)
+                chunks = []
+                async for message in query(prompt=prompt, options=options):
+                    from claude_agent_sdk import AssistantMessage
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                chunks.append(block.text)
 
-            new_code = "".join(chunks).strip()
-            print(f"[configure] LLM response ({len(new_code)} chars):", file=sys.stderr)
-            print(new_code[:500], file=sys.stderr)
-            if len(new_code) > 500:
-                print("...(truncated)", file=sys.stderr)
+                new_code = "".join(chunks).strip()
 
-            # Strip markdown fences if Claude added them
-            if new_code.startswith("```python"):
-                new_code = new_code[len("```python"):].strip()
-            if new_code.startswith("```"):
-                new_code = new_code[3:].strip()
-            if new_code.endswith("```"):
-                new_code = new_code[:-3].strip()
+                # Strip markdown fences
+                if new_code.startswith("```python"):
+                    new_code = new_code[len("```python"):].strip()
+                if new_code.startswith("```"):
+                    new_code = new_code[3:].strip()
+                if new_code.endswith("```"):
+                    new_code = new_code[:-3].strip()
 
-            if new_code and "def run" in new_code:
-                step_file = Path(step["file"])
-                step_file.write_text(new_code + "\n")
-                configured += 1
-                print(f"[configure] {name}/{step['name']}: updated", file=sys.stderr)
-            else:
-                print(f"[configure] {name}/{step['name']}: LLM returned invalid code, skipped", file=sys.stderr)
+                if new_code and "def run" in new_code:
+                    step_file = Path(step["file"])
+                    step_file.write_text(new_code + "\n")
+                    configured += 1
+                    print(f"[configure] {name}/{step['name']}: updated", file=sys.stderr)
+                    yield json.dumps({"type": "step_done", "step": i + 1, "description": desc}) + "\n"
+                else:
+                    print(f"[configure] {name}/{step['name']}: LLM returned invalid code", file=sys.stderr)
+                    yield json.dumps({"type": "step_error", "step": i + 1, "error": "LLM returned invalid code"}) + "\n"
 
-        except Exception as exc:
-            print(f"[configure] {name}/{step['name']}: error: {exc}", file=sys.stderr)
-            # Continue to next step instead of aborting
-            continue
+            except Exception as exc:
+                print(f"[configure] {name}/{step['name']}: error: {exc}", file=sys.stderr)
+                yield json.dumps({"type": "step_error", "step": i + 1, "error": str(exc)}) + "\n"
+                continue
 
-    return {"configured": configured, "message": f"Updated {configured} of {len(steps)} steps"}
+        yield json.dumps({"type": "done", "configured": configured, "total": len(steps)}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 # ── tool editing endpoints ─────────────────────────────────────────
