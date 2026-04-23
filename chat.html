@@ -972,7 +972,7 @@ function toggleEditWorkflow(name) {
   if (editingWorkflow === name) {
     editingWorkflow = null;
     document.getElementById('wf-tools').style.display = 'none';
-    loadWorkflows().then(() => configureWorkflow(name));
+    loadWorkflows();
     return;
   } else {
     editingWorkflow = name;
