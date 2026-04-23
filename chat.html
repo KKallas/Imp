@@ -690,6 +690,9 @@ function openPopup(itemId) {
   if (!item) return;
   document.getElementById('queue-popup-title').textContent = item.title;
   document.getElementById('queue-popup-body').innerHTML = item.detail_html || '<em>No details</em>';
+  // Resolve dynamic elements (e.g. sync command with correct host)
+  const syncCmd = document.getElementById('sync-cmd');
+  if (syncCmd) syncCmd.textContent = 'curl -o imp-sync.py ' + location.origin + '/imp-sync.py && python imp-sync.py';
   const actionsEl = document.getElementById('queue-popup-actions');
   actionsEl.innerHTML = '';
   (item.actions || []).forEach((a, i) => {

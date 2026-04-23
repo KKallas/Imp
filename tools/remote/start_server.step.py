@@ -15,11 +15,9 @@ def run(context):
             ' border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">'
             "Download imp-sync.py</a></p>"
             '<p style="font-size:13px;color:#8b949e;">'
-            "Or copy the command below (replace HOST with your server address):<br>"
+            "Or copy this command:<br>"
             '<code id="sync-cmd" style="background:#161b22;padding:4px 8px;border-radius:4px;font-size:12px;">'
-            "loading...</code></p>"
-            '<script>document.getElementById("sync-cmd").textContent='
-            '"curl -o imp-sync.py " + location.origin + "/imp-sync.py && python imp-sync.py";</script>'
+            "curl -o imp-sync.py http://HOST:8421/imp-sync.py && python imp-sync.py</code></p>"
             '<p style="font-size:12px;color:#8b949e;margin-top:12px;">'
             "Syncing: tools/, workflows/, renderers/, public/</p>"
         ),
