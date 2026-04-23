@@ -1,48 +1,31 @@
 """Activate developer sync — pause with download link."""
 
-import socket
-
-
-def _get_server_url():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        ip = "127.0.0.1"
-    return f"http://{ip}:8421"
-
 
 def run(context):
-    # Server is already running — this step is executed by it
-    server_url = _get_server_url()
-    download_url = f"{server_url}/imp-sync.py"
-
+    # URLs use relative paths — the browser resolves them to whatever host it's connected to
     return {
         "pause": True,
         "title": "Developer sync active",
         "detail_html": (
             "<h3>Developer Sync Active</h3>"
             "<p>The sync endpoint is ready. Download the sync script and run it locally:</p>"
-            f'<p style="margin:16px 0;">'
-            f'<a href="{download_url}" download="imp-sync.py"'
-            f' style="display:inline-block;padding:8px 20px;background:#58a6ff;color:#fff;'
-            f' border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">'
-            f"Download imp-sync.py</a></p>"
-            f'<p style="font-size:13px;color:#8b949e;">'
-            f"Or copy this command:<br>"
-            f'<code style="background:#161b22;padding:4px 8px;border-radius:4px;font-size:12px;">'
-            f"curl -o imp-sync.py {download_url} && python imp-sync.py</code></p>"
-            f'<p style="font-size:12px;color:#8b949e;margin-top:12px;">'
-            f"Server: {server_url}<br>"
-            f"Syncing: tools/, workflows/, renderers/, public/</p>"
+            '<p style="margin:16px 0;">'
+            '<a href="/imp-sync.py" download="imp-sync.py"'
+            ' style="display:inline-block;padding:8px 20px;background:#58a6ff;color:#fff;'
+            ' border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">'
+            "Download imp-sync.py</a></p>"
+            '<p style="font-size:13px;color:#8b949e;">'
+            "Or copy the command below (replace HOST with your server address):<br>"
+            '<code id="sync-cmd" style="background:#161b22;padding:4px 8px;border-radius:4px;font-size:12px;">'
+            "loading...</code></p>"
+            '<script>document.getElementById("sync-cmd").textContent='
+            '"curl -o imp-sync.py " + location.origin + "/imp-sync.py && python imp-sync.py";</script>'
+            '<p style="font-size:12px;color:#8b949e;margin-top:12px;">'
+            "Syncing: tools/, workflows/, renderers/, public/</p>"
         ),
         "actions": [
             {"label": "Stop sync", "action": "continue"},
         ],
         "ok": True,
-        "output": f"Sync active at {server_url}",
-        "server_url": server_url,
-        "download_url": download_url,
+        "output": "Sync active — download link in queue popup",
     }
