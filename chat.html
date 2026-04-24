@@ -1118,8 +1118,6 @@ let _toolsCache = [];
 let _editingToolGroup = null;
 let _editingTool = null;  // {group, name}
 let _describingGroup = null;
-let _promptingTool = null;  // {group, name, mode: 'describe'|'edit'}
-let _promptingGroup = null; // group name
 
 async function loadToolsPanel() {
   const el = document.getElementById('tools-list-panel');
@@ -1149,19 +1147,18 @@ async function loadToolsPanel() {
 
       const isEditing = _editingToolGroup === group;
       const isDescribing = _describingGroup === group;
-      const isGroupPrompting = _promptingGroup === group;
       html += `<details class="wf-item" data-id="tg-${group}">
         <summary>
           <span class="wf-item-name">${group}</span>
           <span class="wf-item-meta">${tools.length} tools</span>
-          ${isDescribing || isGroupPrompting
+          ${isDescribing
             ? ``
             : isEditing
             ? `<button class="wf-btn" style="color:#3fb950;border-color:#3fb950;" onclick="event.stopPropagation();saveToolGroupReadme('${group}')">OK</button>
                <button class="wf-btn" onclick="event.stopPropagation();cancelToolGroupEdit()">Cancel</button>`
             : `<button class="wf-btn" onclick="event.stopPropagation();editToolGroup('${group}')">Edit</button>
                <button class="wf-btn" onclick="event.stopPropagation();describeToolGroup('${group}')">Tools→Desc</button>
-               <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();openPromptGroup('${group}')" title="Instruct AI">P</button>
+               <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();openPromptGroup('${group}')" title="AI Chat">P</button>
                <button class="wf-btn" onclick="event.stopPropagation();copyToolGroup('${group}')">Copy</button>
                <button class="wf-btn" onclick="event.stopPropagation();renameToolGroup('${group}')">Rename</button>
                <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteToolGroup('${group}')">Delete</button>`}
@@ -1169,21 +1166,12 @@ async function loadToolsPanel() {
         <div class="wf-body">
           ${isDescribing
             ? '<div class="wf-readme"><div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is generating group description...</span></div></div>'
-            : isGroupPrompting
-            ? `<div class="wf-readme">
-                <textarea class="wf-readme-edit" id="group-prompt-area" style="min-height:80px;" placeholder="Tell the AI what to write for this group description..."></textarea>
-                <div style="margin-top:6px;display:flex;gap:8px;">
-                  <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptGroup('${group}')">Open Chat</button>
-                  <button class="wf-btn" onclick="cancelPromptGroup()">Cancel</button>
-                </div>
-              </div>`
             : isEditing
             ? '<div class="wf-readme"><textarea class="wf-readme-edit" id="tg-readme-edit" style="min-height:150px;">'+rawReadme.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea></div>'
             : (readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : '')}
           <div class="wf-steps">
             ${tools.map(t => {
               const isToolEditing = _editingTool && _editingTool.group === group && _editingTool.name === t.name;
-              const isToolPrompting = _promptingTool && _promptingTool.group === group && _promptingTool.name === t.name;
               return `<details class="wf-step-item" data-id="tool-${group}-${t.name}">
                 <summary style="display:flex;align-items:center;gap:6px;">
                   <span style="flex:1;">${t.name}</span>
@@ -1192,18 +1180,12 @@ async function loadToolsPanel() {
                        <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();cancelToolScriptEdit()">Cancel</button>`
                     : `<button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();editToolScript('${group}','${t.name}')">Edit</button>
                        <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();describeToolScript('${group}','${t.name}')">Code→Desc</button>
-                       <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();event.preventDefault();openPromptTool('${group}','${t.name}','describe')" title="Instruct AI">P</button>
+                       <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();event.preventDefault();openPromptTool('${group}','${t.name}')" title="AI Chat">P</button>
                        <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();copyToolScript('${group}','${t.name}')">Copy</button>
                        <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();event.preventDefault();deleteToolScript('${group}','${t.name}')">Delete</button>`}
                 </summary>
-                <div class="wf-step-output" id="tool-detail-${group}-${t.name}" style="padding:8px 10px;" ${(isToolEditing || isToolPrompting) ? 'data-loaded="1"' : ''}>
-                  ${isToolPrompting
-                    ? `<textarea class="wf-readme-edit" id="tool-prompt-area" style="min-height:80px;" placeholder="Tell the AI what to do with this tool..."></textarea>
-                       <div style="margin-top:6px;display:flex;gap:8px;">
-                         <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptTool('${group}','${t.name}')">Open Chat</button>
-                         <button class="wf-btn" onclick="cancelPromptTool()">Cancel</button>
-                       </div>`
-                    : isToolEditing
+                <div class="wf-step-output" id="tool-detail-${group}-${t.name}" style="padding:8px 10px;" ${isToolEditing ? 'data-loaded="1"' : ''}>
+                  ${isToolEditing
                     ? `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;">
                         <label style="font-size:12px;color:var(--muted);">Group:</label>
                         <select id="tool-move-group" style="padding:3px 8px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;">
@@ -1232,16 +1214,6 @@ async function loadToolsPanel() {
       if (tgEl) tgEl.open = true;
       const tEl = el.querySelector(`[data-id="tool-${_editingTool.group}-${_editingTool.name}"]`);
       if (tEl) tEl.open = true;
-    }
-    if (_promptingTool) {
-      const tgEl = el.querySelector(`[data-id="tg-${_promptingTool.group}"]`);
-      if (tgEl) tgEl.open = true;
-      const tEl = el.querySelector(`[data-id="tool-${_promptingTool.group}-${_promptingTool.name}"]`);
-      if (tEl) tEl.open = true;
-    }
-    if (_promptingGroup) {
-      const tgEl = el.querySelector(`[data-id="tg-${_promptingGroup}"]`);
-      if (tgEl) tgEl.open = true;
     }
 
     // Lazy-load tool detail on toggle
@@ -1272,15 +1244,11 @@ async function loadToolsPanel() {
   } catch (e) { console.error('loadToolsPanel failed:', e); el.innerHTML = '<div style="padding:20px;color:#da3633;">Failed to load tools</div>'; }
 }
 
-function openPromptTool(group, name, mode) {
-  _promptingTool = {group, name, mode};
-  _editingTool = null;
-  loadToolsPanel();
-}
-
-function cancelPromptTool() {
-  _promptingTool = null;
-  loadToolsPanel();
+function openPromptTool(group, name) {
+  if (!confirm(`Open AI chat for ${group}/${name}?`)) return;
+  const files = [`tools/${group}/${name}.py`, `tools/${group}/${name}.step.py`];
+  const instructions = `Edit this tool script and/or its workflow step template based on the user's request. The tool is tools/${group}/${name}.py. After making changes, the files will be updated on disk.`;
+  openChatWithContext(files, instructions, '');
 }
 
 async function openChatWithContext(files, instructions, userPrompt) {
@@ -1302,43 +1270,16 @@ async function openChatWithContext(files, instructions, userPrompt) {
   } catch (e) { alert('Failed to open chat: ' + e); }
 }
 
-async function submitPromptTool(group, name) {
-  const textarea = document.getElementById('tool-prompt-area');
-  if (!textarea) return;
-  const userPrompt = textarea.value.trim();
-  if (!userPrompt) { alert('Please enter instructions for the AI'); return; }
-  _promptingTool = null;
-
-  const files = [`tools/${group}/${name}.py`, `tools/${group}/${name}.step.py`];
-  const instructions = `Edit this tool script and/or its workflow step template based on the user's request. The tool is tools/${group}/${name}.py. After making changes, the files will be updated on disk.`;
-  await openChatWithContext(files, instructions, userPrompt);
-}
 
 function openPromptGroup(group) {
-  _promptingGroup = group;
-  loadToolsPanel();
-}
-
-function cancelPromptGroup() {
-  _promptingGroup = null;
-  loadToolsPanel();
-}
-
-async function submitPromptGroup(group) {
-  const textarea = document.getElementById('group-prompt-area');
-  if (!textarea) return;
-  const userPrompt = textarea.value.trim();
-  if (!userPrompt) { alert('Please enter instructions for the AI'); return; }
-  _promptingGroup = null;
-
-  // Collect all tool files in the group
+  if (!confirm(`Open AI chat for "${group}" group?`)) return;
   const groupTools = _toolsCache.filter(t => t.group === group);
   const files = [`tools/${group}/README.md`];
   for (const t of groupTools) {
     files.push(`tools/${group}/${t.name}.py`);
   }
   const instructions = `Edit tools in the "${group}" group based on the user's request. You can modify the README, edit existing tool scripts, or create new ones. All files are under tools/${group}/.`;
-  await openChatWithContext(files, instructions, userPrompt);
+  openChatWithContext(files, instructions, '');
 }
 
 async function describeToolGroup(group) {
