@@ -242,17 +242,18 @@ async def new_chat_with_context(request: Request):
                 content = full.read_text()
                 loaded_files.append(fpath)
                 escaped = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                lines = len(content.splitlines())
+                code_lines = escaped.split("\n")
+                line_spans = "".join(f'<span class="line">{l}</span>' for l in code_lines)
                 file_blocks.append(
-                    f'<details class="tool-block ok">'
-                    f'<summary>\U0001F4C4 {fpath} ({lines} lines)</summary>'
-                    f'<pre>{escaped}</pre></details>'
+                    f'<details class="imp-fold ok">'
+                    f'<summary>\U0001F4C4 {fpath} ({len(code_lines)} lines)</summary>'
+                    f'<pre class="imp-code">{line_spans}</pre></details>'
                 )
             except Exception:
                 file_blocks.append(
-                    f'<details class="tool-block error">'
+                    f'<details class="imp-fold error">'
                     f'<summary>\u274C {fpath} (could not read)</summary>'
-                    f'<pre></pre></details>'
+                    f'<pre class="imp-code"></pre></details>'
                 )
 
     # Build the context turn

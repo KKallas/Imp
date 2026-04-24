@@ -10,6 +10,31 @@
   --user-bg:#1f6feb22; --agent-bg:#161b22; --input-bg:#0d1117;
   --accent:#58a6ff; --sidebar-w:260px; --status-h:28px; }
 * { box-sizing:border-box; margin:0; padding:0; }
+
+/* --- shared UI components --- */
+.imp-code { margin:0; padding:8px 10px; font-size:11px; line-height:1.5; overflow-x:auto;
+  white-space:pre; font-family:"SF Mono",Consolas,monospace; color:var(--fg); counter-reset:line;
+  background:#0d1117; border-top:1px solid var(--border); }
+.imp-code .line { display:block; }
+.imp-code .line::before { counter-increment:line; content:counter(line);
+  display:inline-block; width:2.5em; text-align:right; margin-right:1em;
+  color:var(--muted); opacity:0.4; font-size:10px; }
+.imp-code .kw { color:#ff7b72; }
+.imp-code .str { color:#a5d6ff; }
+.imp-code .fn { color:#d2a8ff; }
+.imp-code .cm { color:#8b949e; font-style:italic; }
+.imp-fold { margin:4px 0; border:1px solid var(--border); border-radius:6px;
+  background:#161b22; font-size:13px; }
+.imp-fold > summary { padding:6px 10px; cursor:pointer; color:var(--muted);
+  font-size:12px; list-style:none; }
+.imp-fold > summary::-webkit-details-marker { display:none; }
+.imp-fold > summary::before { content:"▶ "; font-size:10px; }
+.imp-fold[open] > summary::before { content:"▼ "; }
+.imp-fold.ok { border-color:#238636; }
+.imp-fold.error { border-color:#da3633; }
+.imp-fold.running { border-color:var(--accent); }
+.imp-fold .imp-fold-body { padding:8px 10px; border-top:1px solid var(--border);
+  font-size:12px; color:var(--muted); line-height:1.5; }
 body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:var(--bg); color:var(--fg); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
 #app-body { flex:1; display:flex; overflow:hidden; }
@@ -315,7 +340,7 @@ marked.setOptions({ breaks: true, gfm: true });
 function renderMd(text) {
   // Preserve <details> blocks from being escaped by marked
   const toolBlocks = [];
-  text = text.replace(/<details class="(?:tool-block|thinking-block)[^"]*">[\s\S]*?<\/details>/g, (match) => {
+  text = text.replace(/<details class="(?:tool-block|thinking-block|imp-fold)[^"]*">[\s\S]*?<\/details>/g, (match) => {
     toolBlocks.push(match);
     return `%%TOOL_BLOCK_${toolBlocks.length - 1}%%`;
   });
@@ -727,7 +752,42 @@ async function resolveItem(itemId, action) {
   } catch (e) { console.error('resolveItem failed:', e); }
 }
 
-// --- workflows ---
+// --- shared UI components ---
+const imp = {
+  /** Syntax-highlighted code block with line numbers. */
+  code(src) {
+    return `<pre class="imp-code">${imp._highlight(src)}</pre>`;
+  },
+  /** Collapsible details block. opts: {cls, open} */
+  fold(title, content, opts) {
+    const cls = opts?.cls ? ` ${opts.cls}` : '';
+    const open = opts?.open ? ' open' : '';
+    return `<details class="imp-fold${cls}"${open}><summary>${title}</summary>${content}</details>`;
+  },
+  /** File block: collapsible with highlighted code inside. */
+  file(path, src, opts) {
+    const lines = src.split('\n').length;
+    const cls = opts?.cls || 'ok';
+    return imp.fold(`📄 ${path} (${lines} lines)`, imp.code(src), {cls});
+  },
+  /** Internal: highlight Python source with spans. */
+  _highlight(src) {
+    return src.split('\n').map(line => {
+      let h = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const spans = [];
+      function ph(s) { spans.push(s); return `\x00${spans.length-1}\x00`; }
+      h = h.replace(/(#.*)$/, (_, c) => ph(`<span class="cm">${c}</span>`));
+      h = h.replace(/((&quot;){3}.*?(&quot;){3}|'{3}.*?'{3})/g, (m) => ph(`<span class="str">${m}</span>`));
+      h = h.replace(/(&quot;[^&]*?&quot;|"[^"]*?"|'[^']*?')/g, (m) => ph(`<span class="str">${m}</span>`));
+      h = h.replace(/\b(def|return|import|from|if|else|elif|for|in|while|try|except|with|as|class|and|or|not|True|False|None|async|await)\b/g,
+        (m) => ph(`<span class="kw">${m}</span>`));
+      h = h.replace(/\x00(\d+)\x00/g, (_, i) => spans[parseInt(i)]);
+      return `<span class="line">${h}</span>`;
+    }).join('');
+  }
+};
+
+// Legacy wrapper — keep until all callers are migrated
 function highlightPython(src) {
   // Escape HTML first, then highlight with placeholders to avoid interference
   return src.split('\n').map(line => {
@@ -830,7 +890,7 @@ async function loadWorkflows() {
         stepsHtml = steps.map(s => {
           const sIcon = {done:'✅', running:'🔄', paused:'⏸', pending:'⏳', error:'❌'}[s.status] || '⏳';
           const dur = s.result?.duration_s ? ` · ${s.result.duration_s}s` : '';
-          const code = s.source ? `<pre class="wf-step-code">${highlightPython(s.source)}</pre>` : '';
+          const code = s.source ? imp.code(s.source) : '';
           // Show output from last run if available
           let outputHtml = '';
           if (s.result) {
@@ -1233,8 +1293,8 @@ async function loadToolsPanel() {
           const data = await res.json();
           let inner = '';
           if (data.docstring) inner += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">${marked.parse(data.docstring)}</div>`;
-          if (data.source) inner += `<details style="margin-bottom:8px;"><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Script</summary><pre class="wf-step-code">${highlightPython(data.source)}</pre></details>`;
-          if (data.step_template) inner += `<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Workflow template</summary><pre class="wf-step-code">${highlightPython(data.step_template)}</pre></details>`;
+          if (data.source) inner += imp.fold('Script', imp.code(data.source));
+          if (data.step_template) inner += imp.fold('Workflow template', imp.code(data.step_template));
           container.innerHTML = inner || '<em style="color:var(--muted);">No source</em>';
         } catch (e) {
           container.innerHTML = `<em style="color:#da3633;">Failed to load</em>`;
