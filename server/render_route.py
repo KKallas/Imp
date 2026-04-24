@@ -232,29 +232,37 @@ async def new_chat_with_context(request: Request):
     instructions = data.get("instructions", "")
     user_prompt = data.get("user_prompt", "")
 
-    # Build file listing
+    # Build file blocks as collapsible HTML (like tool-block in chat UI)
     loaded_files = []
-    file_parts = []
+    file_blocks = []
     for fpath in files:
         full = _ROOT / fpath
         if full.is_file():
             try:
                 content = full.read_text()
                 loaded_files.append(fpath)
-                ext = full.suffix.lstrip(".")
-                lang = {"py": "python", "md": "markdown", "js": "javascript", "html": "html"}.get(ext, "")
-                file_parts.append(f"**{fpath}**\n```{lang}\n{content}```")
+                escaped = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                lines = len(content.splitlines())
+                file_blocks.append(
+                    f'<details class="tool-block ok">'
+                    f'<summary>\U0001F4C4 {fpath} ({lines} lines)</summary>'
+                    f'<pre>{escaped}</pre></details>'
+                )
             except Exception:
-                file_parts.append(f"**{fpath}** *(could not read)*")
+                file_blocks.append(
+                    f'<details class="tool-block error">'
+                    f'<summary>\u274C {fpath} (could not read)</summary>'
+                    f'<pre></pre></details>'
+                )
 
     # Build the context turn
     file_list = ", ".join(f"`{f}`" for f in loaded_files)
-    context_lines = [f"**Files loaded:** {file_list}\n"]
+    context_parts = []
     if instructions:
-        context_lines.append(f"**Instructions:** {instructions}\n")
-    context_lines.append("---\n")
-    context_lines.extend(file_parts)
-    context_msg = "\n\n".join(context_lines)
+        context_parts.append(f"**Instructions:** {instructions}")
+    context_parts.append(f"**{len(loaded_files)} file(s) loaded:**")
+    context_parts.extend(file_blocks)
+    context_msg = "\n\n".join(context_parts)
 
     # Build a ready-to-send prompt
     prompt = instructions
