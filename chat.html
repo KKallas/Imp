@@ -859,7 +859,7 @@ async function loadWorkflows() {
           <span class="wf-item-status ${statusClass}">${icon} ${wf.status}</span>
           <button class="wf-start" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation();startWorkflow('${wf.name}')">Start</button>
           <button class="wf-btn" onclick="event.stopPropagation();toggleEditWorkflow('${wf.name}')">${editingWorkflow === wf.name ? 'Done' : 'Edit'}</button>
-          <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();promptConfigureWorkflow('${wf.name}')" title="AI configures steps">P</button>
+          <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();promptWorkflow('${wf.name}')" title="AI edits workflow">P</button>
           <button class="wf-btn" onclick="event.stopPropagation();cloneWorkflow('${wf.name}')">Clone</button>
           <button class="wf-btn" onclick="event.stopPropagation();renameWorkflow('${wf.name}')">Rename</button>
           <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteWorkflow('${wf.name}')">Delete</button>
@@ -1034,26 +1034,22 @@ function removeStep(wfName, stepName) {
   }).then(() => loadWorkflows()).catch(e => alert('Remove failed: ' + e));
 }
 
-function promptConfigureWorkflow(name) {
-  const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
-  if (!wfEl) return;
-  wfEl.open = true;
-  const body = wfEl.querySelector('.wf-body');
-  if (body) {
-    body.innerHTML = `<div style="padding:8px 16px 16px;">
-      <textarea class="wf-readme-edit" id="wf-prompt-area" style="min-height:80px;" placeholder="Instructions for AI (leave empty for auto-configure)..."></textarea>
-      <div style="margin-top:6px;display:flex;gap:8px;">
-        <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptWorkflow('${name}')">Run AI</button>
-        <button class="wf-btn" onclick="loadWorkflows()">Cancel</button>
-      </div>
-    </div>`;
-  }
-}
+async function promptWorkflow(name) {
+  if (!confirm(`Open AI chat for workflow "${name}"?`)) return;
 
-async function submitPromptWorkflow(name) {
-  const textarea = document.getElementById('wf-prompt-area');
-  const userPrompt = textarea ? textarea.value.trim() : '';
-  configureWorkflow(name, userPrompt);
+  const files = [`workflows/${name}/README.md`];
+  try {
+    const res = await fetch(`${API}/api/workflows/${name}`);
+    const data = await res.json();
+    for (const step of (data.steps || [])) {
+      const stepFile = step.file || `workflows/${name}/${step.name}.py`;
+      const rel = stepFile.includes('/workflows/') ? 'workflows/' + stepFile.split('/workflows/')[1] : stepFile;
+      files.push(rel);
+    }
+  } catch (e) {}
+
+  const instructions = `Edit this workflow based on the user's request. The workflow is in workflows/${name}/. You can modify the README, edit step scripts, add new steps, or remove steps. Each step has a run(context) function that receives previous_results.`;
+  await openChatWithContext(files, instructions, '');
 }
 
 async function configureWorkflow(name, userPrompt) {
@@ -1177,7 +1173,7 @@ async function loadToolsPanel() {
             ? `<div class="wf-readme">
                 <textarea class="wf-readme-edit" id="group-prompt-area" style="min-height:80px;" placeholder="Tell the AI what to write for this group description..."></textarea>
                 <div style="margin-top:6px;display:flex;gap:8px;">
-                  <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptGroup('${group}')">Run AI</button>
+                  <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptGroup('${group}')">Open Chat</button>
                   <button class="wf-btn" onclick="cancelPromptGroup()">Cancel</button>
                 </div>
               </div>`
@@ -1204,7 +1200,7 @@ async function loadToolsPanel() {
                   ${isToolPrompting
                     ? `<textarea class="wf-readme-edit" id="tool-prompt-area" style="min-height:80px;" placeholder="Tell the AI what to do with this tool..."></textarea>
                        <div style="margin-top:6px;display:flex;gap:8px;">
-                         <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptTool('${group}','${t.name}')">Run AI</button>
+                         <button class="wf-start" style="font-size:11px;padding:4px 12px;" onclick="submitPromptTool('${group}','${t.name}')">Open Chat</button>
                          <button class="wf-btn" onclick="cancelPromptTool()">Cancel</button>
                        </div>`
                     : isToolEditing
@@ -1287,41 +1283,35 @@ function cancelPromptTool() {
   loadToolsPanel();
 }
 
+async function openChatWithContext(files, instructions, userPrompt) {
+  try {
+    const res = await fetch(`${API}/api/chat/new-with-context`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({files, instructions, user_prompt: userPrompt}),
+    });
+    const data = await res.json();
+    if (data.id) {
+      currentChatId = data.id;
+      switchTab('chat');
+      await loadChats();
+      // Select the new chat in sidebar
+      document.querySelectorAll('.chat-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.id === data.id);
+      });
+    }
+  } catch (e) { alert('Failed to open chat: ' + e); }
+}
+
 async function submitPromptTool(group, name) {
   const textarea = document.getElementById('tool-prompt-area');
   if (!textarea) return;
   const userPrompt = textarea.value.trim();
   if (!userPrompt) { alert('Please enter instructions for the AI'); return; }
-
-  const mode = _promptingTool?.mode || 'describe';
   _promptingTool = null;
 
-  // Show spinner, hide buttons
-  const det = document.querySelector(`[data-id="tool-${group}-${name}"]`);
-  if (det) {
-    det.querySelectorAll('.wf-btn, .wf-start').forEach(b => b.style.display = 'none');
-    const container = det.querySelector('.wf-step-output');
-    if (container) container.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is working...</span></div>';
-  }
-
-  try {
-    if (mode === 'describe') {
-      const res = await fetch(`${API}/api/tool-describe`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({group, name, user_prompt: userPrompt}),
-      });
-      const data = await res.json();
-      if (data.error) alert('Failed: ' + data.error);
-    } else {
-      const res = await fetch(`${API}/api/tool-edit`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({group, name, new_description: userPrompt, user_prompt: userPrompt}),
-      });
-      const data = await res.json();
-      if (data.error) alert('Failed: ' + data.error);
-    }
-  } catch (e) { alert('Failed: ' + e); }
-  loadToolsPanel();
+  const files = [`tools/${group}/${name}.py`, `tools/${group}/${name}.step.py`];
+  const instructions = `Edit this tool script and/or its workflow step template based on the user's request. The tool is tools/${group}/${name}.py. After making changes, the files will be updated on disk.`;
+  await openChatWithContext(files, instructions, userPrompt);
 }
 
 function openPromptGroup(group) {
@@ -1339,21 +1329,16 @@ async function submitPromptGroup(group) {
   if (!textarea) return;
   const userPrompt = textarea.value.trim();
   if (!userPrompt) { alert('Please enter instructions for the AI'); return; }
-
   _promptingGroup = null;
-  _describingGroup = group;
-  loadToolsPanel();
 
-  try {
-    const res = await fetch(`${API}/api/tool-group-describe`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({group, user_prompt: userPrompt}),
-    });
-    const data = await res.json();
-    if (data.error) alert('Failed: ' + data.error);
-  } catch (e) { alert('Failed: ' + e); }
-  _describingGroup = null;
-  loadToolsPanel();
+  // Collect all tool files in the group
+  const groupTools = _toolsCache.filter(t => t.group === group);
+  const files = [`tools/${group}/README.md`];
+  for (const t of groupTools) {
+    files.push(`tools/${group}/${t.name}.py`);
+  }
+  const instructions = `Edit tools in the "${group}" group based on the user's request. You can modify the README, edit existing tool scripts, or create new ones. All files are under tools/${group}/.`;
+  await openChatWithContext(files, instructions, userPrompt);
 }
 
 async function describeToolGroup(group) {

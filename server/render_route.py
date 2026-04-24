@@ -222,6 +222,45 @@ async def create_chat():
     return {"id": session.id, "title": session.title}
 
 
+@app.post("/api/chat/new-with-context")
+async def new_chat_with_context(request: Request):
+    """Create a new chat session pre-loaded with file contents and instructions."""
+    from server import chat_history
+
+    data = await request.json()
+    files = data.get("files", [])
+    instructions = data.get("instructions", "")
+    user_prompt = data.get("user_prompt", "")
+
+    # Build context message with file contents
+    parts = []
+    if instructions:
+        parts.append(instructions)
+    for fpath in files:
+        full = _ROOT / fpath
+        if full.is_file():
+            try:
+                content = full.read_text()
+                parts.append(f"--- {fpath} ---\n```python\n{content}```")
+            except Exception:
+                parts.append(f"--- {fpath} --- (could not read)")
+
+    context_msg = "\n\n".join(parts)
+
+    # Create session with context as system preamble + user prompt
+    session = chat_history.ChatSession.new()
+    if context_msg:
+        session.append_turn("user", f"[CONTEXT]\n{context_msg}")
+        session.append_turn("assistant", "I have the files loaded. What would you like me to do?")
+    if user_prompt:
+        session.append_turn("user", user_prompt)
+    session.title = user_prompt[:50] if user_prompt else "AI edit session"
+    session.title_source = "agent"
+    chat_history.save_session(session)
+
+    return {"id": session.id, "title": session.title}
+
+
 @app.get("/api/chats/{chat_id}")
 async def get_chat(chat_id: str):
     from server import chat_history
