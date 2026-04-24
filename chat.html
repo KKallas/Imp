@@ -1261,11 +1261,13 @@ async function openChatWithContext(files, instructions, userPrompt) {
     if (data.id) {
       currentChatId = data.id;
       switchTab('chat');
-      await loadChats();
-      // Select the new chat in sidebar
-      document.querySelectorAll('.chat-item').forEach(el => {
-        el.classList.toggle('active', el.dataset.id === data.id);
-      });
+      await loadChat(data.id, true);
+      // Pre-fill input with a ready prompt
+      const input = document.getElementById('input');
+      if (input) {
+        input.value = data.prompt || instructions || '';
+        input.focus();
+      }
     }
   } catch (e) { alert('Failed to open chat: ' + e); }
 }

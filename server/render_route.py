@@ -232,33 +232,47 @@ async def new_chat_with_context(request: Request):
     instructions = data.get("instructions", "")
     user_prompt = data.get("user_prompt", "")
 
-    # Build context message with file contents
-    parts = []
-    if instructions:
-        parts.append(instructions)
+    # Build file listing
+    loaded_files = []
+    file_parts = []
     for fpath in files:
         full = _ROOT / fpath
         if full.is_file():
             try:
                 content = full.read_text()
-                parts.append(f"--- {fpath} ---\n```python\n{content}```")
+                loaded_files.append(fpath)
+                ext = full.suffix.lstrip(".")
+                lang = {"py": "python", "md": "markdown", "js": "javascript", "html": "html"}.get(ext, "")
+                file_parts.append(f"**{fpath}**\n```{lang}\n{content}```")
             except Exception:
-                parts.append(f"--- {fpath} --- (could not read)")
+                file_parts.append(f"**{fpath}** *(could not read)*")
 
-    context_msg = "\n\n".join(parts)
+    # Build the context turn
+    file_list = ", ".join(f"`{f}`" for f in loaded_files)
+    context_lines = [f"**Files loaded:** {file_list}\n"]
+    if instructions:
+        context_lines.append(f"**Instructions:** {instructions}\n")
+    context_lines.append("---\n")
+    context_lines.extend(file_parts)
+    context_msg = "\n\n".join(context_lines)
 
-    # Create session with context as system preamble + user prompt
-    session = chat_history.ChatSession.new()
-    if context_msg:
-        session.append_turn("user", f"[CONTEXT]\n{context_msg}")
-        session.append_turn("assistant", "I have the files loaded. What would you like me to do?")
+    # Build a ready-to-send prompt
+    prompt = instructions
     if user_prompt:
-        session.append_turn("user", user_prompt)
-    session.title = user_prompt[:50] if user_prompt else "AI edit session"
+        prompt = user_prompt
+
+    # Create session
+    session = chat_history.ChatSession.new()
+    session.append_turn("user", context_msg)
+    session.append_turn("assistant",
+        f"I have {len(loaded_files)} file(s) loaded: {file_list}.\n\n"
+        "Type your instructions and I'll edit the files. "
+        "You can see the changes in the Tools or Workflows tab when done.")
+    session.title = f"Edit: {loaded_files[0].split('/')[-1]}" if loaded_files else "AI edit session"
     session.title_source = "agent"
     chat_history.save_session(session)
 
-    return {"id": session.id, "title": session.title}
+    return {"id": session.id, "title": session.title, "prompt": prompt}
 
 
 @app.get("/api/chats/{chat_id}")
