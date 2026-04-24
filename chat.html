@@ -380,6 +380,7 @@ function addMessage(role, content) {
   el.className = `msg ${role}`;
   el.innerHTML = `<div class="role">${role}</div><div class="body">${renderMd(content)}</div>`;
   document.getElementById('messages').appendChild(el);
+  imp.highlightAll(el);
   scrollBottom();
   return el;
 }
@@ -506,6 +507,10 @@ function connectWs() {
         setWorking(false);
         setStatus('');
         scrollBottom();
+        // Unlock source item if this chat was opened via P
+        if (_chatSourceLock && _chatSourceLock.chatId === currentChatId) {
+          unlockChatSource();
+        }
         break;
 
       case 'error':
@@ -623,6 +628,9 @@ async function loadChat(id, isActive) {
       const content = role === 'agent' ? renderTurnFull(t) : t.content;
       addMessage(role, content);
     });
+
+    // Apply syntax highlighting to any code blocks
+    imp.highlightAll(msgs);
 
     // Topmost chat (active) is editable, others are read-only logs
     setHistoricMode(!isActive);
@@ -769,6 +777,38 @@ const imp = {
     const lines = src.split('\n').length;
     const cls = opts?.cls || 'ok';
     return imp.fold(`📄 ${path} (${lines} lines)`, imp.code(src), {cls});
+  },
+  /** Post-render: apply syntax highlighting to all .imp-code blocks in a container. */
+  highlightAll(container) {
+    (container || document).querySelectorAll('pre.imp-code').forEach(pre => {
+      if (pre.dataset.highlighted) return;
+      pre.dataset.highlighted = '1';
+      // Get the raw text from existing line spans or the full text
+      const lines = pre.querySelectorAll('.line');
+      if (lines.length > 0) {
+        lines.forEach(span => {
+          const raw = span.textContent;
+          span.innerHTML = imp._highlightLine(raw);
+        });
+      } else {
+        // No line spans yet — wrap and highlight
+        const text = pre.textContent;
+        pre.innerHTML = imp._highlight(text);
+      }
+    });
+  },
+  /** Internal: highlight a single line (already escaped). */
+  _highlightLine(line) {
+    let h = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const spans = [];
+    function ph(s) { spans.push(s); return `\x00${spans.length-1}\x00`; }
+    h = h.replace(/(#.*)$/, (_, c) => ph(`<span class="cm">${c}</span>`));
+    h = h.replace(/((&quot;){3}.*?(&quot;){3}|'{3}.*?'{3})/g, (m) => ph(`<span class="str">${m}</span>`));
+    h = h.replace(/(&quot;[^&]*?&quot;|"[^"]*?"|'[^']*?')/g, (m) => ph(`<span class="str">${m}</span>`));
+    h = h.replace(/\b(def|return|import|from|if|else|elif|for|in|while|try|except|with|as|class|and|or|not|True|False|None|async|await)\b/g,
+      (m) => ph(`<span class="kw">${m}</span>`));
+    h = h.replace(/\x00(\d+)\x00/g, (_, i) => spans[parseInt(i)]);
+    return h;
   },
   /** Internal: highlight Python source with spans. */
   _highlight(src) {
@@ -937,6 +977,16 @@ async function loadWorkflows() {
 
     // Restore open state after re-render
     _restoreOpenDetails(el, openState);
+    // Show lock overlay on workflows being edited via chat
+    if (_chatSourceLock && _chatSourceLock.type === 'workflow') {
+      const locked = el.querySelector(`[data-id="${_chatSourceLock.id}"]`);
+      if (locked) {
+        locked.open = true;
+        const body = locked.querySelector('.wf-body');
+        if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:12px;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is editing in Chat tab...</span></div>';
+        locked.querySelectorAll('.wf-btn, .wf-start').forEach(b => { b.disabled = true; b.style.opacity = '0.3'; });
+      }
+    }
   } catch (e) { console.error('loadWorkflows failed:', e); }
 }
 
@@ -1109,7 +1159,7 @@ async function promptWorkflow(name) {
   } catch (e) {}
 
   const instructions = `Edit this workflow based on the user's request. The workflow is in workflows/${name}/. You can modify the README, edit step scripts, add new steps, or remove steps. Each step has a run(context) function that receives previous_results.`;
-  await openChatWithContext(files, instructions, '');
+  await openChatWithContext(files, instructions, '', {type: 'workflow', id: `wf-${name}`});
 }
 
 async function configureWorkflow(name, userPrompt) {
@@ -1176,6 +1226,18 @@ function saveReadme(el) {
 // --- tools panel ---
 let _toolsCache = [];
 let _editingToolGroup = null;
+let _chatSourceLock = null;  // {type: 'tool'|'group'|'workflow', id: string, chatId: string}
+
+function isLockedByChat(dataId) {
+  return _chatSourceLock && _chatSourceLock.id === dataId;
+}
+
+function unlockChatSource() {
+  _chatSourceLock = null;
+  // Refresh whichever tab is showing
+  if (activeTab === 'tools') loadToolsPanel();
+  if (activeTab === 'workflows') loadWorkflows();
+}
 let _editingTool = null;  // {group, name}
 let _describingGroup = null;
 
@@ -1301,6 +1363,16 @@ async function loadToolsPanel() {
         }
       });
     });
+    // Show lock overlay on items being edited via chat
+    if (_chatSourceLock) {
+      const locked = el.querySelector(`[data-id="${_chatSourceLock.id}"]`);
+      if (locked) {
+        locked.open = true;
+        const body = locked.querySelector('.wf-body') || locked.querySelector('.wf-step-output');
+        if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:12px;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is editing in Chat tab...</span></div>';
+        locked.querySelectorAll('.wf-btn, .wf-start').forEach(b => { b.disabled = true; b.style.opacity = '0.3'; });
+      }
+    }
   } catch (e) { console.error('loadToolsPanel failed:', e); el.innerHTML = '<div style="padding:20px;color:#da3633;">Failed to load tools</div>'; }
 }
 
@@ -1308,10 +1380,10 @@ function openPromptTool(group, name) {
   if (!confirm(`Open AI chat for ${group}/${name}?`)) return;
   const files = [`tools/${group}/${name}.py`, `tools/${group}/${name}.step.py`];
   const instructions = `Edit this tool script and/or its workflow step template based on the user's request. The tool is tools/${group}/${name}.py. After making changes, the files will be updated on disk.`;
-  openChatWithContext(files, instructions, '');
+  openChatWithContext(files, instructions, '', {type: 'tool', id: `tool-${group}-${name}`});
 }
 
-async function openChatWithContext(files, instructions, userPrompt) {
+async function openChatWithContext(files, instructions, userPrompt, sourceLock) {
   try {
     const res = await fetch(`${API}/api/chat/new-with-context`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1319,6 +1391,10 @@ async function openChatWithContext(files, instructions, userPrompt) {
     });
     const data = await res.json();
     if (data.id) {
+      // Lock the source item
+      if (sourceLock) {
+        _chatSourceLock = {...sourceLock, chatId: data.id};
+      }
       currentChatId = data.id;
       switchTab('chat');
       await loadChat(data.id, true);
@@ -1341,7 +1417,7 @@ function openPromptGroup(group) {
     files.push(`tools/${group}/${t.name}.py`);
   }
   const instructions = `Edit tools in the "${group}" group based on the user's request. You can modify the README, edit existing tool scripts, or create new ones. All files are under tools/${group}/.`;
-  openChatWithContext(files, instructions, '');
+  openChatWithContext(files, instructions, '', {type: 'group', id: `tg-${group}`});
 }
 
 async function describeToolGroup(group) {
