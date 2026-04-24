@@ -539,10 +539,19 @@ async def tool_source(group: str, name: str):
 
 
 @app.post("/api/workflows/{name}/configure")
-async def configure_workflow(name: str):
-    """Use Claude to update step Python code based on README + step descriptions."""
+async def configure_workflow(name: str, request: Request):
+    """Use Claude to update step Python code — streams progress as JSON lines."""
     import re
     import workflows
+    from starlette.responses import StreamingResponse
+
+    # Accept optional user prompt
+    user_prompt = ""
+    try:
+        data = await request.json()
+        user_prompt = data.get("user_prompt", "")
+    except Exception:
+        pass
 
     wf_dir = _ROOT / "workflows" / name
     if not wf_dir.is_dir():
@@ -552,21 +561,25 @@ async def configure_workflow(name: str):
     steps = workflows.get_steps(name)
 
     if not steps:
-        return {"configured": 0, "message": "No steps to configure"}
+        return Response(json.dumps({"type": "done", "configured": 0, "total": 0}) + "\n",
+                        media_type="application/x-ndjson")
 
-    # Build step summary for context
-    step_summary = "\n".join(f"  Step {i+1}: {s.get('description', s['name'])}" for i, s in enumerate(steps))
+    async def generate():
+        step_summary = "\n".join(f"  Step {i+1}: {s.get('description', s['name'])}" for i, s in enumerate(steps))
+        configured = 0
 
-    configured = 0
-    for i, step in enumerate(steps):
-        src = step.get("source", "")
-        desc = step.get("description", "")
-        if not desc:
-            continue
+        for i, step in enumerate(steps):
+            src = step.get("source", "")
+            desc = step.get("description", "")
+            if not desc:
+                yield json.dumps({"type": "step_skip", "step": i + 1, "description": step["name"]}) + "\n"
+                continue
 
-        prev_steps = "\n".join(f"  Step {j+1}: {s.get('description', s['name'])}" for j, s in enumerate(steps[:i]))
+            yield json.dumps({"type": "step_start", "step": i + 1, "description": desc}) + "\n"
 
-        prompt = f"""Update this workflow step's Python code so it actually does what the workflow needs.
+            prev_steps = "\n".join(f"  Step {j+1}: {s.get('description', s['name'])}" for j, s in enumerate(steps[:i]))
+
+            prompt = f"""Update this workflow step's Python code so it actually does what the workflow needs.
 
 WORKFLOW GOAL (from README):
 {readme}
@@ -594,54 +607,54 @@ INSTRUCTIONS:
 - Use real values based on the workflow README, not placeholder/generic calls
 - For dates use: from datetime import datetime; datetime.now().strftime(...)
 
-Return ONLY the Python code. No explanation. No markdown fences."""
+Return ONLY the Python code. No explanation. No markdown fences.{chr(10) + chr(10) + "ADDITIONAL USER INSTRUCTIONS:" + chr(10) + user_prompt if user_prompt else ""}"""
 
-        print(f"\n[configure] === Step {i+1}: {desc} ===", file=sys.stderr)
-        print(f"[configure] Prompt length: {len(prompt)} chars", file=sys.stderr)
+            print(f"\n[configure] === Step {i+1}: {desc} ===", file=sys.stderr)
 
-        try:
-            from claude_agent_sdk import ClaudeAgentOptions, query, TextBlock
+            try:
+                from claude_agent_sdk import ClaudeAgentOptions, query, TextBlock
 
-            options = ClaudeAgentOptions(
-                system_prompt="You are a code generator. Return only Python code, nothing else.",
-                max_turns=1,
-            )
+                options = ClaudeAgentOptions(
+                    system_prompt="You are a code generator. Return only Python code, nothing else.",
+                    max_turns=1,
+                )
 
-            chunks = []
-            async for message in query(prompt=prompt, options=options):
-                from claude_agent_sdk import AssistantMessage
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            chunks.append(block.text)
+                chunks = []
+                async for message in query(prompt=prompt, options=options):
+                    from claude_agent_sdk import AssistantMessage
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                chunks.append(block.text)
 
-            new_code = "".join(chunks).strip()
-            print(f"[configure] LLM response ({len(new_code)} chars):", file=sys.stderr)
-            print(new_code[:500], file=sys.stderr)
-            if len(new_code) > 500:
-                print("...(truncated)", file=sys.stderr)
+                new_code = "".join(chunks).strip()
 
-            # Strip markdown fences if Claude added them
-            if new_code.startswith("```python"):
-                new_code = new_code[len("```python"):].strip()
-            if new_code.startswith("```"):
-                new_code = new_code[3:].strip()
-            if new_code.endswith("```"):
-                new_code = new_code[:-3].strip()
+                # Strip markdown fences
+                if new_code.startswith("```python"):
+                    new_code = new_code[len("```python"):].strip()
+                if new_code.startswith("```"):
+                    new_code = new_code[3:].strip()
+                if new_code.endswith("```"):
+                    new_code = new_code[:-3].strip()
 
-            if new_code and "def run" in new_code:
-                step_file = Path(step["file"])
-                step_file.write_text(new_code + "\n")
-                configured += 1
-                print(f"[configure] {name}/{step['name']}: updated", file=sys.stderr)
-            else:
-                print(f"[configure] {name}/{step['name']}: LLM returned invalid code, skipped", file=sys.stderr)
+                if new_code and "def run" in new_code:
+                    step_file = Path(step["file"])
+                    step_file.write_text(new_code + "\n")
+                    configured += 1
+                    print(f"[configure] {name}/{step['name']}: updated", file=sys.stderr)
+                    yield json.dumps({"type": "step_done", "step": i + 1, "description": desc}) + "\n"
+                else:
+                    print(f"[configure] {name}/{step['name']}: LLM returned invalid code", file=sys.stderr)
+                    yield json.dumps({"type": "step_error", "step": i + 1, "error": "LLM returned invalid code"}) + "\n"
 
-        except Exception as exc:
-            print(f"[configure] {name}/{step['name']}: error: {exc}", file=sys.stderr)
-            return {"error": str(exc), "configured": configured}
+            except Exception as exc:
+                print(f"[configure] {name}/{step['name']}: error: {exc}", file=sys.stderr)
+                yield json.dumps({"type": "step_error", "step": i + 1, "error": str(exc)}) + "\n"
+                continue
 
-    return {"configured": configured, "message": f"Updated {configured} of {len(steps)} steps"}
+        yield json.dumps({"type": "done", "configured": configured, "total": len(steps)}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 # ── tool editing endpoints ─────────────────────────────────────────
@@ -966,6 +979,43 @@ async def move_tool(request: Request):
     return {"moved": f"{new_group}/{name}"}
 
 
+@app.post("/api/tool-describe-save")
+async def save_tool_docstring(request: Request):
+    """Save a tool's docstring without LLM — just update the text."""
+    import ast as _ast
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    new_docstring = data.get("docstring", "").strip()
+
+    tool_path = _ROOT / "tools" / group / f"{name}.py"
+    if not tool_path.exists():
+        return Response("tool not found", status_code=404)
+
+    source = tool_path.read_text()
+    try:
+        tree = _ast.parse(source)
+        first_node = tree.body[0] if tree.body else None
+        if (first_node
+            and isinstance(first_node, _ast.Expr)
+            and isinstance(first_node.value, (_ast.Constant, _ast.Str))):
+            start_line = first_node.lineno - 1
+            end_line = first_node.end_lineno
+            lines = source.splitlines(keepends=True)
+            new_source = "".join(lines[:start_line]) + f'"""{new_docstring}"""\n' + "".join(lines[end_line:])
+        else:
+            import re
+            header_match = re.match(r'^((?:#!/.*\n)?(?:#.*\n)*)', source)
+            prefix = header_match.group(1) if header_match else ""
+            rest = source[len(prefix):]
+            new_source = prefix + f'"""{new_docstring}"""\n\n' + rest
+    except SyntaxError:
+        new_source = f'"""{new_docstring}"""\n\n' + source
+
+    tool_path.write_text(new_source)
+    return {"saved": True, "docstring": new_docstring}
+
+
 @app.post("/api/tool-describe")
 async def describe_tool(request: Request):
     """LLM generates a description from the tool's source code."""
@@ -1249,6 +1299,339 @@ def _renumber_steps(wf_dir: Path) -> None:
         if step.name != new_name:
             step.rename(wf_dir / new_name)
 
+
+
+# ── developer sync endpoints ───────────────────────────────────────
+
+_SYNC_DIRS = ["tools", "workflows", "renderers", "public"]
+_SYNC_EXCLUDE = {"__pycache__", ".pyc", "last_run.json", ".DS_Store"}
+
+
+def _sync_file_list() -> dict[str, dict]:
+    """Build manifest of all syncable files with hashes and mtimes."""
+    import hashlib
+    files = {}
+    for sync_dir in _SYNC_DIRS:
+        base = _ROOT / sync_dir
+        if not base.is_dir():
+            continue
+        for f in base.rglob("*"):
+            if not f.is_file():
+                continue
+            if f.name in _SYNC_EXCLUDE or any(p in _SYNC_EXCLUDE for p in f.parts):
+                continue
+            if f.suffix == ".pyc":
+                continue
+            rel = str(f.relative_to(_ROOT))
+            try:
+                content = f.read_bytes()
+                files[rel] = {
+                    "hash": hashlib.md5(content).hexdigest(),
+                    "mtime": f.stat().st_mtime,
+                    "size": len(content),
+                }
+            except OSError:
+                pass
+    return files
+
+
+@app.get("/api/sync/manifest")
+async def sync_manifest():
+    """Return all syncable files with hashes and mtimes."""
+    return {"files": _sync_file_list()}
+
+
+@app.get("/api/sync/file")
+async def sync_download(path: str):
+    """Download a single file."""
+    from fastapi.responses import PlainTextResponse
+    full = _ROOT / path
+    # Safety: must be under a sync dir
+    if not any(path.startswith(d + "/") for d in _SYNC_DIRS):
+        return Response("forbidden", status_code=403)
+    if not full.is_file():
+        return Response("not found", status_code=404)
+    return PlainTextResponse(full.read_text(), media_type="text/plain")
+
+
+@app.post("/api/sync/file")
+async def sync_upload(request: Request):
+    """Upload/update a single file."""
+    data = await request.json()
+    path = data.get("path", "")
+    content = data.get("content", "")
+    if not any(path.startswith(d + "/") for d in _SYNC_DIRS):
+        return {"error": "forbidden — path must be under tools/, workflows/, renderers/, or public/"}
+    full = _ROOT / path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content)
+    return {"uploaded": path}
+
+
+@app.delete("/api/sync/file")
+async def sync_delete(path: str):
+    """Delete a file on the server."""
+    if not any(path.startswith(d + "/") for d in _SYNC_DIRS):
+        return {"error": "forbidden"}
+    full = _ROOT / path
+    if full.is_file():
+        full.unlink()
+        return {"deleted": path}
+    return Response("not found", status_code=404)
+
+
+@app.get("/imp-sync.py")
+async def download_sync_script(request: Request):
+    """Generate and serve the sync client script with server URL baked in."""
+    from fastapi.responses import PlainTextResponse
+    host = request.headers.get("host", "127.0.0.1:8421")
+    server_url = f"http://{host}"
+    script = _IMP_SYNC_SCRIPT.replace("{{SERVER_URL}}", server_url)
+    return PlainTextResponse(script, media_type="text/plain",
+                             headers={"Content-Disposition": "attachment; filename=imp-sync.py"})
+
+
+_IMP_SYNC_SCRIPT = r'''#!/usr/bin/env python3
+"""Imp Developer Sync — bidirectional file sync with Imp server.
+
+Drop this file in any folder and run:  python imp-sync.py
+First run pulls all files. Then watches for changes on both sides.
+Ctrl+C to stop.
+
+Zero dependencies — stdlib only.
+"""
+
+import hashlib
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+SERVER = "{{SERVER_URL}}"
+POLL_INTERVAL = 2  # seconds
+SYNC_DIRS = ["tools", "workflows", "renderers", "public"]
+EXCLUDE = {"__pycache__", ".pyc", "last_run.json", ".DS_Store"}
+
+_local_state = {}  # path -> {"hash", "mtime"}
+
+
+def api(method, endpoint, data=None):
+    """Make an API call to the Imp server."""
+    url = f"{SERVER}{endpoint}"
+    if data is not None:
+        req = urllib.request.Request(
+            url, data=json.dumps(data).encode(),
+            headers={"Content-Type": "application/json"},
+            method=method,
+        )
+    else:
+        req = urllib.request.Request(url, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode()
+            if resp.headers.get("content-type", "").startswith("application/json"):
+                return json.loads(body)
+            return body
+    except urllib.error.HTTPError as e:
+        print(f"  HTTP {e.code}: {endpoint}")
+        return None
+    except urllib.error.URLError as e:
+        print(f"  Connection error: {e.reason}")
+        return None
+
+
+def file_hash(path):
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def local_manifest():
+    """Scan local files and return {rel_path: {hash, mtime}}."""
+    files = {}
+    for sync_dir in SYNC_DIRS:
+        base = Path(sync_dir)
+        if not base.is_dir():
+            continue
+        for f in base.rglob("*"):
+            if not f.is_file():
+                continue
+            if f.name in EXCLUDE or any(p in EXCLUDE for p in f.parts):
+                continue
+            if f.suffix == ".pyc":
+                continue
+            rel = str(f)
+            try:
+                files[rel] = {
+                    "hash": file_hash(f),
+                    "mtime": f.stat().st_mtime,
+                }
+            except OSError:
+                pass
+    return files
+
+
+def pull_file(path):
+    """Download a file from the server."""
+    content = api("GET", f"/api/sync/file?path={urllib.request.quote(path)}")
+    if content is None:
+        return False
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    _local_state[path] = {"hash": file_hash(p), "mtime": p.stat().st_mtime}
+    return True
+
+
+def push_file(path):
+    """Upload a local file to the server."""
+    p = Path(path)
+    if not p.is_file():
+        return False
+    content = p.read_text()
+    result = api("POST", "/api/sync/file", {"path": path, "content": content})
+    if result and not result.get("error"):
+        _local_state[path] = {"hash": file_hash(p), "mtime": p.stat().st_mtime}
+        return True
+    return False
+
+
+def delete_remote(path):
+    """Delete a file on the server."""
+    api("DELETE", f"/api/sync/file?path={urllib.request.quote(path)}")
+
+
+def delete_local(path):
+    """Delete a local file."""
+    p = Path(path)
+    if p.is_file():
+        p.unlink()
+    _local_state.pop(path, None)
+
+
+def initial_sync():
+    """First sync — pull everything from server."""
+    print(f"Connecting to {SERVER}...")
+    manifest = api("GET", "/api/sync/manifest")
+    if not manifest:
+        print("Failed to connect. Is the server running?")
+        sys.exit(1)
+
+    remote_files = manifest.get("files", {})
+    print(f"Server has {len(remote_files)} files")
+
+    pulled = 0
+    for path in remote_files:
+        local = Path(path)
+        if local.is_file() and file_hash(local) == remote_files[path]["hash"]:
+            _local_state[path] = {"hash": remote_files[path]["hash"], "mtime": local.stat().st_mtime}
+            continue
+        print(f"  ↓ {path}")
+        if pull_file(path):
+            pulled += 1
+
+    # Also register existing local files
+    for path, info in local_manifest().items():
+        if path not in _local_state:
+            _local_state[path] = info
+
+    print(f"Pulled {pulled} files. Watching for changes...\n")
+
+
+def sync_loop():
+    """Main sync loop — poll for changes on both sides."""
+    while True:
+        try:
+            time.sleep(POLL_INTERVAL)
+
+            # Get remote manifest
+            manifest = api("GET", "/api/sync/manifest")
+            if not manifest:
+                continue
+            remote = manifest.get("files", {})
+            local = local_manifest()
+
+            # Remote changes → pull
+            for path, rinfo in remote.items():
+                prev = _local_state.get(path)
+                if prev and prev["hash"] == rinfo["hash"]:
+                    continue  # no change
+                linfo = local.get(path)
+                if linfo and linfo["hash"] == rinfo["hash"]:
+                    _local_state[path] = linfo
+                    continue  # already in sync
+                # Remote is newer or new file
+                if linfo and prev and linfo["hash"] != prev["hash"]:
+                    # Both changed — conflict
+                    print(f"  ⚠ CONFLICT {path} — keeping both (remote as .conflict)")
+                    conflict = Path(path + ".conflict")
+                    if pull_file(path):
+                        Path(path).rename(conflict)
+                    continue
+                print(f"  ↓ {path}")
+                pull_file(path)
+
+            # Remote deletions → delete local
+            for path in list(_local_state.keys()):
+                if path not in remote and path not in local:
+                    continue
+                if path not in remote and path in local:
+                    # File was on server last time but now gone
+                    prev = _local_state.get(path)
+                    linfo = local.get(path)
+                    if prev and linfo and linfo["hash"] == prev["hash"]:
+                        # Local hasn't changed, safe to delete
+                        print(f"  ✕ {path} (deleted on server)")
+                        delete_local(path)
+
+            # Local changes → push
+            for path, linfo in local.items():
+                prev = _local_state.get(path)
+                if prev and prev["hash"] == linfo["hash"]:
+                    continue  # no change
+                rinfo = remote.get(path)
+                if rinfo and rinfo["hash"] == linfo["hash"]:
+                    _local_state[path] = linfo
+                    continue  # already in sync
+                print(f"  ↑ {path}")
+                push_file(path)
+
+            # Local deletions → delete remote
+            for path in list(_local_state.keys()):
+                if path in local or path in remote:
+                    continue
+                prev = _local_state.get(path)
+                rinfo = remote.get(path)
+                if prev and rinfo and rinfo["hash"] == prev["hash"]:
+                    print(f"  ✕ {path} (deleted locally)")
+                    delete_remote(path)
+                    _local_state.pop(path, None)
+
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"  sync error: {e}")
+
+
+def main():
+    print("=" * 50)
+    print("  Imp Developer Sync")
+    print(f"  Server: {SERVER}")
+    print("=" * 50)
+    print()
+
+    initial_sync()
+
+    try:
+        sync_loop()
+    except KeyboardInterrupt:
+        print("\nSync stopped.")
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 # ── subprocess helper ───────────────────────────────────────────────
