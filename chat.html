@@ -227,13 +227,6 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .wf-step-item.done > summary { color:#3fb950; }
 .wf-step-item.running > summary { color:var(--accent); }
 .wf-step-item.paused > summary { color:#f0883e; }
-.wf-step-code { margin:0; padding:8px 10px; border-top:1px solid var(--border);
-  font-size:11px; line-height:1.5; overflow-x:auto; white-space:pre;
-  font-family:"SF Mono",Consolas,monospace; color:var(--fg); counter-reset:line; }
-.wf-step-code .line { display:block; }
-.wf-step-code .line::before { counter-increment:line; content:counter(line);
-  display:inline-block; width:2.5em; text-align:right; margin-right:1em;
-  color:var(--muted); opacity:0.4; font-size:10px; }
 .wf-step-output { padding:6px 10px; border-top:1px solid var(--border); font-size:11px; }
 .wf-step-output strong { color:var(--muted); font-size:10px; text-transform:uppercase; }
 .wf-step-output pre { margin:4px 0 0; white-space:pre-wrap; color:var(--fg); max-height:300px; overflow:auto; }
@@ -241,10 +234,6 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .wf-step-output th, .wf-step-output td { border:1px solid var(--border); padding:3px 8px; text-align:left; }
 .wf-step-output th { background:#161b22; font-weight:600; }
 .wf-step-output td:first-child { white-space:nowrap; }
-.wf-step-code .kw { color:#ff7b72; }
-.wf-step-code .str { color:#a5d6ff; }
-.wf-step-code .fn { color:#d2a8ff; }
-.wf-step-code .cm { color:#8b949e; font-style:italic; }
 
 /* --- tools tab --- */
 #tools-tab { flex:1; overflow:hidden; }
@@ -810,6 +799,86 @@ const imp = {
     h = h.replace(/\x00(\d+)\x00/g, (_, i) => spans[parseInt(i)]);
     return h;
   },
+  /**
+   * Button. opts: {cls: 'primary'|'danger'|'small', disabled}
+   * cls 'primary' = blue wf-start, 'danger' = red border, 'small' = smaller P-style
+   */
+  btn(label, onclick, opts) {
+    const o = opts || {};
+    if (o.cls === 'primary') {
+      const dis = o.disabled ? ' disabled' : '';
+      return `<button class="wf-start"${dis} onclick="event.stopPropagation();event.preventDefault();${onclick}">${label}</button>`;
+    }
+    if (o.cls === 'small') {
+      return `<button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();event.preventDefault();${onclick}" title="${o.title||''}">${label}</button>`;
+    }
+    let style = '';
+    if (o.cls === 'danger') style = ' style="color:#da3633;border-color:#da3633;"';
+    else if (o.cls === 'ok') style = ' style="color:#3fb950;border-color:#3fb950;"';
+    const dis = o.disabled ? ' disabled' : '';
+    return `<button class="wf-btn"${style}${dis} onclick="event.stopPropagation();event.preventDefault();${onclick}">${label}</button>`;
+  },
+
+  /**
+   * Card — top-level collapsible item (tool group or workflow).
+   * opts: {id, name, meta, status?, buttons:[], body, open?}
+   */
+  card(opts) {
+    const statusHtml = opts.status
+      ? `<span class="wf-item-status ${opts.status.cls || ''}">${opts.status.icon || ''} ${opts.status.text || ''}</span>`
+      : '';
+    const open = opts.open ? ' open' : '';
+    return `<details class="wf-item" data-id="${opts.id}"${open}>
+      <summary>
+        <span class="wf-item-name">${opts.name}</span>
+        <span class="wf-item-meta">${opts.meta || ''}</span>
+        ${statusHtml}
+        ${(opts.buttons || []).join(' ')}
+      </summary>
+      <div class="wf-body">${opts.body || ''}</div>
+    </details>`;
+  },
+
+  /**
+   * Child item inside a card (tool script or workflow step).
+   * opts: {id, name, buttons:[], body, status?, open?}
+   */
+  item(opts) {
+    const cls = opts.status ? ` ${opts.status}` : '';
+    const open = opts.open ? ' open' : '';
+    return `<details class="wf-step-item${cls}" data-id="${opts.id}"${open}>
+      <summary style="display:flex;align-items:center;gap:6px;">
+        <span style="flex:1;">${opts.name}</span>
+        ${(opts.buttons || []).join(' ')}
+      </summary>
+      <div class="wf-step-output" style="padding:8px 10px;">${opts.body || ''}</div>
+    </details>`;
+  },
+
+  /** Markdown readme section (rendered or editable). */
+  readme(html) {
+    return html ? `<div class="wf-readme">${html}</div>` : '';
+  },
+  readmeEdit(id, content) {
+    const escaped = (content||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div class="wf-readme"><textarea class="wf-readme-edit" id="${id}" style="min-height:150px;">${escaped}</textarea></div>`;
+  },
+
+  /** Steps/items container. */
+  items(innerHtml) {
+    return `<div class="wf-steps">${innerHtml}</div>`;
+  },
+
+  /** Meta line (description, last run, etc). */
+  meta(text) {
+    return `<div class="wf-item-meta" style="margin-bottom:8px;">${text}</div>`;
+  },
+
+  /** Spinner overlay for locked items. */
+  lockOverlay(msg) {
+    return `<div style="display:flex;align-items:center;gap:10px;padding:12px;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">${msg}</span></div>`;
+  },
+
   /** Internal: highlight Python source with spans. */
   _highlight(src) {
     return src.split('\n').map(line => {
@@ -827,28 +896,6 @@ const imp = {
   }
 };
 
-// Legacy wrapper — keep until all callers are migrated
-function highlightPython(src) {
-  // Escape HTML first, then highlight with placeholders to avoid interference
-  return src.split('\n').map(line => {
-    let h = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    // Replace tokens with numbered placeholders, collect spans
-    const spans = [];
-    function ph(s) { spans.push(s); return `\x00${spans.length-1}\x00`; }
-    // Comments first (so # inside strings isn't caught — good enough for display)
-    h = h.replace(/(#.*)$/, (_, c) => ph(`<span class="cm">${c}</span>`));
-    // Triple-quoted strings
-    h = h.replace(/((&quot;){3}.*?(&quot;){3}|'{3}.*?'{3})/g, (m) => ph(`<span class="str">${m}</span>`));
-    // Regular strings
-    h = h.replace(/(&quot;[^&]*?&quot;|"[^"]*?"|'[^']*?')/g, (m) => ph(`<span class="str">${m}</span>`));
-    // Keywords
-    h = h.replace(/\b(def|return|import|from|if|else|elif|for|in|while|try|except|with|as|class|and|or|not|True|False|None|async|await)\b/g,
-      (m) => ph(`<span class="kw">${m}</span>`));
-    // Restore placeholders
-    h = h.replace(/\x00(\d+)\x00/g, (_, i) => spans[parseInt(i)]);
-    return `<span class="line">${h}</span>`;
-  }).join('');
-}
 
 function formatStepOutput(text) {
   // Render output as markdown via marked.js
@@ -915,12 +962,10 @@ async function loadWorkflows() {
     for (const wf of workflows) {
       const statusClass = wf.status || 'idle';
       const statusIcons = {idle:'⚪', running:'🔄', paused:'⏸', done:'✅', error:'❌'};
-      const icon = statusIcons[wf.status] || '⚪';
+      const sIcon = statusIcons[wf.status] || '⚪';
       const canStart = wf.status === 'idle' || wf.status === 'done' || wf.status === 'error';
 
-      let stepsHtml = '';
-      let readmeHtml = '';
-      let rawReadme = '';
+      let stepsHtml = '', readmeHtml = '', rawReadme = '';
       try {
         const sres = await fetch(`${API}/api/workflows/${wf.name}`);
         const sdata = await sres.json();
@@ -928,62 +973,68 @@ async function loadWorkflows() {
         if (sdata.readme) readmeHtml = marked.parse(sdata.readme);
         const steps = sdata.steps || [];
         stepsHtml = steps.map(s => {
-          const sIcon = {done:'✅', running:'🔄', paused:'⏸', pending:'⏳', error:'❌'}[s.status] || '⏳';
+          const stepIcon = {done:'✅', running:'🔄', paused:'⏸', pending:'⏳', error:'❌'}[s.status] || '⏳';
           const dur = s.result?.duration_s ? ` · ${s.result.duration_s}s` : '';
-          const code = s.source ? imp.code(s.source) : '';
-          // Show output from last run if available
-          let outputHtml = '';
+          // Step body: output + code
+          let stepBody = '';
           if (s.result) {
             const ok = (s.result.ok === false) ? '❌' : '✅';
-            const dur = s.result.duration_s ? ` · ${s.result.duration_s}s` : '';
+            const rdur = s.result.duration_s ? ` · ${s.result.duration_s}s` : '';
             const content = s.result.output || s.result.error || '';
             const tb = s.result.traceback || '';
-            let bodyHtml = '';
-            if (content) bodyHtml += formatStepOutput(content);
-            if (tb) bodyHtml += '<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">Traceback</summary>' + formatStepOutput(tb) + '</details>';
-            outputHtml = `<div class="wf-step-output"><strong>${ok} ${s.result.ok !== false ? 'OK' : 'Error'}${dur}</strong>${bodyHtml}</div>`;
+            let outHtml = '';
+            if (content) outHtml += formatStepOutput(content);
+            if (tb) outHtml += imp.fold('Traceback', formatStepOutput(tb));
+            stepBody += `<div class="wf-step-output"><strong>${ok} ${s.result.ok !== false ? 'OK' : 'Error'}${rdur}</strong>${outHtml}</div>`;
           }
-          return `<details class="wf-step-item ${s.status}" data-id="step-${wf.name}-${s.name}">
-            <summary style="display:flex;align-items:center;gap:4px;">${editingWorkflow === wf.name ? '<button class="tool-add" style="font-size:10px;" onclick="event.stopPropagation();moveStep(\''+wf.name+'\',\''+s.name+'\',\'up\')">▲</button><button class="tool-add" style="font-size:10px;" onclick="event.stopPropagation();moveStep(\''+wf.name+'\',\''+s.name+'\',\'down\')">▼</button><button class="tool-add" style="background:#da3633;color:#fff;border-color:#da3633;" onclick="event.stopPropagation();removeStep(\''+wf.name+'\',\''+s.name+'\')">−</button>' : ''}${sIcon} ${s.description || s.name}${dur}</summary>
-            ${outputHtml}
-            ${code}
-          </details>`;
+          if (s.source) stepBody += imp.code(s.source);
+          // Step buttons (edit mode)
+          const editBtns = editingWorkflow === wf.name ? [
+            imp.btn('▲', `moveStep('${wf.name}','${s.name}','up')`),
+            imp.btn('▼', `moveStep('${wf.name}','${s.name}','down')`),
+            imp.btn('−', `removeStep('${wf.name}','${s.name}')`, {cls:'danger'})
+          ] : [];
+          const stepName = `${editBtns.join('')}${stepIcon} ${s.description || s.name}${dur}`;
+          return imp.item({id: `step-${wf.name}-${s.name}`, name: stepName, status: s.status, body: stepBody});
         }).join('');
       } catch (e) {}
 
+      // Workflow buttons
+      const wfBtns = [
+        imp.btn('Start', `startWorkflow('${wf.name}')`, {cls:'primary', disabled: !canStart}),
+        imp.btn(editingWorkflow === wf.name ? 'Done' : 'Edit', `toggleEditWorkflow('${wf.name}')`),
+        imp.btn('P', `promptWorkflow('${wf.name}')`, {cls:'small', title:'AI edits workflow'}),
+        imp.btn('Clone', `cloneWorkflow('${wf.name}')`),
+        imp.btn('Rename', `renameWorkflow('${wf.name}')`),
+        imp.btn('Delete', `deleteWorkflow('${wf.name}')`, {cls:'danger'})
+      ];
+
+      // Workflow body
       const ranAt = wf.ran_at ? `Last run: ${new Date(wf.ran_at).toLocaleString()}` : '';
-      html += `<details class="wf-item" data-id="wf-${wf.name}" ${wf.status !== 'idle' ? 'open' : ''}>
-        <summary>
-          <span class="wf-item-name">${wf.name}</span>
-          <span class="wf-item-meta">${wf.step_count} steps</span>
-          <span class="wf-item-status ${statusClass}">${icon} ${wf.status}</span>
-          <button class="wf-start" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation();startWorkflow('${wf.name}')">Start</button>
-          <button class="wf-btn" onclick="event.stopPropagation();toggleEditWorkflow('${wf.name}')">${editingWorkflow === wf.name ? 'Done' : 'Edit'}</button>
-          <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();promptWorkflow('${wf.name}')" title="AI edits workflow">P</button>
-          <button class="wf-btn" onclick="event.stopPropagation();cloneWorkflow('${wf.name}')">Clone</button>
-          <button class="wf-btn" onclick="event.stopPropagation();renameWorkflow('${wf.name}')">Rename</button>
-          <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteWorkflow('${wf.name}')">Delete</button>
-        </summary>
-        <div class="wf-body">
-          <div class="wf-item-meta" style="margin-bottom:8px;">${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}</div>
-          ${editingWorkflow === wf.name
-            ? '<div class="wf-readme"><textarea class="wf-readme-edit" data-wf="'+wf.name+'" onblur="saveReadme(this)">'+rawReadme.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea></div>'
-            : (readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : '')}
-          <div class="wf-steps">${stepsHtml}</div>
-        </div>
-      </details>`;
+      let bodyHtml = imp.meta(`${wf.description}${ranAt ? ' · <em>'+ranAt+'</em>' : ''}`);
+      if (editingWorkflow === wf.name)
+        bodyHtml += imp.readmeEdit(`wf-readme-${wf.name}`, rawReadme).replace('id="wf-readme-'+wf.name+'"', `data-wf="${wf.name}" onblur="saveReadme(this)" id="wf-readme-${wf.name}"`);
+      else
+        bodyHtml += imp.readme(readmeHtml);
+      bodyHtml += imp.items(stepsHtml);
+
+      html += imp.card({
+        id: `wf-${wf.name}`, name: wf.name, meta: `${wf.step_count} steps`,
+        status: {cls: statusClass, icon: sIcon, text: wf.status},
+        buttons: wfBtns, body: bodyHtml,
+        open: wf.status !== 'idle'
+      });
     }
     el.innerHTML = html;
 
-    // Restore open state after re-render
+    // Restore open state + lock overlay
     _restoreOpenDetails(el, openState);
-    // Show lock overlay on workflows being edited via chat
     if (_chatSourceLock && _chatSourceLock.type === 'workflow') {
       const locked = el.querySelector(`[data-id="${_chatSourceLock.id}"]`);
       if (locked) {
         locked.open = true;
         const body = locked.querySelector('.wf-body');
-        if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:12px;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is editing in Chat tab...</span></div>';
+        if (body) body.innerHTML = imp.lockOverlay('AI is editing in Chat tab...');
         locked.querySelectorAll('.wf-btn, .wf-start').forEach(b => { b.disabled = true; b.style.opacity = '0.3'; });
       }
     }
@@ -1257,9 +1308,7 @@ async function loadToolsPanel() {
 
     let html = '';
     for (const [group, tools] of Object.entries(groups).sort()) {
-      // Fetch group README if it exists
-      let readmeHtml = '';
-      let rawReadme = '';
+      let readmeHtml = '', rawReadme = '';
       try {
         const rres = await fetch(`${API}/api/tool-group-readme?group=${group}`);
         const rdata = await rres.json();
@@ -1269,59 +1318,53 @@ async function loadToolsPanel() {
 
       const isEditing = _editingToolGroup === group;
       const isDescribing = _describingGroup === group;
-      html += `<details class="wf-item" data-id="tg-${group}">
-        <summary>
-          <span class="wf-item-name">${group}</span>
-          <span class="wf-item-meta">${tools.length} tools</span>
-          ${isDescribing
-            ? ``
-            : isEditing
-            ? `<button class="wf-btn" style="color:#3fb950;border-color:#3fb950;" onclick="event.stopPropagation();saveToolGroupReadme('${group}')">OK</button>
-               <button class="wf-btn" onclick="event.stopPropagation();cancelToolGroupEdit()">Cancel</button>`
-            : `<button class="wf-btn" onclick="event.stopPropagation();editToolGroup('${group}')">Edit</button>
-               <button class="wf-btn" onclick="event.stopPropagation();describeToolGroup('${group}')">Tools→Desc</button>
-               <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();openPromptGroup('${group}')" title="AI Chat">P</button>
-               <button class="wf-btn" onclick="event.stopPropagation();copyToolGroup('${group}')">Copy</button>
-               <button class="wf-btn" onclick="event.stopPropagation();renameToolGroup('${group}')">Rename</button>
-               <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();deleteToolGroup('${group}')">Delete</button>`}
-        </summary>
-        <div class="wf-body">
-          ${isDescribing
-            ? '<div class="wf-readme"><div style="display:flex;align-items:center;gap:10px;padding:8px 0;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is generating group description...</span></div></div>'
-            : isEditing
-            ? '<div class="wf-readme"><textarea class="wf-readme-edit" id="tg-readme-edit" style="min-height:150px;">'+rawReadme.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea></div>'
-            : (readmeHtml ? '<div class="wf-readme">' + readmeHtml + '</div>' : '')}
-          <div class="wf-steps">
-            ${tools.map(t => {
-              const isToolEditing = _editingTool && _editingTool.group === group && _editingTool.name === t.name;
-              return `<details class="wf-step-item" data-id="tool-${group}-${t.name}">
-                <summary style="display:flex;align-items:center;gap:6px;">
-                  <span style="flex:1;">${t.name}</span>
-                  ${isToolEditing
-                    ? `<button class="wf-btn" style="color:#3fb950;border-color:#3fb950;" onclick="event.stopPropagation();event.preventDefault();saveToolScript('${group}','${t.name}')">OK</button>
-                       <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();cancelToolScriptEdit()">Cancel</button>`
-                    : `<button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();editToolScript('${group}','${t.name}')">Edit</button>
-                       <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();describeToolScript('${group}','${t.name}')">Code→Desc</button>
-                       <button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();event.preventDefault();openPromptTool('${group}','${t.name}')" title="AI Chat">P</button>
-                       <button class="wf-btn" onclick="event.stopPropagation();event.preventDefault();copyToolScript('${group}','${t.name}')">Copy</button>
-                       <button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="event.stopPropagation();event.preventDefault();deleteToolScript('${group}','${t.name}')">Delete</button>`}
-                </summary>
-                <div class="wf-step-output" id="tool-detail-${group}-${t.name}" style="padding:8px 10px;" ${isToolEditing ? 'data-loaded="1"' : ''}>
-                  ${isToolEditing
-                    ? `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;">
-                        <label style="font-size:12px;color:var(--muted);">Group:</label>
-                        <select id="tool-move-group" style="padding:3px 8px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;">
-                          ${Object.keys(groups).sort().map(g => `<option value="${g}" ${g === group ? 'selected' : ''}>${g}</option>`).join('')}
-                        </select>
-                      </div>
-                      <textarea class="wf-readme-edit" id="tool-desc-edit" style="min-height:80px;">${(t.description || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>`
-                    : ``}
-                </div>
-              </details>`;
-            }).join('')}
-          </div>
-        </div>
-      </details>`;
+
+      // Group buttons
+      const groupBtns = isDescribing ? [] : isEditing ? [
+        imp.btn('OK', `saveToolGroupReadme('${group}')`, {cls:'ok'}),
+        imp.btn('Cancel', `cancelToolGroupEdit()`)
+      ] : [
+        imp.btn('Edit', `editToolGroup('${group}')`),
+        imp.btn('Tools→Desc', `describeToolGroup('${group}')`),
+        imp.btn('P', `openPromptGroup('${group}')`, {cls:'small', title:'AI Chat'}),
+        imp.btn('Copy', `copyToolGroup('${group}')`),
+        imp.btn('Rename', `renameToolGroup('${group}')`),
+        imp.btn('Delete', `deleteToolGroup('${group}')`, {cls:'danger'})
+      ];
+
+      // Group body
+      let bodyHtml = '';
+      if (isDescribing) bodyHtml += imp.readme(imp.lockOverlay('AI is generating group description...'));
+      else if (isEditing) bodyHtml += imp.readmeEdit('tg-readme-edit', rawReadme);
+      else bodyHtml += imp.readme(readmeHtml);
+
+      // Tool items
+      const toolsHtml = tools.map(t => {
+        const isToolEditing = _editingTool && _editingTool.group === group && _editingTool.name === t.name;
+        const toolBtns = isToolEditing ? [
+          imp.btn('OK', `saveToolScript('${group}','${t.name}')`, {cls:'ok'}),
+          imp.btn('Cancel', `cancelToolScriptEdit()`)
+        ] : [
+          imp.btn('Edit', `editToolScript('${group}','${t.name}')`),
+          imp.btn('Code→Desc', `describeToolScript('${group}','${t.name}')`),
+          imp.btn('P', `openPromptTool('${group}','${t.name}')`, {cls:'small', title:'AI Chat'}),
+          imp.btn('Copy', `copyToolScript('${group}','${t.name}')`),
+          imp.btn('Delete', `deleteToolScript('${group}','${t.name}')`, {cls:'danger'})
+        ];
+        let toolBody = '';
+        if (isToolEditing) {
+          toolBody = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+            <label style="font-size:12px;color:var(--muted);">Group:</label>
+            <select id="tool-move-group" style="padding:3px 8px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:12px;">
+              ${Object.keys(groups).sort().map(g => `<option value="${g}" ${g === group ? 'selected' : ''}>${g}</option>`).join('')}
+            </select></div>
+            <textarea class="wf-readme-edit" id="tool-desc-edit" style="min-height:80px;">${(t.description || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>`;
+        }
+        return imp.item({id: `tool-${group}-${t.name}`, name: t.name, buttons: toolBtns, body: toolBody});
+      }).join('');
+
+      bodyHtml += imp.items(toolsHtml);
+      html += imp.card({id: `tg-${group}`, name: group, meta: `${tools.length} tools`, buttons: groupBtns, body: bodyHtml});
     }
     el.innerHTML = html;
 
@@ -1369,7 +1412,7 @@ async function loadToolsPanel() {
       if (locked) {
         locked.open = true;
         const body = locked.querySelector('.wf-body') || locked.querySelector('.wf-step-output');
-        if (body) body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:12px;"><div class="wf-spinner"></div><span style="font-size:12px;color:var(--muted);">AI is editing in Chat tab...</span></div>';
+        if (body) body.innerHTML = imp.lockOverlay('AI is editing in Chat tab...');
         locked.querySelectorAll('.wf-btn, .wf-start').forEach(b => { b.disabled = true; b.style.opacity = '0.3'; });
       }
     }
