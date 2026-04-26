@@ -36,7 +36,8 @@ const imp = {
       return `<button class="wf-start"${dis} onclick="event.stopPropagation();event.preventDefault();${onclick}">${label}</button>`;
     }
     if (o.cls === 'small') {
-      return `<button class="wf-start" style="padding:3px 8px;font-size:11px;" onclick="event.stopPropagation();event.preventDefault();${onclick}" title="${o.title||''}">${label}</button>`;
+      const dis = o.disabled ? ' disabled' : '';
+      return `<button class="wf-start" style="padding:3px 8px;font-size:11px;"${dis} onclick="event.stopPropagation();event.preventDefault();${onclick}" title="${o.title||''}">${label}</button>`;
     }
     let style = '';
     if (o.cls === 'danger') style = ' style="color:#da3633;border-color:#da3633;"';
