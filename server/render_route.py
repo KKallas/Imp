@@ -183,7 +183,7 @@ _CHAT_HTML = _ROOT / "chat.html"
 
 @app.get("/")
 async def serve_chat_ui():
-    """Serve the single-file chat UI (no caching)."""
+    """Serve the chat UI (no caching)."""
     if _CHAT_HTML.exists():
         return FileResponse(
             _CHAT_HTML,
@@ -191,6 +191,16 @@ async def serve_chat_ui():
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
     return Response("chat.html not found", status_code=404)
+
+
+@app.get("/static/{path:path}")
+async def serve_static(path: str):
+    """Serve static JS/CSS files (no caching during dev)."""
+    full = _ROOT / "static" / path
+    if full.is_file():
+        ct = "text/css" if path.endswith(".css") else "application/javascript" if path.endswith(".js") else "application/octet-stream"
+        return FileResponse(full, media_type=ct, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return Response("not found", status_code=404)
 
 
 @app.websocket("/ws/chat")
