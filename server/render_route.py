@@ -1415,28 +1415,38 @@ async def sync_manifest():
 
 @app.get("/api/sync/file")
 async def sync_download(path: str):
-    """Download a single file."""
-    from fastapi.responses import PlainTextResponse
+    """Download a single file. Returns JSON with base64 for binary files."""
     full = _ROOT / path
     # Safety: must be under a sync dir
     if not any(path.startswith(d + "/") for d in _SYNC_DIRS):
         return Response("forbidden", status_code=403)
     if not full.is_file():
         return Response("not found", status_code=404)
-    return PlainTextResponse(full.read_text(), media_type="text/plain")
+    raw = full.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+        return {"content": text, "binary": False}
+    except UnicodeDecodeError:
+        import base64
+        return {"content": base64.b64encode(raw).decode("ascii"), "binary": True}
 
 
 @app.post("/api/sync/file")
 async def sync_upload(request: Request):
-    """Upload/update a single file."""
+    """Upload/update a single file. Accepts base64 for binary files."""
     data = await request.json()
     path = data.get("path", "")
     content = data.get("content", "")
+    is_binary = data.get("binary", False)
     if not any(path.startswith(d + "/") for d in _SYNC_DIRS):
         return {"error": "forbidden — path must be under tools/, workflows/, renderers/, or public/"}
     full = _ROOT / path
     full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(content)
+    if is_binary:
+        import base64
+        full.write_bytes(base64.b64decode(content))
+    else:
+        full.write_text(content)
     return {"uploaded": path}
 
 
@@ -1544,25 +1554,49 @@ def local_manifest():
     return files
 
 
+def is_binary_file(path):
+    """Check if a file is binary by reading first 8KB."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(8192)
+        chunk.decode("utf-8")
+        return False
+    except (UnicodeDecodeError, OSError):
+        return True
+
+
 def pull_file(path):
     """Download a file from the server."""
-    content = api("GET", f"/api/sync/file?path={urllib.request.quote(path)}")
-    if content is None:
+    import base64
+    result = api("GET", f"/api/sync/file?path={urllib.request.quote(path)}")
+    if result is None:
         return False
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
+    if isinstance(result, dict):
+        content = result.get("content", "")
+        if result.get("binary", False):
+            p.write_bytes(base64.b64decode(content))
+        else:
+            p.write_text(content)
+    else:
+        p.write_text(result)
     _local_state[path] = {"hash": file_hash(p), "mtime": p.stat().st_mtime}
     return True
 
 
 def push_file(path):
     """Upload a local file to the server."""
+    import base64
     p = Path(path)
     if not p.is_file():
         return False
-    content = p.read_text()
-    result = api("POST", "/api/sync/file", {"path": path, "content": content})
+    binary = is_binary_file(p)
+    if binary:
+        content = base64.b64encode(p.read_bytes()).decode("ascii")
+    else:
+        content = p.read_text()
+    result = api("POST", "/api/sync/file", {"path": path, "content": content, "binary": binary})
     if result and not result.get("error"):
         _local_state[path] = {"hash": file_hash(p), "mtime": p.stat().st_mtime}
         return True
@@ -1583,12 +1617,21 @@ def delete_local(path):
 
 
 def initial_sync():
-    """First sync — pull everything from server."""
+    """First sync — pull everything from server, retrying if server is down."""
     print(f"Connecting to {SERVER}...")
-    manifest = api("GET", "/api/sync/manifest")
-    if not manifest:
-        print("Failed to connect. Is the server running?")
-        sys.exit(1)
+    manifest = None
+    retries = 0
+    while manifest is None:
+        manifest = api("GET", "/api/sync/manifest")
+        if manifest is None:
+            retries += 1
+            wait = min(retries * 5, 30)
+            print(f"  Server not available, retrying in {wait}s... (attempt {retries})")
+            try:
+                time.sleep(wait)
+            except KeyboardInterrupt:
+                print("\nSync stopped.")
+                sys.exit(0)
 
     remote_files = manifest.get("files", {})
     print(f"Server has {len(remote_files)} files")
