@@ -173,8 +173,9 @@ function connectWs() {
 
       case 'done':
         if (currentAgentMsg && msg.full_text) {
-          if (!agentText.includes(msg.full_text) && msg.full_text) {
-            agentText += msg.full_text;
+          // Only use full_text as fallback when streaming delivered nothing
+          if (!agentText.trim()) {
+            agentText = msg.full_text;
           }
           renderAgentBody();
         }
