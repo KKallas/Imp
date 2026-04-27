@@ -246,8 +246,8 @@ async function promptWorkflow(name) {
       files.push(rel);
     }
   } catch (e) {}
-  const instructions = `Edit this workflow based on the user's request. The workflow is in workflows/${name}/. You can modify the README, edit step scripts, add new steps, or remove steps. Each step has a run(context) function that receives previous_results.`;
-  await openChatWithContext(files, instructions, '', {type: 'workflow', id: `wf-${name}`});
+  const instructions = `Edit this workflow based on the user's request. The workflow is in workflows/${name}/. You can modify the README, edit step scripts, add new steps, or remove steps. Each step has a run(context) function that receives previous_results. Ask the user if they want you to adjust the steps so the workflow matches the functionality described in the README, or something else entirely.`;
+  await openChatWithContext(files, instructions, '', {type: 'workflow', id: `wf-${name}`}, `Edit: ${name}`);
 }
 
 async function configureWorkflow(name, userPrompt) {

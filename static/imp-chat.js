@@ -318,11 +318,11 @@ async function deleteChat() {
   } catch (e) { console.error('deleteChat failed:', e); }
 }
 
-async function openChatWithContext(files, instructions, userPrompt, sourceLock) {
+async function openChatWithContext(files, instructions, userPrompt, sourceLock, title) {
   try {
     const res = await fetch(`${API}/api/chat/new-with-context`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({files, instructions, user_prompt: userPrompt}),
+      body: JSON.stringify({files, instructions, user_prompt: userPrompt, title: title || ''}),
     });
     const data = await res.json();
     if (data.id) {
@@ -334,7 +334,7 @@ async function openChatWithContext(files, instructions, userPrompt, sourceLock) 
       await loadChat(data.id, true);
       const input = document.getElementById('input');
       if (input) {
-        input.value = data.prompt || instructions || '';
+        input.value = '';
         input.focus();
       }
     }

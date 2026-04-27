@@ -287,7 +287,8 @@ async def new_chat_with_context(request: Request):
         f"I have {len(loaded_files)} file(s) loaded: {file_list}.\n\n"
         "Type your instructions and I'll edit the files. "
         "You can see the changes in the Tools or Workflows tab when done.")
-    session.title = f"Edit: {loaded_files[0].split('/')[-1]}" if loaded_files else "AI edit session"
+    custom_title = data.get("title", "")
+    session.title = custom_title or (f"Edit: {loaded_files[0].split('/')[-1]}" if loaded_files else "AI edit session")
     session.title_source = "agent"
     chat_history.save_session(session)
 
