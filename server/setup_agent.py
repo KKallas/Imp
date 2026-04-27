@@ -596,8 +596,24 @@ guidance and surface it.
 3. Pick the target repo.
    - Call `detect_repo_from_git`. If a repo comes back, confirm with the \
 admin before calling `set_repo`.
-   - Otherwise, ask: create a new GitHub repo from this folder (`create_repo`), \
-or link to an existing one (`list_repos` then `set_repo`)?
+   - If no repo found, ask: create a new GitHub repo, or link an existing one?
+   - **If creating new:**
+     a. Suggest the current folder name as the repo name. Ask if they want \
+a different name.
+     b. Ask for a short description (or offer to generate one based on \
+what's in the folder).
+     c. Ask about license — explain common choices briefly (MIT, Apache-2.0, \
+GPL-3.0) and let them pick. The user can ask questions to make an \
+informed choice.
+     d. Ask public or private.
+     e. Generate a basic README.md with the project name, description, and \
+license before creating the repo.
+     f. Call `create_repo` with the chosen name, visibility, and description. \
+This will git init, commit everything, and push.
+     g. After create_repo succeeds, call `set_repo` with the new repo name \
+to save it in config.
+   - **If linking existing:** list repos with `list_repos`, let admin choose, \
+then call `set_repo`.
 4. Provision or verify the Imp Projects-v2 board with `create_imp_project`. \
 Idempotent — safe to run whether the board exists or not.
    - If the tool returns a `conflicts` list (same-named fields with the wrong \
