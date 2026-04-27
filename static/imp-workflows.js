@@ -18,12 +18,14 @@ async function loadWorkflows() {
 
     const openState = imp.getOpenState(el);
 
+    const anyBusy = workflows.some(w => w.status === 'running' || w.status === 'paused');
+
     let html = '';
     for (const wf of workflows) {
       const statusClass = wf.status || 'idle';
       const statusIcons = {idle:'⚪', running:'🔄', paused:'⏸', done:'✅', error:'❌'};
       const sIcon = statusIcons[wf.status] || '⚪';
-      const canStart = wf.status === 'idle' || wf.status === 'done' || wf.status === 'error';
+      const isThisBusy = wf.status === 'running' || wf.status === 'paused';
 
       let stepsHtml = '', readmeHtml = '', rawReadme = '';
       try {
@@ -57,13 +59,16 @@ async function loadWorkflows() {
         }).join('');
       } catch (e) {}
 
+      const startBtn = isThisBusy
+        ? imp.btn('Interrupt', `interruptWorkflow('${wf.name}')`, {cls:'danger'})
+        : imp.btn('Start', `startWorkflow('${wf.name}')`, {cls:'primary', disabled: anyBusy});
       const wfBtns = [
-        imp.btn('Start', `startWorkflow('${wf.name}')`, {cls:'primary', disabled: !canStart}),
-        imp.btn(editingWorkflow === wf.name ? 'Done' : 'Edit', `toggleEditWorkflow('${wf.name}')`),
-        imp.btn('P', `promptWorkflow('${wf.name}')`, {cls:'small', title:'AI edits workflow'}),
-        imp.btn('Clone', `cloneWorkflow('${wf.name}')`),
-        imp.btn('Rename', `renameWorkflow('${wf.name}')`),
-        imp.btn('Delete', `deleteWorkflow('${wf.name}')`, {cls:'danger'})
+        startBtn,
+        imp.btn(editingWorkflow === wf.name ? 'Done' : 'Edit', `toggleEditWorkflow('${wf.name}')`, {disabled: anyBusy}),
+        imp.btn('P', `promptWorkflow('${wf.name}')`, {cls:'small', title:'AI edits workflow', disabled: anyBusy}),
+        imp.btn('Clone', `cloneWorkflow('${wf.name}')`, {disabled: anyBusy}),
+        imp.btn('Rename', `renameWorkflow('${wf.name}')`, {disabled: anyBusy}),
+        imp.btn('Delete', `deleteWorkflow('${wf.name}')`, {cls:'danger', disabled: anyBusy})
       ];
 
       const ranAt = wf.ran_at ? `Last run: ${new Date(wf.ran_at).toLocaleString()}` : '';
@@ -92,22 +97,10 @@ async function loadWorkflows() {
 
 async function startWorkflow(name) {
   try {
-    const wfEl = document.querySelector(`[data-id="wf-${name}"]`);
-    if (wfEl) {
-      wfEl.setAttribute('open', '');
-      const btn = wfEl.querySelector('.wf-start');
-      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
-      const statusEl = wfEl.querySelector('.wf-item-status');
-      if (statusEl) statusEl.innerHTML = '<div class="wf-spinner" style="width:14px;height:14px;"></div> running';
-      wfEl.querySelectorAll('.wf-step-output').forEach(el => el.remove());
-      wfEl.querySelectorAll('.wf-step-item').forEach(el => {
-        el.className = 'wf-step-item pending';
-        el.querySelector('summary').innerHTML = el.querySelector('summary').innerHTML.replace(/[✅❌🔄⏸⏳]/g, '⏳').replace(/ · [\d.]+s/g, '');
-      });
-      const meta = wfEl.querySelector('.wf-body > .wf-item-meta');
-      if (meta) meta.querySelectorAll('em').forEach(el => el.remove());
-    }
+    // Immediately disable all buttons across all workflows
+    document.querySelectorAll('#workflows-list .wf-btn, #workflows-list .wf-start').forEach(b => b.disabled = true);
     await fetch(`${API}/api/workflows/${name}/start`, {method:'POST'});
+    await loadWorkflows();
     const poll = setInterval(async () => {
       if (activeTab !== 'workflows') { clearInterval(poll); return; }
       await loadWorkflows();
@@ -119,6 +112,13 @@ async function startWorkflow(name) {
       } catch(e) { clearInterval(poll); }
     }, 800);
   } catch (e) { console.error('startWorkflow failed:', e); }
+}
+
+async function interruptWorkflow(name) {
+  try {
+    await fetch(`${API}/api/workflows/${name}/abort`, {method:'POST'});
+    await loadWorkflows();
+  } catch (e) { console.error('interruptWorkflow failed:', e); }
 }
 
 function renderToolBrowser(tools) {
