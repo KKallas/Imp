@@ -339,6 +339,23 @@ async def do_create_imp_project(
     }
 
 
+async def do_create_repo(
+    name: str = "",
+    private: bool = False,
+    description: str = "",
+) -> dict[str, Any]:
+    """Create a GitHub repo from the current folder, commit, and push."""
+    cmd = [sys.executable, str(ROOT / "tools" / "github" / "create_repo.py")]
+    if name:
+        cmd.extend(["--name", name])
+    if private:
+        cmd.append("--private")
+    if description:
+        cmd.extend(["--description", description])
+    rc, out = await _run_subprocess(cmd, timeout=60.0)
+    return {"ok": rc == 0, "output": out}
+
+
 async def do_configure_loop(
     enabled: bool = False,
     interval_minutes: int = 60,
@@ -452,6 +469,22 @@ def _build_mcp_server() -> Any:
         return {"content": [{"type": "text", "text": json.dumps(res)}]}
 
     @tool(
+        "create_repo",
+        "Create a new GitHub repo from the current folder. Runs git init, "
+        "gh repo create, commits all files, and pushes. Use this when "
+        "detect_repo_from_git finds no repo and the admin wants to create "
+        "a new one instead of linking an existing one.",
+        {"name": str, "private": bool, "description": str},
+    )
+    async def create_repo_tool(args: dict[str, Any]) -> dict[str, Any]:
+        res = await do_create_repo(
+            name=str(args.get("name", "")),
+            private=bool(args.get("private", False)),
+            description=str(args.get("description", "")),
+        )
+        return {"content": [{"type": "text", "text": json.dumps(res)}]}
+
+    @tool(
         "set_repo",
         "Write the target repo (owner/name) to .imp/config.json after verifying "
         "access via `gh repo view`.",
@@ -531,6 +564,7 @@ def _build_mcp_server() -> Any:
             claude_auth_status_tool,
             claude_auth_login_tool,
             detect_repo_tool,
+            create_repo_tool,
             list_repos_tool,
             set_repo_tool,
             list_projects_tool,
@@ -562,8 +596,8 @@ guidance and surface it.
 3. Pick the target repo.
    - Call `detect_repo_from_git`. If a repo comes back, confirm with the \
 admin before calling `set_repo`.
-   - Otherwise, offer to list repos with `list_repos` and ask the admin to \
-choose one, then call `set_repo`.
+   - Otherwise, ask: create a new GitHub repo from this folder (`create_repo`), \
+or link to an existing one (`list_repos` then `set_repo`)?
 4. Provision or verify the Imp Projects-v2 board with `create_imp_project`. \
 Idempotent — safe to run whether the board exists or not.
    - If the tool returns a `conflicts` list (same-named fields with the wrong \
@@ -640,6 +674,7 @@ async def run_setup(say: SayFn, ask: AskFn) -> None:
                 "claude_auth_status",
                 "claude_auth_login",
                 "detect_repo_from_git",
+                "create_repo",
                 "list_repos",
                 "set_repo",
                 "list_projects",
