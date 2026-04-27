@@ -3,8 +3,6 @@
 let _toolsCache = [];
 let _editingToolGroup = null;
 let _editingTool = null;
-let _describingGroup = null;
-
 async function loadToolsPanel() {
   const el = document.getElementById('tools-list-panel');
   const openState = imp.getOpenState(el);
@@ -29,14 +27,12 @@ async function loadToolsPanel() {
       } catch (e) {}
 
       const isEditing = _editingToolGroup === group;
-      const isDescribing = _describingGroup === group;
 
-      const groupBtns = isDescribing ? [] : isEditing ? [
+      const groupBtns = isEditing ? [
         imp.btn('OK', `saveToolGroupReadme('${group}')`, {cls:'ok'}),
         imp.btn('Cancel', `cancelToolGroupEdit()`)
       ] : [
         imp.btn('Edit', `editToolGroup('${group}')`),
-        imp.btn('Tools→Desc', `describeToolGroup('${group}')`),
         imp.btn('P', `openPromptGroup('${group}')`, {cls:'small', title:'AI Chat'}),
         imp.btn('Copy', `copyToolGroup('${group}')`),
         imp.btn('Rename', `renameToolGroup('${group}')`),
@@ -44,8 +40,7 @@ async function loadToolsPanel() {
       ];
 
       let bodyHtml = '';
-      if (isDescribing) bodyHtml += imp.readme(imp.lockOverlay('AI is generating group description...'));
-      else if (isEditing) bodyHtml += imp.readmeEdit('tg-readme-edit', rawReadme);
+      if (isEditing) bodyHtml += imp.readmeEdit('tg-readme-edit', rawReadme);
       else bodyHtml += imp.readme(readmeHtml);
 
       const toolsHtml = tools.map(t => {
@@ -55,7 +50,6 @@ async function loadToolsPanel() {
           imp.btn('Cancel', `cancelToolScriptEdit()`)
         ] : [
           imp.btn('Edit', `editToolScript('${group}','${t.name}')`),
-          imp.btn('Code→Desc', `describeToolScript('${group}','${t.name}')`),
           imp.btn('P', `openPromptTool('${group}','${t.name}')`, {cls:'small', title:'AI Chat'}),
           imp.btn('Copy', `copyToolScript('${group}','${t.name}')`),
           imp.btn('Delete', `deleteToolScript('${group}','${t.name}')`, {cls:'danger'})
@@ -137,21 +131,6 @@ function openPromptGroup(group) {
   openChatWithContext(files, instructions, '', {type: 'group', id: `tg-${group}`}, `Edit: ${group}`);
 }
 
-async function describeToolGroup(group) {
-  _describingGroup = group;
-  loadToolsPanel();
-  try {
-    const res = await fetch(`${API}/api/tool-group-describe`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({group}),
-    });
-    const data = await res.json();
-    if (data.error) alert('Describe failed: ' + data.error);
-  } catch (e) { alert('Describe failed: ' + e); }
-  _describingGroup = null;
-  loadToolsPanel();
-}
-
 function editToolGroup(group) { _editingToolGroup = group; loadToolsPanel(); }
 function cancelToolGroupEdit() { _editingToolGroup = null; loadToolsPanel(); }
 
@@ -191,23 +170,6 @@ function deleteToolGroup(group) {
     body: JSON.stringify({group}) })
     .then(r => r.json()).then(d => { if (d.error) alert('Delete failed: ' + d.error); loadToolsPanel(); })
     .catch(e => alert('Delete failed: ' + e));
-}
-
-async function describeToolScript(group, name) {
-  const det = document.querySelector(`[data-id="tool-${group}-${name}"]`);
-  if (det) {
-    det.open = true;
-    det.querySelectorAll('.wf-btn, .wf-start').forEach(b => b.style.display = 'none');
-    const container = det.querySelector('.wf-step-output');
-    if (container) container.innerHTML = imp.lockOverlay('AI is generating description...');
-  }
-  try {
-    const res = await fetch(`${API}/api/tool-describe`, { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({group, name}) });
-    const data = await res.json();
-    if (data.error) alert('Describe failed: ' + data.error);
-  } catch (e) { alert('Describe failed: ' + e); }
-  loadToolsPanel();
 }
 
 function editToolScript(group, name) { _editingTool = {group, name}; loadToolsPanel(); }
