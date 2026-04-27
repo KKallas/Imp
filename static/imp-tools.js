@@ -125,7 +125,7 @@ function openPromptTool(group, name) {
   if (!confirm(`Open AI chat for ${group}/${name}?`)) return;
   const files = [`tools/${group}/${name}.py`, `tools/${group}/${name}.step.py`];
   const instructions = `Edit this tool script and/or its workflow step template based on the user's request. The tool is tools/${group}/${name}.py. After making changes, the files will be updated on disk.`;
-  openChatWithContext(files, instructions, '', {type: 'tool', id: `tool-${group}-${name}`});
+  openChatWithContext(files, instructions, '', {type: 'tool', id: `tool-${group}-${name}`}, `Edit: ${group}/${name}`);
 }
 
 function openPromptGroup(group) {
@@ -134,7 +134,7 @@ function openPromptGroup(group) {
   const files = [`tools/${group}/README.md`];
   for (const t of groupTools) files.push(`tools/${group}/${t.name}.py`);
   const instructions = `Edit tools in the "${group}" group based on the user's request. You can modify the README, edit existing tool scripts, or create new ones. All files are under tools/${group}/.`;
-  openChatWithContext(files, instructions, '', {type: 'group', id: `tg-${group}`});
+  openChatWithContext(files, instructions, '', {type: 'group', id: `tg-${group}`}, `Edit: ${group}`);
 }
 
 async function describeToolGroup(group) {
