@@ -89,7 +89,7 @@ async function loadWorkflows() {
     el.innerHTML = html;
 
     imp.restoreOpenState(el, openState);
-    if (_chatSourceLock && _chatSourceLock.type === 'workflow') {
+    if (_chatSourceLock && _chatSourceLock.type === 'workflow' && isWorking) {
       imp.applyLock(el, _chatSourceLock.id, 'AI is editing in Chat tab...');
     }
   } catch (e) { console.error('loadWorkflows failed:', e); }

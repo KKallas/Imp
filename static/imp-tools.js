@@ -115,7 +115,7 @@ async function loadToolsPanel() {
       });
     });
 
-    if (_chatSourceLock) {
+    if (_chatSourceLock && isWorking) {
       imp.applyLock(el, _chatSourceLock.id, 'AI is editing in Chat tab...');
     }
   } catch (e) { console.error('loadToolsPanel failed:', e); el.innerHTML = '<div style="padding:20px;color:#da3633;">Failed to load tools</div>'; }
