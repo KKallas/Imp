@@ -339,6 +339,53 @@ async def do_create_imp_project(
     }
 
 
+async def do_protect_main_branch(repo: str = "") -> dict[str, Any]:
+    """Enable branch protection: require PR review before merge on the default branch."""
+    if not repo:
+        cfg = load_config()
+        repo = cfg.get("repo", "")
+    if not repo:
+        return {"error": "No repo configured yet. Run set_repo first."}
+
+    # Get the default branch name
+    rc, out = await _run_subprocess(
+        ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"]
+    )
+    if rc != 0:
+        return {"error": f"Could not detect default branch: {out}"}
+    branch = out.strip() or "main"
+
+    # Create a branch protection ruleset via gh api
+    rc, out = await _run_subprocess(
+        [
+            "gh", "api", f"repos/{repo}/rulesets", "--method", "POST",
+            "--field", "name=Imp: require PR approval",
+            "--field", "target=branch",
+            "--field", "enforcement=active",
+            "--field", f'conditions[ref_name][include][]=refs/heads/{branch}',
+            "--field", "rules[][type]=pull_request",
+            "--field", "rules[0][parameters][required_approving_review_count]=1",
+            "--field", "rules[0][parameters][dismiss_stale_reviews_on_push]=true",
+        ]
+    )
+    if rc != 0:
+        # Might already exist or need different API — try the older branch protection endpoint
+        rc, out = await _run_subprocess(
+            [
+                "gh", "api", f"repos/{repo}/branches/{branch}/protection",
+                "--method", "PUT",
+                "--input", "-",
+            ],
+        )
+        if rc != 0:
+            return {
+                "error": f"Could not set branch protection: {out}",
+                "suggestion": "You can set this manually: repo Settings > Branches > Add rule > Require pull request reviews",
+            }
+
+    return {"ok": True, "repo": repo, "branch": branch, "protection": "PR approval required before merge"}
+
+
 async def do_create_repo(
     name: str = "",
     private: bool = False,
@@ -469,6 +516,17 @@ def _build_mcp_server() -> Any:
         return {"content": [{"type": "text", "text": json.dumps(res)}]}
 
     @tool(
+        "protect_main_branch",
+        "Enable branch protection on the default branch: require at least one "
+        "PR review approval before merging. Prevents random contributors from "
+        "merging without the owner's review.",
+        {"repo": str},
+    )
+    async def protect_branch_tool(args: dict[str, Any]) -> dict[str, Any]:
+        res = await do_protect_main_branch(repo=str(args.get("repo", "")))
+        return {"content": [{"type": "text", "text": json.dumps(res)}]}
+
+    @tool(
         "create_repo",
         "Create a new GitHub repo from the current folder. Runs git init, "
         "gh repo create, commits all files, and pushes. Use this when "
@@ -565,6 +623,7 @@ def _build_mcp_server() -> Any:
             claude_auth_login_tool,
             detect_repo_tool,
             create_repo_tool,
+            protect_branch_tool,
             list_repos_tool,
             set_repo_tool,
             list_projects_tool,
@@ -612,8 +671,12 @@ license before creating the repo.
 This will git init, commit everything, and push.
      g. After create_repo succeeds, call `set_repo` with the new repo name \
 to save it in config.
+     h. Call `protect_main_branch` to require the owner's approval on all \
+pull requests before they can be merged. Explain this prevents random \
+people from merging PRs without the owner reviewing them.
    - **If linking existing:** list repos with `list_repos`, let admin choose, \
-then call `set_repo`.
+then call `set_repo`. Then call `protect_main_branch` to ensure PR \
+approval is required.
 4. Provision or verify the Imp Projects-v2 board with `create_imp_project`. \
 Idempotent — safe to run whether the board exists or not.
    - If the tool returns a `conflicts` list (same-named fields with the wrong \
@@ -691,6 +754,7 @@ async def run_setup(say: SayFn, ask: AskFn) -> None:
                 "claude_auth_login",
                 "detect_repo_from_git",
                 "create_repo",
+                "protect_main_branch",
                 "list_repos",
                 "set_repo",
                 "list_projects",
