@@ -201,6 +201,10 @@ function connectWs() {
         agentText += `\n\n![${msg.alt || 'chart'}](${msg.url})\n`;
         renderAgentBody();
         break;
+
+      case 'setup_complete':
+        unlockTabs();
+        break;
     }
   };
 }

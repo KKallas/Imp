@@ -162,6 +162,7 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                 try:
                     from server import setup_agent
                     await setup_agent.run_setup(say=setup_say, ask=setup_ask)
+                    await ws.send_json({"type": "setup_complete"})
                 except Exception as exc:
                     await ws.send_json({"type": "error", "text": f"Setup failed: {exc}"})
                 await ws.send_json({"type": "done", "full_text": ""})

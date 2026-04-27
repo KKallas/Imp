@@ -18,7 +18,10 @@ function unlockChatSource() {
   if (activeTab === 'workflows') loadWorkflows();
 }
 
+let _setupComplete = true; // assume complete, overridden by init check
+
 function switchTab(tab) {
+  if (!_setupComplete && tab !== 'chat') return;
   activeTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector(`.tab[onclick*="${tab}"]`).classList.add('active');
@@ -32,8 +35,32 @@ function switchTab(tab) {
   if (tab === 'tools') loadToolsPanel();
 }
 
+function lockTabsForSetup() {
+  _setupComplete = false;
+  document.querySelectorAll('.tab').forEach(t => {
+    if (!t.onclick?.toString().includes('chat')) {
+      t.disabled = true;
+      t.style.opacity = '0.3';
+      t.style.pointerEvents = 'none';
+    }
+  });
+  switchTab('chat');
+}
+
+function unlockTabs() {
+  _setupComplete = true;
+  document.querySelectorAll('.tab').forEach(t => {
+    t.disabled = false;
+    t.style.opacity = '';
+    t.style.pointerEvents = '';
+  });
+}
+
 // --- init ---
 connectWs();
 loadChats();
 loadQueue();
 queuePollInterval = setInterval(() => { if (activeTab === 'queue') loadQueue(); }, 5000);
+fetch(`${API}/api/setup-status`).then(r => r.json()).then(d => {
+  if (!d.complete) lockTabsForSetup();
+}).catch(() => {});

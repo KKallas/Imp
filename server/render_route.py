@@ -88,6 +88,13 @@ async def health():
     return {"status": "ok", "renderers": plugins}
 
 
+@app.get("/api/setup-status")
+async def setup_status():
+    """Return whether first-run setup is complete."""
+    from server.setup_agent import is_setup_complete
+    return {"complete": is_setup_complete()}
+
+
 @app.get("/api/version")
 async def version():
     """Return the newest mtime across all server/pipeline/renderer files."""
