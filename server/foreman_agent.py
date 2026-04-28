@@ -101,14 +101,14 @@ def _make_security_hook(confirm: Optional[ConfirmFn] = None):
             if confirm:
                 file_path = tool_input.get("file_path", "")
                 if tool_name == "Edit":
+                    import difflib
                     old = tool_input.get("old_string", "")
                     new = tool_input.get("new_string", "")
-                    diff_lines = []
-                    for line in old.splitlines():
-                        diff_lines.append(f"- {line}")
-                    for line in new.splitlines():
-                        diff_lines.append(f"+ {line}")
-                    preview = "\n".join(diff_lines)
+                    old_lines = old.splitlines(keepends=True)
+                    new_lines = new.splitlines(keepends=True)
+                    diff = difflib.unified_diff(old_lines, new_lines, lineterm="")
+                    # Skip the --- / +++ header lines
+                    preview = "\n".join(line.rstrip() for line in diff)
                     desc = f"Edit {file_path}"
                 else:
                     content = tool_input.get("content", "")
