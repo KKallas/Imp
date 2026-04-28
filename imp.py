@@ -197,11 +197,25 @@ def start_server() -> None:
 
 
 def reset() -> None:
-    """Delete .imp/ and .venv/ so the next run starts fresh."""
+    """Delete .imp/, .venv/, and .git/ (if origin is KKallas/Imp) so the next run starts fresh."""
     for d in (STATE_DIR, VENV_DIR):
         if d.exists():
             print(f"Removing {d.name}/...", flush=True)
             shutil.rmtree(d)
+    git_dir = ROOT / ".git"
+    if git_dir.exists():
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            if result.returncode == 0 and "KKallas/Imp" in result.stdout:
+                print("Removing .git/ (origin is KKallas/Imp)...", flush=True)
+                shutil.rmtree(git_dir)
+            else:
+                print(".git/ kept (origin is not KKallas/Imp).", flush=True)
+        except Exception:
+            print(".git/ kept (could not check remote).", flush=True)
     print("Reset complete. Run `python imp.py` to start fresh.", flush=True)
 
 
