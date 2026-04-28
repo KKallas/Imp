@@ -102,6 +102,7 @@ async function loadToolsPanel() {
           if (data.docstring) inner += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">${marked.parse(data.docstring)}</div>`;
           if (data.source) inner += imp.fold('Script', imp.code(data.source));
           if (data.step_template) inner += imp.fold('Workflow template', imp.code(data.step_template));
+          if (data.step_template) inner += imp.fold('Testing', buildTestingPanel(tGroup, tName));
           container.innerHTML = inner || '<em style="color:var(--muted);">No source</em>';
         } catch (e) {
           container.innerHTML = `<em style="color:#da3633;">Failed to load</em>`;
@@ -210,4 +211,74 @@ function deleteToolScript(group, name) {
     body: JSON.stringify({group, name}) })
     .then(r => r.json()).then(d => { if (d.error) alert('Delete failed: ' + d.error); loadToolsPanel(); })
     .catch(e => alert('Delete failed: ' + e));
+}
+
+function buildTestingPanel(group, name) {
+  var defaultCtx = '{"previous_results": []}';
+  var runBtn = imp.btn('Run', "runToolDebug('" + group + "','" + name + "')", {cls:'primary'});
+  return '<div style="display:flex;gap:8px;margin-bottom:8px;">'
+    + '<div style="flex:1;"><label style="font-size:11px;color:var(--muted);">Context In</label>'
+    + '<textarea class="wf-readme-edit tool-ctx-in" data-group="' + group + '" data-name="' + name + '" style="min-height:100px;font-family:monospace;font-size:11px;">' + defaultCtx + '</textarea></div>'
+    + '<div style="flex:1;"><label style="font-size:11px;color:var(--muted);">Context Out</label>'
+    + '<textarea class="wf-readme-edit tool-ctx-out" data-group="' + group + '" data-name="' + name + '" style="min-height:100px;font-family:monospace;font-size:11px;"></textarea></div>'
+    + '</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'
+    + runBtn
+    + '<span class="tool-debug-status" data-group="' + group + '" data-name="' + name + '" style="font-size:11px;color:var(--muted);"></span>'
+    + '</div>'
+    + '<div class="tool-debug-log" data-group="' + group + '" data-name="' + name + '" style="display:none;">'
+    + '<label style="font-size:11px;color:var(--muted);">Log</label>'
+    + '<pre class="imp-code" style="max-height:200px;overflow:auto;font-size:11px;"></pre>'
+    + '</div>';
+}
+
+async function runToolDebug(group, name) {
+  var ctxIn = document.querySelector('.tool-ctx-in[data-group="' + group + '"][data-name="' + name + '"]');
+  var ctxOut = document.querySelector('.tool-ctx-out[data-group="' + group + '"][data-name="' + name + '"]');
+  var status = document.querySelector('.tool-debug-status[data-group="' + group + '"][data-name="' + name + '"]');
+  var logDiv = document.querySelector('.tool-debug-log[data-group="' + group + '"][data-name="' + name + '"]');
+  if (!ctxIn) return;
+
+  var context;
+  try {
+    context = JSON.parse(ctxIn.value);
+  } catch (e) {
+    status.textContent = 'Invalid JSON in Context In';
+    status.style.color = '#da3633';
+    return;
+  }
+
+  status.textContent = 'Running...';
+  status.style.color = 'var(--muted)';
+
+  try {
+    var res = await fetch(API + '/api/tool-debug', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({group: group, name: name, context: context}),
+    });
+    var data = await res.json();
+
+    var icon = data.ok ? '\u2705' : '\u274c';
+    var dur = data.duration_s ? ' \u00b7 ' + data.duration_s + 's' : '';
+    status.textContent = icon + ' ' + (data.ok ? 'OK' : 'Error') + dur;
+    status.style.color = data.ok ? '#3fb950' : '#da3633';
+
+    if (data.result) {
+      ctxOut.value = JSON.stringify(data.result, null, 2);
+    } else if (data.error) {
+      ctxOut.value = data.error;
+    }
+
+    var logText = '';
+    if (data.result && data.result.output) logText += data.result.output + '\n';
+    if (data.stderr) logText += data.stderr;
+    if (data.error) logText += data.error;
+    if (logText.trim()) {
+      logDiv.style.display = '';
+      logDiv.querySelector('pre').textContent = logText.trim();
+    }
+  } catch (e) {
+    status.textContent = 'Request failed: ' + e;
+    status.style.color = '#da3633';
+  }
 }
