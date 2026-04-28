@@ -226,15 +226,11 @@ function connectWs() {
 
 function respondConfirm(id, approved) {
   if (ws) ws.send(JSON.stringify({type: 'confirm_response', id: id, approved: approved}));
-  var block = document.querySelector('.confirm-block[data-confirm-id="' + id + '"]');
-  if (block) {
-    block.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
-    block.style.opacity = '0.5';
-    var label = document.createElement('div');
-    label.style.cssText = 'font-size:11px;margin-top:4px;color:' + (approved ? '#3fb950' : '#da3633');
-    label.textContent = approved ? 'Approved' : 'Rejected';
-    block.appendChild(label);
-  }
+  var icon = approved ? '\u2705' : '\u274c';
+  var label = approved ? 'Approved' : 'Rejected';
+  var re = new RegExp('<div class="confirm-block" data-confirm-id="' + id + '"[\\s\\S]*?</div>\\n\\n');
+  agentText = agentText.replace(re, '<span style="font-size:11px;color:var(--muted);">' + icon + ' ' + label + '</span>\n\n');
+  renderAgentBody();
 }
 
 function send() {
