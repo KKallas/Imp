@@ -78,67 +78,77 @@ def reload_prompt() -> str:
 
 # ---------- security hook ----------
 
+# Read-only tools that never need confirmation
+_SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "View"}
 
-async def _security_hook(
-    tool_name: str,
-    tool_input: dict[str, Any],
-    context: Any,
-) -> Any:
-    """Called by Claude SDK before every tool use.
+ConfirmFn = Callable[[str, str, str], Awaitable[bool]]
 
-    Only blocks genuinely dangerous actions:
-    - Write commands need guard LLM approval + budget check
-    - Everything else is allowed through
 
-    The "prefer tools over raw bash" logic is in the system prompt,
-    not enforced here.
+def _make_security_hook(confirm: Optional[ConfirmFn] = None):
+    """Create a security hook closure that can request user confirmation.
+
+    confirm(tool, description, preview) -> bool
     """
-    from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
+    async def hook(tool_name: str, tool_input: dict[str, Any], context: Any) -> Any:
+        from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
-    # Non-Bash tools are always safe
-    if tool_name != "Bash":
+        # Read-only tools are always safe
+        if tool_name in _SAFE_TOOLS:
+            return PermissionResultAllow(behavior="allow")
+
+        # Write tool — show diff preview
+        if tool_name == "Write" or tool_name == "Edit":
+            if confirm:
+                file_path = tool_input.get("file_path", "")
+                content = tool_input.get("content", tool_input.get("new_string", ""))
+                preview = f"File: {file_path}\n\n{content[:2000]}"
+                approved = await confirm(tool_name, f"Write to {file_path}", preview)
+                if not approved:
+                    return PermissionResultDeny(behavior="deny", message="User rejected", interrupt=False)
+            return PermissionResultAllow(behavior="allow")
+
+        # Bash tool — show command
+        if tool_name == "Bash":
+            command = tool_input.get("command", "")
+            if not command.strip():
+                return PermissionResultAllow(behavior="allow")
+
+            # Budget check
+            b = budgets.get_budgets()
+            if b.any_exhausted():
+                exhausted = [c for c in ("tokens", "edits", "tasks") if b.exhausted(c)]
+                return PermissionResultDeny(behavior="deny", message=f"Budget exhausted: {', '.join(exhausted)}", interrupt=False)
+
+            # Classify
+            try:
+                argv = shlex.split(command)
+            except ValueError:
+                argv = command.split()
+
+            classification = guard.classify_command(argv) if argv else "read"
+
+            # Reads don't need confirmation
+            if classification == "read":
+                return PermissionResultAllow(behavior="allow")
+
+            # Writes need user confirmation
+            if confirm:
+                desc = tool_input.get("description", command[:80])
+                approved = await confirm(tool_name, desc, command)
+                if not approved:
+                    return PermissionResultDeny(behavior="deny", message="User rejected", interrupt=False)
+            return PermissionResultAllow(behavior="allow")
+
+        # Other tools — ask for confirmation if available
+        if confirm:
+            desc = tool_input.get("description", tool_name)
+            preview = str(tool_input)[:1000]
+            approved = await confirm(tool_name, desc, preview)
+            if not approved:
+                return PermissionResultDeny(behavior="deny", message="User rejected", interrupt=False)
         return PermissionResultAllow(behavior="allow")
 
-    command = tool_input.get("command", "")
-    if not command.strip():
-        return PermissionResultAllow(behavior="allow")
-
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        argv = command.split()
-
-    if not argv:
-        return PermissionResultAllow(behavior="allow")
-
-    # Classify the command
-    classification = guard.classify_command(argv)
-
-    # Writes need guard approval + budget check
-    if classification == "write":
-        ok, reason = await guard.check_action(
-            user_intent="",
-            proposed_command=command,
-            worker_rationale="Foreman agent tool use",
-        )
-        if not ok:
-            return PermissionResultDeny(
-                behavior="deny",
-                message=f"Guard rejected: {reason}",
-                interrupt=False,
-            )
-
-        b = budgets.get_budgets()
-        if b.any_exhausted():
-            exhausted = [c for c in ("tokens", "edits", "tasks") if b.exhausted(c)]
-            return PermissionResultDeny(
-                behavior="deny",
-                message=f"Budget exhausted: {', '.join(exhausted)}",
-                interrupt=False,
-            )
-
-    # Reads and unknown commands are allowed — Claude decides what to run
-    return PermissionResultAllow(behavior="allow")
+    return hook
 
 
 # ---------- dispatch ----------
@@ -167,6 +177,7 @@ async def dispatch(
     chart: Optional[ChartFn] = None,
     history: Optional[list[Any]] = None,
     turn_ui: Optional[TurnUI] = None,
+    confirm: Optional[ConfirmFn] = None,
 ) -> str:
     """Run one Foreman conversation turn.
 
@@ -198,7 +209,7 @@ async def dispatch(
 
     options = ClaudeAgentOptions(
         system_prompt=_load_system_prompt(),
-        can_use_tool=_security_hook,
+        can_use_tool=_make_security_hook(confirm),
         max_turns=20,
         thinking={"type": "enabled", "budget_tokens": 10000},
     )

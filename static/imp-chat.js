@@ -205,8 +205,36 @@ function connectWs() {
       case 'setup_complete':
         unlockTabs();
         break;
+
+      case 'confirm': {
+        ensureAgentMsg();
+        const confirmId = msg.id;
+        const preview = (msg.preview || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        agentText += `\n\n<div class="confirm-block" data-confirm-id="${confirmId}" style="border:1px solid var(--border);border-radius:6px;padding:12px;margin:8px 0;background:var(--input-bg);">` +
+          `<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${msg.tool} — ${msg.description || ''}</div>` +
+          `<pre style="font-size:11px;white-space:pre-wrap;max-height:300px;overflow:auto;margin:0 0 8px 0;">${preview}</pre>` +
+          `<button class="wf-start" onclick="respondConfirm('${confirmId}',true)">Approve</button> ` +
+          `<button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="respondConfirm('${confirmId}',false)">Reject</button>` +
+          `</div>\n\n`;
+        renderAgentBody();
+        setStatus('Waiting for approval...');
+        break;
+      }
     }
   };
+}
+
+function respondConfirm(id, approved) {
+  if (ws) ws.send(JSON.stringify({type: 'confirm_response', id: id, approved: approved}));
+  var block = document.querySelector('.confirm-block[data-confirm-id="' + id + '"]');
+  if (block) {
+    block.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+    block.style.opacity = '0.5';
+    var label = document.createElement('div');
+    label.style.cssText = 'font-size:11px;margin-top:4px;color:' + (approved ? '#3fb950' : '#da3633');
+    label.textContent = approved ? 'Approved' : 'Rejected';
+    block.appendChild(label);
+  }
 }
 
 function send() {
