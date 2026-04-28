@@ -3,6 +3,52 @@
 // --- markdown ---
 marked.setOptions({ breaks: true, gfm: true });
 
+// --- diff rendering (GitHub-style) ---
+function renderDiff(text) {
+  var lines = text.split('\n');
+  var rows = '';
+  var oldN = 0, newN = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var bg, sign, lOld, lNew, content;
+    if (line.startsWith('@@')) {
+      var m = line.match(/@@ -(\d+)/);
+      if (m) { oldN = parseInt(m[1]) - 1; }
+      m = line.match(/\+(\d+)/);
+      if (m) { newN = parseInt(m[1]) - 1; }
+      rows += '<tr style="background:#1e3a5f;"><td colspan="3" style="padding:2px 8px;font-size:10px;color:#58a6ff;font-family:monospace;">' + line + '</td></tr>';
+      continue;
+    }
+    if (line.startsWith('-')) {
+      oldN++;
+      bg = 'rgba(248,81,73,0.15)';
+      sign = '<span style="color:#da3633;user-select:none;">-</span>';
+      lOld = oldN;
+      lNew = '';
+      content = line.substring(1);
+    } else if (line.startsWith('+')) {
+      newN++;
+      bg = 'rgba(63,185,80,0.15)';
+      sign = '<span style="color:#3fb950;user-select:none;">+</span>';
+      lOld = '';
+      lNew = newN;
+      content = line.substring(1);
+    } else {
+      oldN++; newN++;
+      bg = 'transparent';
+      sign = ' ';
+      lOld = oldN;
+      lNew = newN;
+      content = line.startsWith(' ') ? line.substring(1) : line;
+    }
+    rows += '<tr style="background:' + bg + ';">' +
+      '<td style="padding:0 6px;font-size:10px;color:var(--muted);text-align:right;user-select:none;min-width:28px;font-family:monospace;">' + lOld + '</td>' +
+      '<td style="padding:0 6px;font-size:10px;color:var(--muted);text-align:right;user-select:none;min-width:28px;font-family:monospace;">' + lNew + '</td>' +
+      '<td style="padding:0 4px;font-family:monospace;font-size:11px;white-space:pre-wrap;">' + sign + content + '</td></tr>';
+  }
+  return '<table style="width:100%;border-collapse:collapse;border-spacing:0;">' + rows + '</table>';
+}
+
 function renderMd(text) {
   const toolBlocks = [];
   text = text.replace(/<details class="(?:tool-block|thinking-block|imp-fold)[^"]*">[\s\S]*?<\/details>/g, (match) => {
@@ -210,14 +256,10 @@ function connectWs() {
         ensureAgentMsg();
         const confirmId = msg.id;
         const preview = (msg.preview || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        const diffHtml = preview.split('\n').map(line => {
-          if (line.startsWith('+ ')) return '<span style="color:#3fb950;">' + line + '</span>';
-          if (line.startsWith('- ')) return '<span style="color:#da3633;">' + line + '</span>';
-          return line;
-        }).join('\n');
+        const diffHtml = renderDiff(preview);
         agentText += `\n\n<div class="confirm-block" data-confirm-id="${confirmId}">` +
           `<details class="tool-block" open><summary>\u23f3 ${msg.tool} \u2014 ${msg.description || ''}</summary>` +
-          `<pre style="font-size:11px;white-space:pre-wrap;max-height:300px;overflow:auto;margin:8px 0;">${diffHtml}</pre>` +
+          `<div style="max-height:300px;overflow:auto;margin:8px 0;border:1px solid var(--border);border-radius:4px;">${diffHtml}</div>` +
           `<div style="padding:4px 0 8px;"><button class="wf-start" onclick="respondConfirm('${confirmId}',true)">Approve</button> ` +
           `<button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="respondConfirm('${confirmId}',false)">Reject</button></div>` +
           `</details></div>\n\n`;

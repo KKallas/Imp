@@ -106,14 +106,15 @@ def _make_security_hook(confirm: Optional[ConfirmFn] = None):
                     new = tool_input.get("new_string", "")
                     old_lines = old.splitlines(keepends=True)
                     new_lines = new.splitlines(keepends=True)
-                    diff = difflib.unified_diff(old_lines, new_lines, lineterm="")
-                    # Skip the --- / +++ header lines
-                    preview = "\n".join(line.rstrip() for line in diff)
+                    diff_lines = list(difflib.unified_diff(old_lines, new_lines, n=2, lineterm=""))
+                    # Keep @@ headers and change lines, skip --- / +++ file headers
+                    preview = "\n".join(line.rstrip() for line in diff_lines if not line.startswith(("---", "+++")))
                     desc = f"Edit {file_path}"
                 else:
                     content = tool_input.get("content", "")
-                    preview = "\n".join(f"+ {line}" for line in content[:2000].splitlines())
-                    desc = f"Write {file_path} ({len(content)} chars)"
+                    line_count = len(content.splitlines())
+                    preview = f"New file: {line_count} lines, {len(content)} chars"
+                    desc = f"Write {file_path}"
                 approved = await confirm(tool_name, desc, preview)
                 if not approved:
                     return PermissionResultDeny(behavior="deny", message="User rejected", interrupt=False)
