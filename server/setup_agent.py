@@ -473,17 +473,34 @@ SayFn = Callable[[str], Awaitable[None]]
 AskFn = Callable[[str], Awaitable[Optional[str]]]
 
 
-async def run_setup(say: SayFn, ask: AskFn) -> None:
+ToolStartFn = Callable[[str, dict], Awaitable[None]]
+ToolDoneFn = Callable[[str, str, float, str], Awaitable[None]]
+
+
+async def _allow_all(tool_name: str, tool_input: dict, context: Any) -> Any:
+    """Auto-allow all tools during setup — no permission prompts."""
+    from claude_agent_sdk.types import PermissionResultAllow
+    return PermissionResultAllow(behavior="allow")
+
+
+async def run_setup(
+    say: SayFn,
+    ask: AskFn,
+    tool_start: Optional[ToolStartFn] = None,
+    tool_done: Optional[ToolDoneFn] = None,
+) -> None:
     """Drive the setup conversation until `setup_complete=true`.
 
     Uses native Claude SDK tools (Bash, Read, Write) — same pattern as
     the Foreman agent. No MCP server. The system prompt tells the agent
-    what commands to run.
+    what commands to run. All tools are auto-allowed (no permission prompts).
     """
     await say(
         "Hi — I'm the **Setup Agent**. Let me check what's needed to get "
         "Imp running.\n\n"
     )
+
+    import time
 
     from claude_agent_sdk import (  # type: ignore[import-not-found]
         AssistantMessage,
@@ -496,8 +513,11 @@ async def run_setup(say: SayFn, ask: AskFn) -> None:
 
     options = ClaudeAgentOptions(
         system_prompt=SETUP_SYSTEM_PROMPT,
+        can_use_tool=_allow_all,
         max_turns=30,
     )
+
+    pending_tools: dict[str, float] = {}  # tool_id -> start_time
 
     current_turn = "start"
     async with ClaudeSDKClient(options=options) as client:
@@ -511,9 +531,19 @@ async def run_setup(say: SayFn, ask: AskFn) -> None:
                             assistant_text_parts.append(block.text)
                         elif isinstance(block, ToolUseBlock):
                             desc = (block.input or {}).get("description", block.name)
-                            await say(f"_Running: {desc}_\n")
+                            pending_tools[block.id] = time.time()
+                            if tool_start:
+                                await tool_start(block.name, {"description": desc})
                         elif isinstance(block, ToolResultBlock):
-                            pass  # results are consumed by the SDK
+                            started = pending_tools.pop(getattr(block, "tool_use_id", ""), time.time())
+                            dur = time.time() - started
+                            output = ""
+                            for c in getattr(block, "content", []):
+                                if hasattr(c, "text"):
+                                    output += c.text
+                            status = "error" if getattr(block, "is_error", False) else "ok"
+                            if tool_done:
+                                await tool_done(block.name if hasattr(block, "name") else "tool", status, dur, output[:500])
 
             reply = "".join(assistant_text_parts).strip()
             if reply:

@@ -196,7 +196,19 @@ def start_server() -> None:
     )
 
 
+def reset() -> None:
+    """Delete .imp/ and .venv/ so the next run starts fresh."""
+    for d in (STATE_DIR, VENV_DIR):
+        if d.exists():
+            print(f"Removing {d.name}/...", flush=True)
+            shutil.rmtree(d)
+    print("Reset complete. Run `python imp.py` to start fresh.", flush=True)
+
+
 def main() -> None:
+    if "--reset" in sys.argv:
+        reset()
+        return
     check_python_version()
     bootstrap_venv()
     ensure_dependencies()

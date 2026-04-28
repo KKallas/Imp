@@ -110,16 +110,24 @@ async def handle_ws_chat(ws: WebSocket) -> None:
 
             async def setup_ask(q: str) -> str | None:
                 await ws.send_json({"type": "token", "text": q})
+                await ws.send_json({"type": "status", "text": ""})
                 await ws.send_json({"type": "done", "full_text": q})
                 while True:
                     raw2 = await ws.receive_text()
                     msg2 = json.loads(raw2)
                     if msg2.get("type") == "message" and msg2.get("text", "").strip():
+                        await ws.send_json({"type": "status", "text": "Setup Agent is working..."})
                         return msg2["text"].strip()
+
+            async def setup_tool_start(name: str, args: dict) -> None:
+                await ws.send_json({"type": "tool_start", "name": name, "args": args})
+
+            async def setup_tool_done(name: str, status: str, duration: float, output: str) -> None:
+                await ws.send_json({"type": "tool_done", "name": name, "status": status, "duration": duration, "output": output})
 
             try:
                 await ws.send_json({"type": "status", "text": "Setup Agent is working..."})
-                await setup_agent.run_setup(say=setup_say, ask=setup_ask)
+                await setup_agent.run_setup(say=setup_say, ask=setup_ask, tool_start=setup_tool_start, tool_done=setup_tool_done)
                 await ws.send_json({"type": "setup_complete"})
             except Exception as exc:
                 await ws.send_json({"type": "error", "text": f"Setup failed: {exc}"})
