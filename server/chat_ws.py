@@ -133,6 +133,8 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                 await ws.send_json({"type": "error", "text": f"Setup failed: {exc}"})
             await ws.send_json({"type": "status", "text": ""})
             await ws.send_json({"type": "done", "full_text": ""})
+    except (WebSocketDisconnect, RuntimeError):
+        return
     except Exception:
         pass
 
