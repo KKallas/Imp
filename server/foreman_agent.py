@@ -37,7 +37,19 @@ from .turn_ui import (  # noqa: F401, E402
 # ---------- system prompt ----------
 
 
+_cached_prompt: str | None = None
+
+
 def _load_system_prompt() -> str:
+    """Return cached system prompt. Built once at first call."""
+    global _cached_prompt
+    if _cached_prompt is not None:
+        return _cached_prompt
+    _cached_prompt = _build_system_prompt()
+    return _cached_prompt
+
+
+def _build_system_prompt() -> str:
     """Load from file + append auto-discovered tool list."""
     base = ""
     if _PROMPT_FILE.exists():
@@ -55,6 +67,13 @@ def _load_system_prompt() -> str:
         pass
 
     return base
+
+
+def reload_prompt() -> str:
+    """Force-rebuild and re-cache the system prompt. Called by reload_tools.py."""
+    global _cached_prompt
+    _cached_prompt = _build_system_prompt()
+    return _cached_prompt
 
 
 # ---------- security hook ----------

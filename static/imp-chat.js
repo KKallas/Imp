@@ -252,20 +252,35 @@ async function loadChats() {
 
 function renderTurnFull(turn) {
   let parts = [];
-  if (turn.thinking && turn.thinking.length) {
-    turn.thinking.forEach(t => {
-      const escaped = t.replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      parts.push(`<details class="thinking-block"><summary>Thinking</summary><div class="thinking-content">${escaped}</div></details>`);
+  if (turn.blocks && turn.blocks.length) {
+    // Ordered blocks preserve the interleaved sequence
+    turn.blocks.forEach(b => {
+      if (b.type === 'thinking') {
+        const escaped = b.text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        parts.push(`<details class="thinking-block"><summary>Thinking</summary><div class="thinking-content">${escaped}</div></details>`);
+      } else if (b.type === 'tool') {
+        const icon = b.status === 'ok' ? '✅' : (b.status === 'error' ? '❌' : '⏳');
+        const dur = b.duration_s ? ` · ${b.duration_s.toFixed(1)}s` : '';
+        const output = (b.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        parts.push(`<details class="tool-block ${b.status || ''}"><summary>${icon} ${b.name}(${formatArgs(b.args || {})})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+      }
     });
-  }
-  if (turn.tool_calls && turn.tool_calls.length) {
-    turn.tool_calls.forEach(tc => {
-      const icon = tc.status === 'ok' ? '✅' : (tc.status === 'error' ? '❌' : '⏳');
-      const dur = tc.duration_s ? ` · ${tc.duration_s.toFixed(1)}s` : '';
-      const args = tc.args || {};
-      const output = (tc.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(args)})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
-    });
+  } else {
+    // Fallback for old turns without blocks
+    if (turn.thinking && turn.thinking.length) {
+      turn.thinking.forEach(t => {
+        const escaped = t.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        parts.push(`<details class="thinking-block"><summary>Thinking</summary><div class="thinking-content">${escaped}</div></details>`);
+      });
+    }
+    if (turn.tool_calls && turn.tool_calls.length) {
+      turn.tool_calls.forEach(tc => {
+        const icon = tc.status === 'ok' ? '✅' : (tc.status === 'error' ? '❌' : '⏳');
+        const dur = tc.duration_s ? ` · ${tc.duration_s.toFixed(1)}s` : '';
+        const output = (tc.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(tc.args || {})})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+      });
+    }
   }
   if (turn.content) parts.push(turn.content);
   return parts.join('\n\n');
