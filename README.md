@@ -26,10 +26,36 @@ When you open the browser for the first time, a setup wizard in the Chat tab gui
 
 - Checking if the folder is a git repository
 - Connecting to GitHub via `gh` CLI
-- Linking or creating a GitHub repo
-- Setting up a project board
+- Naming your project, picking a license, writing a README
+- Creating a GitHub repo and pushing your files
+- Setting up branch protection (require PR approval)
 
 Other tabs (Queue, Workflows, Tools) are locked until setup completes. Once done, the full interface is available.
+
+## How it works
+
+Imp is deliberately simple. No MCP servers, no complex protocols, no middleware layers.
+
+```
+Browser (HTML + JS)
+    ↕ WebSocket
+FastAPI server (render_route.py)
+    ↕ claude-agent-sdk
+Claude (with native Bash, Read, Write tools)
+    ↕ subprocess
+gh CLI, git, python scripts in tools/
+```
+
+The agent talks to GitHub through `gh` commands. Tools are plain Python scripts with argparse. Workflows are folders of numbered step scripts. Everything the agent does is a shell command or a file read/write — the same things you'd do manually in a terminal.
+
+### Why no MCP
+
+MCP adds a protocol layer between the agent and the tools. Imp doesn't need it — the agent already has Bash access and can run any command directly. Keeping it simple means:
+
+- Fewer moving parts to break
+- Tools are just `.py` files you can run yourself
+- No protocol versioning, no server lifecycle, no tool registration
+- Easy to debug: if a tool works in your terminal, it works in Imp
 
 ## Usage
 

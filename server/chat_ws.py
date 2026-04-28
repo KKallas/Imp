@@ -118,10 +118,12 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                         return msg2["text"].strip()
 
             try:
+                await ws.send_json({"type": "status", "text": "Setup Agent is working..."})
                 await setup_agent.run_setup(say=setup_say, ask=setup_ask)
                 await ws.send_json({"type": "setup_complete"})
             except Exception as exc:
                 await ws.send_json({"type": "error", "text": f"Setup failed: {exc}"})
+            await ws.send_json({"type": "status", "text": ""})
             await ws.send_json({"type": "done", "full_text": ""})
     except Exception:
         pass
@@ -157,31 +159,6 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                 continue
 
             chat_id = msg.get("chat_id")
-
-            # Run setup if not complete
-            from server.setup_agent import is_setup_complete
-            if not is_setup_complete():
-                async def setup_say(t: str) -> None:
-                    await ws.send_json({"type": "token", "text": t})
-
-                async def setup_ask(q: str) -> str | None:
-                    await ws.send_json({"type": "token", "text": q})
-                    await ws.send_json({"type": "done", "full_text": q})
-                    # Wait for the user's reply
-                    while True:
-                        raw2 = await ws.receive_text()
-                        msg2 = json.loads(raw2)
-                        if msg2.get("type") == "message" and msg2.get("text", "").strip():
-                            return msg2["text"].strip()
-
-                try:
-                    from server import setup_agent
-                    await setup_agent.run_setup(say=setup_say, ask=setup_ask)
-                    await ws.send_json({"type": "setup_complete"})
-                except Exception as exc:
-                    await ws.send_json({"type": "error", "text": f"Setup failed: {exc}"})
-                await ws.send_json({"type": "done", "full_text": ""})
-                continue
 
             # Load or create session
             session = None
