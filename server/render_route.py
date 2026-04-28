@@ -95,6 +95,14 @@ async def setup_status():
     return {"complete": is_setup_complete()}
 
 
+@app.post("/api/reload-prompt")
+async def reload_prompt():
+    """Force-reload the Foreman system prompt (re-scans tools and workflows)."""
+    from server.foreman_agent import reload_prompt
+    prompt = reload_prompt()
+    return {"reloaded": True, "length": len(prompt)}
+
+
 @app.get("/api/version")
 async def version():
     """Return the newest mtime across all server/pipeline/renderer files."""
