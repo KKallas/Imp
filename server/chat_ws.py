@@ -99,14 +99,29 @@ async def handle_ws_chat(ws: WebSocket) -> None:
     await ws.accept()
     current_task: asyncio.Task | None = None
 
-    # Prompt setup if needed
+    # Auto-start setup if needed
     try:
         from server.setup_agent import is_setup_complete
         if not is_setup_complete():
-            await ws.send_json({
-                "type": "token",
-                "text": "**Setup required.** Type anything to start the setup wizard.\n",
-            })
+            from server import setup_agent
+
+            async def setup_say(t: str) -> None:
+                await ws.send_json({"type": "token", "text": t})
+
+            async def setup_ask(q: str) -> str | None:
+                await ws.send_json({"type": "token", "text": q})
+                await ws.send_json({"type": "done", "full_text": q})
+                while True:
+                    raw2 = await ws.receive_text()
+                    msg2 = json.loads(raw2)
+                    if msg2.get("type") == "message" and msg2.get("text", "").strip():
+                        return msg2["text"].strip()
+
+            try:
+                await setup_agent.run_setup(say=setup_say, ask=setup_ask)
+                await ws.send_json({"type": "setup_complete"})
+            except Exception as exc:
+                await ws.send_json({"type": "error", "text": f"Setup failed: {exc}"})
             await ws.send_json({"type": "done", "full_text": ""})
     except Exception:
         pass

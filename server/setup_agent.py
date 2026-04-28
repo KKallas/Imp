@@ -721,15 +721,11 @@ async def run_setup(say: SayFn, ask: AskFn) -> None:
     Caller is responsible for wiring those to the UI layer.
     """
     await say(
-        "Hi — I'm the **Setup Agent**. I'll walk you through the checks Imp "
-        "needs before Foreman can do real work. I'll only act with your "
-        "confirmation. Say *ready* (or something like it) to begin."
+        "Hi — I'm the **Setup Agent**. Let me check what's needed to get "
+        "Imp running.\n\n"
     )
 
-    first = await ask("Ready to start setup?")
-    if first is None:
-        await say("No response — setup paused. Refresh to try again.")
-        return
+    first = "start"
 
     # Lazy SDK import so test / type-checker environments without the
     # SDK can still import this module.
