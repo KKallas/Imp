@@ -33,6 +33,7 @@ class WebSocketTurnUI(TurnUI):
         self.thinking_log: list[str] = []
         self.tool_log: list[dict[str, Any]] = []
         self.artifact_log: list[dict[str, Any]] = []
+        self.blocks_log: list[dict[str, Any]] = []
 
     async def _send(self, msg: dict[str, Any]) -> None:
         try:
@@ -62,13 +63,15 @@ class WebSocketTurnUI(TurnUI):
 
     async def tool_finished(self, index: int, item: PlanItem) -> None:
         # Save to log
-        self.tool_log.append({
+        tool_entry = {
             "name": item.name,
             "args": item.args,
             "status": item.status,
             "duration_s": item.duration_s,
             "output": item.output[:4000],
-        })
+        }
+        self.tool_log.append(tool_entry)
+        self.blocks_log.append({"type": "tool", **tool_entry})
         await self._send({
             "type": "tool_done",
             "name": item.name,
@@ -90,6 +93,7 @@ class WebSocketTurnUI(TurnUI):
 
     async def thinking_update(self, text: str) -> None:
         self.thinking_log.append(text)
+        self.blocks_log.append({"type": "thinking", "text": text})
         await self._send({"type": "status", "text": "Thinking..."})
         await self._send({"type": "thinking", "text": text})
 
@@ -233,6 +237,7 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                             tool_calls=turn_ui.tool_log,
                             thinking=turn_ui.thinking_log,
                             artifacts=turn_ui.artifact_log,
+                            blocks=turn_ui.blocks_log,
                         )
                         session.truncate()
                         chat_history.save_session(session)

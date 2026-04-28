@@ -76,6 +76,7 @@ class Turn:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     thinking: list[str] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    blocks: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -89,6 +90,8 @@ class Turn:
             d["thinking"] = list(self.thinking)
         if self.artifacts:
             d["artifacts"] = list(self.artifacts)
+        if self.blocks:
+            d["blocks"] = list(self.blocks)
         return d
 
     @classmethod
@@ -100,6 +103,7 @@ class Turn:
             tool_calls=list(data.get("tool_calls") or []),
             thinking=list(data.get("thinking") or []),
             artifacts=list(data.get("artifacts") or []),
+            blocks=list(data.get("blocks") or []),
         )
 
 
@@ -173,6 +177,7 @@ class ChatSession:
         tool_calls: Optional[list[dict[str, Any]]] = None,
         thinking: Optional[list[str]] = None,
         artifacts: Optional[list[dict[str, Any]]] = None,
+        blocks: Optional[list[dict[str, Any]]] = None,
     ) -> Turn:
         turn = Turn(
             role=role,
@@ -180,6 +185,7 @@ class ChatSession:
             tool_calls=list(tool_calls or []),
             thinking=list(thinking or []),
             artifacts=list(artifacts or []),
+            blocks=list(blocks or []),
         )
         self.turns.append(turn)
         self.last_active_at = turn.timestamp
