@@ -34,7 +34,7 @@ VENV_DIR = ROOT / ".venv"
 REQUIREMENTS_FILE = ROOT / "requirements.txt"
 STATE_DIR = ROOT / ".imp"
 HOST = "127.0.0.1"
-PORT = 8420
+PORT = 8421
 
 # Pip package name → import name (only when they differ)
 IMPORT_NAME_OVERRIDES = {
@@ -179,158 +179,50 @@ def ensure_dependencies() -> None:
 
 # ---------- server launch ----------
 
-def ensure_chainlit_secret() -> str:
-    """Generate and persist a CHAINLIT_AUTH_SECRET on first run."""
-    secret_file = STATE_DIR / "chainlit_secret"
-    if secret_file.exists():
-        return secret_file.read_text().strip()
-    import secrets
-    secret = secrets.token_urlsafe(32)
-    STATE_DIR.mkdir(exist_ok=True)
-    secret_file.write_text(secret)
-    secret_file.chmod(0o600)
-    return secret
-
-
-def ensure_admin_password() -> None:
-    """Prompt the admin to set a password on very first run.
-
-    Runs only if .imp/config.json does not already contain
-    `admin_password_hash`. Uses `getpass` so the password is never echoed
-    to the terminal, and requires double-entry confirmation. The plaintext
-    never leaves this function — we hash it with argon2id and persist only
-    the hash.
-
-    By the time this returns, Chainlit's auth callback is guaranteed to
-    have a hash to verify against, so there is no "bootstrap mode" and no
-    possibility of the password being entered in the browser chat (where
-    it would otherwise appear in the chat log).
-    """
-    import getpass
-    import json
-
-    cfg_file = STATE_DIR / "config.json"
-    cfg: dict = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text())
-        except json.JSONDecodeError:
-            cfg = {}
-
-    if cfg.get("admin_password_hash"):
-        return  # Already set.
-
-    from argon2 import PasswordHasher
-
-    print("\nFirst-run admin password setup", flush=True)
-    print(
-        "This runs once. Imp will hash the password with argon2id and "
-        "store only the hash in .imp/config.json. The plaintext is never "
-        "written to disk or sent to the browser.",
-        flush=True,
-    )
-    while True:
-        try:
-            pw1 = getpass.getpass("Choose an admin password: ")
-        except EOFError:
-            print(
-                "\nNo TTY for password input. Set IMP_ADMIN_PASSWORD in the "
-                "environment once to seed an initial password non-interactively, "
-                "then unset it. Aborting.",
-                flush=True,
-            )
-            sys.exit(1)
-        if len(pw1) < 4:
-            print("Too short — minimum 4 characters.", flush=True)
-            continue
-        pw2 = getpass.getpass("Confirm password: ")
-        if pw1 != pw2:
-            print("Passwords don't match. Try again.", flush=True)
-            continue
-        break
-
-    hashed = PasswordHasher().hash(pw1)
-    cfg["admin_password_hash"] = hashed
-    STATE_DIR.mkdir(exist_ok=True)
-    cfg_file.write_text(json.dumps(cfg, indent=2))
-    cfg_file.chmod(0o600)
-    print("Admin password set.\n", flush=True)
-
-
-def ensure_admin_password_from_env() -> None:
-    """Alternate path for non-interactive deployments.
-
-    If IMP_ADMIN_PASSWORD is set in the env and no hash exists yet, seed
-    the hash from that value and exit. Intended for one-time seeding from
-    an infrastructure-provisioning script on a headless host, NOT as a
-    runtime password source.
-    """
-    import json
-
-    env_pw = os.environ.get("IMP_ADMIN_PASSWORD")
-    if not env_pw:
-        return
-
-    cfg_file = STATE_DIR / "config.json"
-    cfg: dict = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text())
-        except json.JSONDecodeError:
-            cfg = {}
-    if cfg.get("admin_password_hash"):
-        return
-
-    if len(env_pw) < 4:
-        print("IMP_ADMIN_PASSWORD is set but too short (min 4). Ignoring.", flush=True)
-        return
-
-    from argon2 import PasswordHasher
-
-    cfg["admin_password_hash"] = PasswordHasher().hash(env_pw)
-    STATE_DIR.mkdir(exist_ok=True)
-    cfg_file.write_text(json.dumps(cfg, indent=2))
-    cfg_file.chmod(0o600)
-    print("Admin password seeded from IMP_ADMIN_PASSWORD env var.", flush=True)
-    print("You should unset IMP_ADMIN_PASSWORD now — it is only needed for first-run seeding.", flush=True)
-
-
 def start_server() -> None:
-    secret = ensure_chainlit_secret()
-    os.environ["CHAINLIT_AUTH_SECRET"] = secret
-
-    # Seed-from-env path first (headless deploys), then interactive path
-    # (human running it from a terminal).
-    ensure_admin_password_from_env()
-    ensure_admin_password()
-
-    print("\nLoading chainlit...", flush=True)
-    print(
-        "(First run can take 30-60s on macOS while Python compiles bytecode "
-        "for the chainlit dep tree. Subsequent runs are fast. Don't Ctrl+C "
-        "unless it's been over a minute with no output.)",
-        flush=True,
-    )
-    print(f"\nWill be available at http://{HOST}:{PORT}", flush=True)
+    print(f"\nStarting Imp at http://{HOST}:{PORT}", flush=True)
     print("Ctrl+C to stop.\n", flush=True)
 
-    main_py = ROOT / "main.py"
     os.execvp(
         sys.executable,
         [
             sys.executable,
-            "-m",
-            "chainlit",
-            "run",
-            str(main_py),
+            "-m", "uvicorn",
+            "server.render_route:app",
             "--host", HOST,
             "--port", str(PORT),
-            "--headless",
+            "--log-level", "warning",
         ],
     )
 
 
+def reset() -> None:
+    """Delete .imp/, .venv/, and .git/ (if origin is KKallas/Imp) so the next run starts fresh."""
+    for d in (STATE_DIR, VENV_DIR):
+        if d.exists():
+            print(f"Removing {d.name}/...", flush=True)
+            shutil.rmtree(d)
+    git_dir = ROOT / ".git"
+    if git_dir.exists():
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            if result.returncode == 0 and "KKallas/Imp" in result.stdout:
+                print("Removing .git/ (origin is KKallas/Imp)...", flush=True)
+                shutil.rmtree(git_dir)
+            else:
+                print(".git/ kept (origin is not KKallas/Imp).", flush=True)
+        except Exception:
+            print(".git/ kept (could not check remote).", flush=True)
+    print("Reset complete. Run `python imp.py` to start fresh.", flush=True)
+
+
 def main() -> None:
+    if "--reset" in sys.argv:
+        reset()
+        return
     check_python_version()
     bootstrap_venv()
     ensure_dependencies()

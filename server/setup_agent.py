@@ -1,51 +1,11 @@
 """server/setup_agent.py — LLM-driven first-run onboarding.
 
-Distinct persona from the Foreman dispatcher. Narrow toolset scoped to
-the four things a fresh Imp install needs before Foreman can do real
-work:
+Uses the same native-tools pattern as the Foreman agent (Bash, Read,
+Write). No MCP server. The system prompt tells the agent what commands
+to run (gh, git, python tools/github/create_repo.py, etc.).
 
-  1. Ensure `gh` CLI is authenticated.
-  2. Pick the target repo (auto-detect from git, or user provides).
-  3. (Later: create an Imp Projects-v2 board — blocked on KKallas/Imp#10.)
-  4. (Later: configure the autonomous loop — blocked on KKallas/Imp#23.)
-  5. Mark setup complete and hand off to Foreman.
-
-Unlike the Foreman dispatcher (server/dispatcher.py), the Setup Agent
-uses **claude-agent-sdk's native tool-calling**: tools are real Python
-functions registered via `create_sdk_mcp_server`, and the LLM invokes
-them through the SDK's MCP pipeline. This matches v0.1.md §Setup Agent
-and is the right shape when the agent is supposed to do several
-concrete, independently-testable actions in sequence.
-
-## Tools
-
-Fully implemented:
-  - `gh_auth_status` — check `gh auth status`
-  - `detect_repo_from_git` — parse `git remote get-url origin`
-  - `list_repos` — `gh repo list` with access
-  - `list_projects` — `gh project list --owner`
-  - `set_repo` — write the chosen repo to `.imp/config.json`
-  - `set_admin_password` — update the argon2 hash in config
-  - `configure_loop` — persist loop settings (no loop runner yet)
-  - `mark_setup_complete` — flip setup_complete=true
-
-Pragmatic (returns user-instruction message, no automation):
-  - `gh_auth_login` — instructs the admin to run `gh auth login --web`
-    in a terminal. Full device-flow polling is a follow-up.
-  - `claude_auth_status` / `claude_auth_login` — report env-var /
-    bundled CLI state and tell the admin how to fix it.
-
-Stub (blocked on another issue):
-  - `create_imp_project` — calls `pipeline/project_bootstrap.py`,
-    currently a stub that returns a "KKallas/Imp#10 not merged yet"
-    error.
-
-## No UI import
-
-The module has no UI import. `run_setup(say, ask)` takes two
-caller-provided coroutines for UI; the WebSocket handler wires them.
-Tools themselves return structured dicts — they never talk to the user
-directly; the LLM decides what to say.
+`run_setup(say, ask)` takes two caller-provided coroutines for UI;
+the WebSocket handler wires them.
 """
 
 from __future__ import annotations
@@ -339,6 +299,70 @@ async def do_create_imp_project(
     }
 
 
+async def do_protect_main_branch(repo: str = "") -> dict[str, Any]:
+    """Enable branch protection: require PR review before merge on the default branch."""
+    if not repo:
+        cfg = load_config()
+        repo = cfg.get("repo", "")
+    if not repo:
+        return {"error": "No repo configured yet. Run set_repo first."}
+
+    # Get the default branch name
+    rc, out = await _run_subprocess(
+        ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"]
+    )
+    if rc != 0:
+        return {"error": f"Could not detect default branch: {out}"}
+    branch = out.strip() or "main"
+
+    # Create a branch protection ruleset via gh api
+    rc, out = await _run_subprocess(
+        [
+            "gh", "api", f"repos/{repo}/rulesets", "--method", "POST",
+            "--field", "name=Imp: require PR approval",
+            "--field", "target=branch",
+            "--field", "enforcement=active",
+            "--field", f'conditions[ref_name][include][]=refs/heads/{branch}',
+            "--field", "rules[][type]=pull_request",
+            "--field", "rules[0][parameters][required_approving_review_count]=1",
+            "--field", "rules[0][parameters][dismiss_stale_reviews_on_push]=true",
+        ]
+    )
+    if rc != 0:
+        # Might already exist or need different API — try the older branch protection endpoint
+        rc, out = await _run_subprocess(
+            [
+                "gh", "api", f"repos/{repo}/branches/{branch}/protection",
+                "--method", "PUT",
+                "--input", "-",
+            ],
+        )
+        if rc != 0:
+            return {
+                "error": f"Could not set branch protection: {out}",
+                "suggestion": "You can set this manually: repo Settings > Branches > Add rule > Require pull request reviews",
+            }
+
+    return {"ok": True, "repo": repo, "branch": branch, "protection": "PR approval required before merge"}
+
+
+async def do_create_repo(
+    name: str = "",
+    private: bool = False,
+    description: str = "",
+) -> dict[str, Any]:
+    """Create a GitHub repo from the current folder, commit, and push."""
+    cmd = [sys.executable, str(ROOT / "tools" / "github" / "create_repo.py")]
+    if name:
+        cmd.extend(["--name", name])
+    if private:
+        cmd.append("--private")
+    if description:
+        cmd.extend(["--description", description])
+    rc, out = await _run_subprocess(cmd, timeout=60.0)
+    return {"ok": rc == 0, "output": out}
+
+
 async def do_configure_loop(
     enabled: bool = False,
     interval_minutes: int = 60,
@@ -385,161 +409,6 @@ async def do_mark_setup_complete() -> dict[str, Any]:
     return {"setup_complete": True, "repo": cfg["repo"]}
 
 
-# ---------- @tool wrappers (used only when the SDK is available) ----------
-#
-# Wrapped lazily inside `_build_mcp_server()` so modules that import
-# `server.setup_agent` but don't run the LLM (tests, type-checking)
-# don't need the SDK installed.
-
-
-def _build_mcp_server() -> Any:
-    """Create the MCP server with every setup tool registered.
-
-    Called once per `run_setup()` — rebuilds on every session so the
-    tools always see fresh config.
-    """
-    from claude_agent_sdk import create_sdk_mcp_server, tool
-
-    @tool("gh_auth_status", "Check if the gh CLI is authenticated.", {})
-    async def gh_auth_status_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_gh_auth_status()
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "gh_auth_login",
-        "Start the gh device-code flow. Returns a user instruction — the admin "
-        "completes the login in a terminal, then asks you to verify via gh_auth_status.",
-        {},
-    )
-    async def gh_auth_login_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_gh_auth_login()
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "claude_auth_status",
-        "Check if claude-agent-sdk has usable credentials (API key or CLI).",
-        {},
-    )
-    async def claude_auth_status_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_claude_auth_status()
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "claude_auth_login",
-        "Returns instructions for setting ANTHROPIC_API_KEY or logging into the claude CLI.",
-        {},
-    )
-    async def claude_auth_login_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_claude_auth_login()
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "detect_repo_from_git",
-        "Return owner/name from the local git remote origin, or null.",
-        {},
-    )
-    async def detect_repo_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_detect_repo_from_git()
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "list_repos",
-        "List GitHub repos the user can access via gh.",
-        {"limit": int},
-    )
-    async def list_repos_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_list_repos(int(args.get("limit", 30)))
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "set_repo",
-        "Write the target repo (owner/name) to .imp/config.json after verifying "
-        "access via `gh repo view`.",
-        {"repo": str},
-    )
-    async def set_repo_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_set_repo(str(args["repo"]))
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "list_projects",
-        "List Projects v2 boards owned by `owner`.",
-        {"owner": str, "limit": int},
-    )
-    async def list_projects_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_list_projects(
-            owner=str(args["owner"]), limit=int(args.get("limit", 20))
-        )
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "create_imp_project",
-        "Provision (or verify) the Imp Projects-v2 board and its seven custom "
-        "fields. Idempotent. If the board already exists with a field whose "
-        "type or options differ from the template, the tool returns a "
-        "`conflicts` list by default — ASK the admin whether to DELETE "
-        "(overwrite, destructive) or STOP (they fix manually). On a DELETE "
-        "choice, call this tool again with on_conflict=\"delete\". "
-        "Valid on_conflict values: stop (default), delete, skip.",
-        {"owner": str, "title": str, "on_conflict": str},
-    )
-    async def create_project_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_create_imp_project(
-            owner=str(args["owner"]),
-            title=str(args.get("title", "Imp")),
-            on_conflict=str(args.get("on_conflict", "stop")),
-        )
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "configure_loop",
-        "Persist autonomous-loop settings. Validates interval_minutes >= 5.",
-        {"enabled": bool, "interval_minutes": int, "max_tasks_per_tick": int},
-    )
-    async def configure_loop_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_configure_loop(
-            enabled=bool(args.get("enabled", False)),
-            interval_minutes=int(args.get("interval_minutes", 60)),
-            max_tasks_per_tick=int(args.get("max_tasks_per_tick", 3)),
-        )
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "set_admin_password",
-        "Update the argon2id hash for the admin login password.",
-        {"password": str},
-    )
-    async def set_password_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_set_admin_password(str(args["password"]))
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    @tool(
-        "mark_setup_complete",
-        "Flip setup_complete=true so the next chat session hands off to Foreman. "
-        "Refuses if the repo isn't set yet.",
-        {},
-    )
-    async def mark_complete_tool(args: dict[str, Any]) -> dict[str, Any]:
-        res = await do_mark_setup_complete()
-        return {"content": [{"type": "text", "text": json.dumps(res)}]}
-
-    return create_sdk_mcp_server(
-        name="imp_setup",
-        tools=[
-            gh_auth_status_tool,
-            gh_auth_login_tool,
-            claude_auth_status_tool,
-            claude_auth_login_tool,
-            detect_repo_tool,
-            list_repos_tool,
-            set_repo_tool,
-            list_projects_tool,
-            create_project_tool,
-            configure_loop_tool,
-            set_password_tool,
-            mark_complete_tool,
-        ],
-    )
 
 
 # ---------- system prompt ----------
@@ -547,48 +416,54 @@ def _build_mcp_server() -> Any:
 SETUP_SYSTEM_PROMPT = """\
 You are the Setup Agent for Imp — a self-hosted coding agent that manages a \
 GitHub repo. Your job is to walk a fresh admin through first-run setup, one \
-step at a time, calling the provided tools to make changes and only acting on \
-what the admin explicitly agrees to.
+step at a time. You have access to Bash, Read, and Write tools — use them \
+directly. No MCP.
+
+## Config file
+
+Imp stores its config at `.imp/config.json`. Use Read/Write to manage it. \
+Key fields: `repo` (owner/name), `setup_complete` (bool).
 
 ## Setup checklist (in order)
 
 1. Verify the gh CLI is authenticated.
-   - Call `gh_auth_status`. If not authenticated, call `gh_auth_login` to get \
-the instruction text, show it to the admin, and wait for them to come back \
-before calling `gh_auth_status` again.
-2. Confirm Claude SDK auth is present.
-   - Call `claude_auth_status`. If not usable, call `claude_auth_login` for \
-guidance and surface it.
-3. Pick the target repo.
-   - Call `detect_repo_from_git`. If a repo comes back, confirm with the \
-admin before calling `set_repo`.
-   - Otherwise, offer to list repos with `list_repos` and ask the admin to \
-choose one, then call `set_repo`.
-4. Provision or verify the Imp Projects-v2 board with `create_imp_project`. \
-Idempotent — safe to run whether the board exists or not.
-   - If the tool returns a `conflicts` list (same-named fields with the wrong \
-type or different single-select options), describe each conflict plainly, \
-then ASK the admin two choices: (a) DELETE and overwrite the conflicting \
-fields — explain this is destructive and any existing values under those \
-fields will be lost, or (b) STOP so they can fix the fields manually in the \
-GitHub UI. If they pick DELETE, call `create_imp_project` again with \
-`on_conflict="delete"`.
-   - If it returns `error`, read gh's message and help the admin fix the \
-underlying problem (usually `gh auth refresh -s project`).
-5. (Optional) Configure the autonomous loop with `configure_loop` if the \
-admin wants it on.
-6. Call `mark_setup_complete` once the repo is set — this flips the flag so \
-the next chat session hands off to Foreman.
+   - Run `gh auth status`. If not authenticated, tell the admin to run \
+`gh auth login --web` in a terminal and come back.
+2. Check if this folder is already a git repo with a GitHub remote.
+   - Run `git remote get-url origin`. If it returns a GitHub URL, parse \
+the owner/name, confirm with the admin, and write it to `.imp/config.json`.
+3. If no repo found, ask: create a new GitHub repo, or link an existing one?
+   - **If creating new:**
+     a. Suggest a repo name. First check if there is a README.md — if so, \
+read it and try to find a meaningful project name from the title or \
+first heading. Fall back to the current folder name. Ask if they want \
+a different name.
+     b. Ask for a short description (or offer to generate one based on \
+what's in the folder).
+     c. Ask about license — explain common choices briefly (MIT, Apache-2.0, \
+GPL-3.0) and let them pick.
+     d. Ask public or private.
+     e. Write a basic README.md with the project name, description, and \
+license.
+     f. Run `python tools/github/create_repo.py --name <name> [--private] \
+[--description "<desc>"]` to git init, create the repo, and push.
+     g. Write the repo owner/name to `.imp/config.json`.
+   - **If linking existing:** run `gh repo list --limit 30 --json \
+nameWithOwner,description,visibility` to show options. After admin picks, \
+verify with `gh repo view owner/name` and write to `.imp/config.json`.
+4. Set up branch protection to require PR approval before merge:
+   - Run `gh api repos/OWNER/REPO/rulesets --method POST` with appropriate \
+fields, or guide the admin to Settings > Branches if the API fails.
+5. Set `setup_complete` to `true` in `.imp/config.json` — but only after \
+the `repo` field is set. This hands off to the Foreman agent.
 
 ## Rules
 
-- One concrete action per turn. Announce what you're about to do, call the \
-tool, report the result plainly.
+- One concrete action per turn. Announce what you're about to do, do it, \
+report the result plainly.
 - Ask before destructive or write actions. Never assume.
-- If a tool returns an error, explain what went wrong in one or two sentences \
-and offer a next step.
-- Stay on topic — you're the Setup Agent, not Foreman. Don't volunteer to \
-moderate issues or render gantt charts.
+- If a command fails, explain what went wrong and offer a next step.
+- Stay on topic — you're the Setup Agent, not Foreman.
 - Keep your replies brief. The admin wants to get through setup.
 """
 
@@ -600,59 +475,65 @@ SayFn = Callable[[str], Awaitable[None]]
 AskFn = Callable[[str], Awaitable[Optional[str]]]
 
 
-async def run_setup(say: SayFn, ask: AskFn) -> None:
+ToolStartFn = Callable[[str, dict], Awaitable[None]]
+ToolDoneFn = Callable[[str, str, float, str], Awaitable[None]]
+
+
+async def _allow_all(tool_name: str, tool_input: dict, context: Any) -> Any:
+    """Auto-allow all tools during setup — no permission prompts."""
+    from claude_agent_sdk.types import PermissionResultAllow
+    return PermissionResultAllow(behavior="allow")
+
+
+async def run_setup(
+    say: SayFn,
+    ask: AskFn,
+    tool_start: Optional[ToolStartFn] = None,
+    tool_done: Optional[ToolDoneFn] = None,
+) -> None:
     """Drive the setup conversation until `setup_complete=true`.
 
-    `say(text)` posts a Setup-Agent-authored message. `ask(question)`
-    prompts the admin and returns their reply (or None on timeout).
-    Caller is responsible for wiring those to the UI layer.
+    Uses native Claude SDK tools (Bash, Read, Write) — same pattern as
+    the Foreman agent. No MCP server. The system prompt tells the agent
+    what commands to run. All tools are auto-allowed (no permission prompts).
     """
     await say(
-        "Hi — I'm the **Setup Agent**. I'll walk you through the checks Imp "
-        "needs before Foreman can do real work. I'll only act with your "
-        "confirmation. Say *ready* (or something like it) to begin."
+        "Hi — I'm the **Setup Agent**. Let me check what's needed to get "
+        "Imp running.\n\n"
     )
 
-    first = await ask("Ready to start setup?")
-    if first is None:
-        await say("No response — setup paused. Refresh to try again.")
-        return
+    import time
 
-    # Lazy SDK import so test / type-checker environments without the
-    # SDK can still import this module.
     from claude_agent_sdk import (  # type: ignore[import-not-found]
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
         TextBlock,
         ToolUseBlock,
+        UserMessage,
     )
+    from claude_agent_sdk.types import ToolResultBlock
 
     options = ClaudeAgentOptions(
         system_prompt=SETUP_SYSTEM_PROMPT,
-        mcp_servers={"imp_setup": _build_mcp_server()},
-        # Allow all our tools (mcp__<server>__<tool> is the conventional name)
-        allowed_tools=[
-            f"mcp__imp_setup__{t}"
-            for t in (
-                "gh_auth_status",
-                "gh_auth_login",
-                "claude_auth_status",
-                "claude_auth_login",
-                "detect_repo_from_git",
-                "list_repos",
-                "set_repo",
-                "list_projects",
-                "create_imp_project",
-                "configure_loop",
-                "set_admin_password",
-                "mark_setup_complete",
-            )
-        ],
+        can_use_tool=_allow_all,
         max_turns=30,
     )
 
-    current_turn = first
+    pending_tools: dict[str, tuple[str, float]] = {}  # tool_id -> (name, start_time)
+
+    async def _handle_result(block: Any) -> None:
+        entry = pending_tools.pop(getattr(block, "tool_use_id", ""), None)
+        if not entry or not tool_done:
+            return
+        name, started = entry
+        dur = time.time() - started
+        content = getattr(block, "content", "")
+        output = content if isinstance(content, str) else str(content)
+        status = "error" if getattr(block, "is_error", False) else "ok"
+        await tool_done(name, status, dur, output[:500])
+
+    current_turn = "start"
     async with ClaudeSDKClient(options=options) as client:
         while True:
             await client.query(current_turn)
@@ -663,23 +544,21 @@ async def run_setup(say: SayFn, ask: AskFn) -> None:
                         if isinstance(block, TextBlock):
                             assistant_text_parts.append(block.text)
                         elif isinstance(block, ToolUseBlock):
-                            # Surface tool calls so the admin sees them
-                            # even before the result text lands.
-                            await say(
-                                f"_Calling tool: `{block.name}`_"
-                                + (
-                                    f"\n```json\n{json.dumps(block.input, indent=2)}\n```"
-                                    if block.input
-                                    else ""
-                                )
-                            )
+                            desc = (block.input or {}).get("description", block.name)
+                            pending_tools[block.id] = (block.name, time.time())
+                            if tool_start:
+                                await tool_start(block.name, {"description": desc})
+                        elif isinstance(block, ToolResultBlock):
+                            await _handle_result(block)
+                elif isinstance(message, UserMessage):
+                    for block in message.content:
+                        if isinstance(block, ToolResultBlock):
+                            await _handle_result(block)
 
             reply = "".join(assistant_text_parts).strip()
             if reply:
                 await say(reply)
 
-            # Bail once the agent has set setup_complete — the next
-            # chat session will pick up Foreman.
             if is_setup_complete():
                 return
 
