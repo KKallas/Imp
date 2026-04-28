@@ -214,7 +214,7 @@ function deleteToolScript(group, name) {
 }
 
 function buildTestingPanel(group, name) {
-  var defaultCtx = '{"previous_results": []}';
+  var defaultCtx = '{\n  "previous_results": {},\n  "workflow": "test",\n  "step": "' + name + '"\n}';
   var runBtn = imp.btn('Run', "runToolDebug('" + group + "','" + name + "')", {cls:'primary'});
   return '<div style="display:flex;gap:8px;margin-bottom:8px;">'
     + '<div style="flex:1;"><label style="font-size:11px;color:var(--muted);">Context In</label>'
