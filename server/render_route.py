@@ -1387,14 +1387,19 @@ async def debug_tool(request: Request):
     group = data.get("group", "")
     name = data.get("name", "")
     context = data.get("context", {})
+    params = data.get("params", {})
+
+    # Merge params into context so the step sees them
+    context.update(params)
 
     step_path = _ROOT / "tools" / group / f"{name}.step.py"
     if not step_path.exists():
         return {"ok": False, "error": f"No step template: {group}/{name}.step.py"}
 
     # Run the step in a subprocess to isolate it
+    # Returns both the step result and the context after running
     runner_code = f"""
-import json, sys, importlib.util, time
+import json, sys, importlib.util, time, copy
 spec = importlib.util.spec_from_file_location("step", {str(step_path)!r})
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -1403,7 +1408,13 @@ t0 = time.time()
 try:
     result = mod.run(context)
     dur = time.time() - t0
-    print(json.dumps({{"ok": True, "result": result, "duration_s": round(dur, 2)}}))
+    # Build context_out: original context with result appended to previous_results
+    ctx_out = copy.deepcopy(context)
+    prev = ctx_out.get("previous_results", {{}})
+    if isinstance(prev, dict):
+        prev[ctx_out.get("step", "debug")] = result
+    ctx_out["previous_results"] = prev
+    print(json.dumps({{"ok": True, "result": result, "context_out": ctx_out, "duration_s": round(dur, 2)}}, default=str))
 except Exception as e:
     dur = time.time() - t0
     print(json.dumps({{"ok": False, "error": str(e), "duration_s": round(dur, 2)}}))

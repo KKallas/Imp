@@ -215,12 +215,15 @@ function deleteToolScript(group, name) {
 
 function buildTestingPanel(group, name) {
   var defaultCtx = '{\n  "previous_results": {},\n  "workflow": "test",\n  "step": "' + name + '"\n}';
+  var defaultParams = '{}';
   var runBtn = imp.btn('Run', "runToolDebug('" + group + "','" + name + "')", {cls:'primary'});
   return '<div style="display:flex;gap:8px;margin-bottom:8px;">'
     + '<div style="flex:1;"><label style="font-size:11px;color:var(--muted);">Context In</label>'
-    + '<textarea class="wf-readme-edit tool-ctx-in" data-group="' + group + '" data-name="' + name + '" style="min-height:100px;font-family:monospace;font-size:11px;">' + defaultCtx + '</textarea></div>'
+    + '<textarea class="wf-readme-edit tool-ctx-in" data-group="' + group + '" data-name="' + name + '" style="min-height:80px;font-family:monospace;font-size:11px;">' + defaultCtx + '</textarea></div>'
+    + '<div style="flex:1;"><label style="font-size:11px;color:var(--muted);">Parameters</label>'
+    + '<textarea class="wf-readme-edit tool-params" data-group="' + group + '" data-name="' + name + '" style="min-height:80px;font-family:monospace;font-size:11px;">' + defaultParams + '</textarea></div>'
     + '<div style="flex:1;"><label style="font-size:11px;color:var(--muted);">Context Out</label>'
-    + '<textarea class="wf-readme-edit tool-ctx-out" data-group="' + group + '" data-name="' + name + '" style="min-height:100px;font-family:monospace;font-size:11px;"></textarea></div>'
+    + '<textarea class="wf-readme-edit tool-ctx-out" data-group="' + group + '" data-name="' + name + '" style="min-height:80px;font-family:monospace;font-size:11px;"></textarea></div>'
     + '</div>'
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'
     + runBtn
@@ -234,16 +237,24 @@ function buildTestingPanel(group, name) {
 
 async function runToolDebug(group, name) {
   var ctxIn = document.querySelector('.tool-ctx-in[data-group="' + group + '"][data-name="' + name + '"]');
+  var paramsEl = document.querySelector('.tool-params[data-group="' + group + '"][data-name="' + name + '"]');
   var ctxOut = document.querySelector('.tool-ctx-out[data-group="' + group + '"][data-name="' + name + '"]');
   var status = document.querySelector('.tool-debug-status[data-group="' + group + '"][data-name="' + name + '"]');
   var logDiv = document.querySelector('.tool-debug-log[data-group="' + group + '"][data-name="' + name + '"]');
   if (!ctxIn) return;
 
-  var context;
+  var context, params;
   try {
     context = JSON.parse(ctxIn.value);
   } catch (e) {
     status.textContent = 'Invalid JSON in Context In';
+    status.style.color = '#da3633';
+    return;
+  }
+  try {
+    params = JSON.parse(paramsEl.value || '{}');
+  } catch (e) {
+    status.textContent = 'Invalid JSON in Parameters';
     status.style.color = '#da3633';
     return;
   }
@@ -254,7 +265,7 @@ async function runToolDebug(group, name) {
   try {
     var res = await fetch(API + '/api/tool-debug', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({group: group, name: name, context: context}),
+      body: JSON.stringify({group: group, name: name, context: context, params: params}),
     });
     var data = await res.json();
 
@@ -263,8 +274,8 @@ async function runToolDebug(group, name) {
     status.textContent = icon + ' ' + (data.ok ? 'OK' : 'Error') + dur;
     status.style.color = data.ok ? '#3fb950' : '#da3633';
 
-    if (data.result) {
-      ctxOut.value = JSON.stringify(data.result, null, 2);
+    if (data.context_out) {
+      ctxOut.value = JSON.stringify(data.context_out, null, 2);
     } else if (data.error) {
       ctxOut.value = data.error;
     }
