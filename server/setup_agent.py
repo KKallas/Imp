@@ -434,7 +434,9 @@ Key fields: `repo` (owner/name), `setup_complete` (bool).
 the owner/name, confirm with the admin, and write it to `.imp/config.json`.
 3. If no repo found, ask: create a new GitHub repo, or link an existing one?
    - **If creating new:**
-     a. Suggest the current folder name as the repo name. Ask if they want \
+     a. Suggest a repo name. First check if there is a README.md — if so, \
+read it and try to find a meaningful project name from the title or \
+first heading. Fall back to the current folder name. Ask if they want \
 a different name.
      b. Ask for a short description (or offer to generate one based on \
 what's in the folder).
