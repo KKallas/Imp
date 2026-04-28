@@ -210,12 +210,17 @@ function connectWs() {
         ensureAgentMsg();
         const confirmId = msg.id;
         const preview = (msg.preview || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        agentText += `\n\n<div class="confirm-block" data-confirm-id="${confirmId}" style="border:1px solid var(--border);border-radius:6px;padding:12px;margin:8px 0;background:var(--input-bg);">` +
-          `<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${msg.tool} — ${msg.description || ''}</div>` +
-          `<pre style="font-size:11px;white-space:pre-wrap;max-height:300px;overflow:auto;margin:0 0 8px 0;">${preview}</pre>` +
-          `<button class="wf-start" onclick="respondConfirm('${confirmId}',true)">Approve</button> ` +
-          `<button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="respondConfirm('${confirmId}',false)">Reject</button>` +
-          `</div>\n\n`;
+        const diffHtml = preview.split('\n').map(line => {
+          if (line.startsWith('+ ')) return '<span style="color:#3fb950;">' + line + '</span>';
+          if (line.startsWith('- ')) return '<span style="color:#da3633;">' + line + '</span>';
+          return line;
+        }).join('\n');
+        agentText += `\n\n<div class="confirm-block" data-confirm-id="${confirmId}">` +
+          `<details class="tool-block" open><summary>\u23f3 ${msg.tool} \u2014 ${msg.description || ''}</summary>` +
+          `<pre style="font-size:11px;white-space:pre-wrap;max-height:300px;overflow:auto;margin:8px 0;">${diffHtml}</pre>` +
+          `<div style="padding:4px 0 8px;"><button class="wf-start" onclick="respondConfirm('${confirmId}',true)">Approve</button> ` +
+          `<button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="respondConfirm('${confirmId}',false)">Reject</button></div>` +
+          `</details></div>\n\n`;
         renderAgentBody();
         setStatus('Waiting for approval...');
         break;
@@ -226,11 +231,19 @@ function connectWs() {
 
 function respondConfirm(id, approved) {
   if (ws) ws.send(JSON.stringify({type: 'confirm_response', id: id, approved: approved}));
-  var icon = approved ? '\u2705' : '\u274c';
-  var label = approved ? 'Approved' : 'Rejected';
-  var re = new RegExp('<div class="confirm-block" data-confirm-id="' + id + '"[\\s\\S]*?</div>\\n\\n');
-  agentText = agentText.replace(re, '<span style="font-size:11px;color:var(--muted);">' + icon + ' ' + label + '</span>\n\n');
-  renderAgentBody();
+  // Update the DOM directly — swap buttons for label, close the details
+  var block = document.querySelector('.confirm-block[data-confirm-id="' + id + '"]');
+  if (block) {
+    var icon = approved ? '\u2705' : '\u274c';
+    var label = approved ? 'Approved' : 'Rejected';
+    var details = block.querySelector('details');
+    if (details) {
+      details.open = false;
+      var summary = details.querySelector('summary');
+      if (summary) summary.innerHTML = summary.innerHTML.replace('\u23f3', icon);
+    }
+    block.querySelectorAll('button').forEach(function(b) { b.parentElement.innerHTML = '<div style="padding:4px 0 8px;font-size:11px;color:var(--muted);">' + icon + ' ' + label + '</div>'; });
+  }
 }
 
 function send() {

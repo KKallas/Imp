@@ -96,13 +96,25 @@ def _make_security_hook(confirm: Optional[ConfirmFn] = None):
         if tool_name in _SAFE_TOOLS:
             return PermissionResultAllow(behavior="allow")
 
-        # Write tool — show diff preview
+        # Write/Edit tool — show diff preview
         if tool_name == "Write" or tool_name == "Edit":
             if confirm:
                 file_path = tool_input.get("file_path", "")
-                content = tool_input.get("content", tool_input.get("new_string", ""))
-                preview = f"File: {file_path}\n\n{content[:2000]}"
-                approved = await confirm(tool_name, f"Write to {file_path}", preview)
+                if tool_name == "Edit":
+                    old = tool_input.get("old_string", "")
+                    new = tool_input.get("new_string", "")
+                    diff_lines = []
+                    for line in old.splitlines():
+                        diff_lines.append(f"- {line}")
+                    for line in new.splitlines():
+                        diff_lines.append(f"+ {line}")
+                    preview = "\n".join(diff_lines)
+                    desc = f"Edit {file_path}"
+                else:
+                    content = tool_input.get("content", "")
+                    preview = "\n".join(f"+ {line}" for line in content[:2000].splitlines())
+                    desc = f"Write {file_path} ({len(content)} chars)"
+                approved = await confirm(tool_name, desc, preview)
                 if not approved:
                     return PermissionResultDeny(behavior="deny", message="User rejected", interrupt=False)
             return PermissionResultAllow(behavior="allow")
