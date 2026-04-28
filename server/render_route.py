@@ -1377,6 +1377,74 @@ async def run_tool(request: Request):
         return {"ok": False, "error": str(exc)}
 
 
+@app.post("/api/tool-debug")
+async def debug_tool(request: Request):
+    """Run a tool's .step.py template with user-provided context JSON."""
+    import asyncio
+    import time as _time
+
+    data = await request.json()
+    group = data.get("group", "")
+    name = data.get("name", "")
+    context = data.get("context", {})
+    params = data.get("params", {})
+
+    # Merge params into context so the step sees them
+    context.update(params)
+
+    step_path = _ROOT / "tools" / group / f"{name}.step.py"
+    if not step_path.exists():
+        return {"ok": False, "error": f"No step template: {group}/{name}.step.py"}
+
+    # Run the step in a subprocess to isolate it
+    # Returns both the step result and the context after running
+    runner_code = f"""
+import json, sys, importlib.util, time, copy
+spec = importlib.util.spec_from_file_location("step", {str(step_path)!r})
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+context = json.loads(sys.stdin.read())
+t0 = time.time()
+try:
+    result = mod.run(context)
+    dur = time.time() - t0
+    # Build context_out: original context with result appended to previous_results
+    ctx_out = copy.deepcopy(context)
+    prev = ctx_out.get("previous_results", {{}})
+    if isinstance(prev, dict):
+        prev[ctx_out.get("step", "debug")] = result
+    ctx_out["previous_results"] = prev
+    print(json.dumps({{"ok": True, "result": result, "context_out": ctx_out, "duration_s": round(dur, 2)}}, default=str))
+except Exception as e:
+    dur = time.time() - t0
+    print(json.dumps({{"ok": False, "error": str(e), "duration_s": round(dur, 2)}}))
+"""
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", runner_code,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(_ROOT),
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=json.dumps(context).encode()),
+            timeout=30,
+        )
+        try:
+            result = json.loads(stdout.decode())
+        except json.JSONDecodeError:
+            result = {"ok": False, "error": "Invalid output", "stdout": stdout.decode()[:2000]}
+        result["stderr"] = stderr.decode()[:2000]
+        return result
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "error": "Timed out after 30 seconds"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def _renumber_steps(wf_dir: Path) -> None:
     import re
     steps = sorted(wf_dir.glob("step_*.py"))
