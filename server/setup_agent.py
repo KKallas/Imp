@@ -508,6 +508,7 @@ async def run_setup(
         ClaudeSDKClient,
         TextBlock,
         ToolUseBlock,
+        UserMessage,
     )
     from claude_agent_sdk.types import ToolResultBlock
 
@@ -517,7 +518,18 @@ async def run_setup(
         max_turns=30,
     )
 
-    pending_tools: dict[str, float] = {}  # tool_id -> start_time
+    pending_tools: dict[str, tuple[str, float]] = {}  # tool_id -> (name, start_time)
+
+    async def _handle_result(block: Any) -> None:
+        entry = pending_tools.pop(getattr(block, "tool_use_id", ""), None)
+        if not entry or not tool_done:
+            return
+        name, started = entry
+        dur = time.time() - started
+        content = getattr(block, "content", "")
+        output = content if isinstance(content, str) else str(content)
+        status = "error" if getattr(block, "is_error", False) else "ok"
+        await tool_done(name, status, dur, output[:500])
 
     current_turn = "start"
     async with ClaudeSDKClient(options=options) as client:
@@ -531,19 +543,15 @@ async def run_setup(
                             assistant_text_parts.append(block.text)
                         elif isinstance(block, ToolUseBlock):
                             desc = (block.input or {}).get("description", block.name)
-                            pending_tools[block.id] = time.time()
+                            pending_tools[block.id] = (block.name, time.time())
                             if tool_start:
                                 await tool_start(block.name, {"description": desc})
                         elif isinstance(block, ToolResultBlock):
-                            started = pending_tools.pop(getattr(block, "tool_use_id", ""), time.time())
-                            dur = time.time() - started
-                            output = ""
-                            for c in getattr(block, "content", []):
-                                if hasattr(c, "text"):
-                                    output += c.text
-                            status = "error" if getattr(block, "is_error", False) else "ok"
-                            if tool_done:
-                                await tool_done(block.name if hasattr(block, "name") else "tool", status, dur, output[:500])
+                            await _handle_result(block)
+                elif isinstance(message, UserMessage):
+                    for block in message.content:
+                        if isinstance(block, ToolResultBlock):
+                            await _handle_result(block)
 
             reply = "".join(assistant_text_parts).strip()
             if reply:
