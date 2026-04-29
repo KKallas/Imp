@@ -104,6 +104,10 @@ function formatStepOutput(text) {
     rows.slice(1).forEach(cols => { md += '| ' + cols.map(c => c.trim()).join(' | ') + ' |\n'; });
     return marked.parse(md);
   }
+  // If output has markdown links, render as markdown (not code block)
+  if (/\[.+\]\(.+\)/.test(trimmed)) {
+    return marked.parse(trimmed);
+  }
   return marked.parse('```\n' + trimmed + '\n```');
 }
 
@@ -338,10 +342,21 @@ async function loadChats() {
   } catch (e) { console.error('loadChats failed:', e); }
 }
 
+function formatToolOutput(raw) {
+  // Escape HTML but preserve markdown links as clickable <a> tags
+  var escaped = (raw || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
+    if (url.includes('/dashboard')) {
+      return '<a href="#" onclick="event.preventDefault();loadInDashboard(\'' + url + '\')">' + text + '</a>';
+    }
+    return '<a href="' + url + '" target="_blank">' + text + '</a>';
+  });
+  return escaped;
+}
+
 function renderTurnFull(turn) {
   let parts = [];
   if (turn.blocks && turn.blocks.length) {
-    // Ordered blocks preserve the interleaved sequence
     turn.blocks.forEach(b => {
       if (b.type === 'thinking') {
         const escaped = b.text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -349,12 +364,10 @@ function renderTurnFull(turn) {
       } else if (b.type === 'tool') {
         const icon = b.status === 'ok' ? '✅' : (b.status === 'error' ? '❌' : '⏳');
         const dur = b.duration_s ? ` · ${b.duration_s.toFixed(1)}s` : '';
-        const output = (b.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        parts.push(`<details class="tool-block ${b.status || ''}"><summary>${icon} ${b.name}(${formatArgs(b.args || {})})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+        parts.push(`<details class="tool-block ${b.status || ''}"><summary>${icon} ${b.name}(${formatArgs(b.args || {})})${dur}</summary><pre>${formatToolOutput(b.output)}</pre></details>`);
       }
     });
   } else {
-    // Fallback for old turns without blocks
     if (turn.thinking && turn.thinking.length) {
       turn.thinking.forEach(t => {
         const escaped = t.replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -365,8 +378,7 @@ function renderTurnFull(turn) {
       turn.tool_calls.forEach(tc => {
         const icon = tc.status === 'ok' ? '✅' : (tc.status === 'error' ? '❌' : '⏳');
         const dur = tc.duration_s ? ` · ${tc.duration_s.toFixed(1)}s` : '';
-        const output = (tc.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(tc.args || {})})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+        parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(tc.args || {})})${dur}</summary><pre>${formatToolOutput(tc.output)}</pre></details>`);
       });
     }
   }
