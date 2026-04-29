@@ -273,19 +273,17 @@ function connectWs() {
 
 function respondConfirm(id, approved) {
   if (ws) ws.send(JSON.stringify({type: 'confirm_response', id: id, approved: approved}));
-  // Update the DOM directly — swap buttons for label, close the details
-  var block = document.querySelector('.confirm-block[data-confirm-id="' + id + '"]');
-  if (block) {
-    var icon = approved ? '\u2705' : '\u274c';
-    var label = approved ? 'Approved' : 'Rejected';
-    var details = block.querySelector('details');
-    if (details) {
-      details.open = false;
-      var summary = details.querySelector('summary');
-      if (summary) summary.innerHTML = summary.innerHTML.replace('\u23f3', icon);
-    }
-    block.querySelectorAll('button').forEach(function(b) { b.parentElement.innerHTML = '<div style="padding:4px 0 8px;font-size:11px;color:var(--muted);">' + icon + ' ' + label + '</div>'; });
-  }
+  var icon = approved ? '\u2705' : '\u274c';
+  var label = approved ? 'Approved' : 'Rejected';
+  // Remove buttons from agentText so re-renders don't bring them back
+  var btnRe = new RegExp('<div style="padding:4px 0 8px;"><button[^>]*onclick="respondConfirm\\(\'' + id + '\'[\\s\\S]*?</div>');
+  agentText = agentText.replace(btnRe, '<div style="padding:4px 0 8px;font-size:11px;color:var(--muted);">' + icon + ' ' + label + '</div>');
+  // Update summary icon
+  agentText = agentText.replace(
+    new RegExp('(data-confirm-id="' + id + '"[\\s\\S]*?<summary>)\\u23f3'),
+    '$1' + icon
+  );
+  renderAgentBody();
 }
 
 function send() {
