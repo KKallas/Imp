@@ -40,7 +40,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 /* --- sidebar drawer (left, inside chat) --- */
 #sidebar { background:#010409; border-right:1px solid var(--border);
   display:flex; flex-direction:column; width:var(--sidebar-w); }
-#sidebar.closed { width:36px; }
+#sidebar.closed { width:36px; background:var(--bg); border-right:none; }
 #sidebar.closed #chat-list { display:none; }
 #sidebar.closed #sidebar-header button:not(#sidebar-toggle) { display:none; }
 #sidebar-toggle { background:none; border:none; color:var(--muted); cursor:pointer; font-size:16px; padding:4px; }
@@ -144,7 +144,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 /* --- dashboard drawer (right side) --- */
 #dashboard-drawer { background:#010409; border-left:1px solid var(--border);
   display:flex; flex-direction:column; width:45%; max-width:600px; }
-#dashboard-drawer.closed { width:36px; }
+#dashboard-drawer.closed { width:36px; background:var(--bg); border-left:none; }
 #dashboard-drawer.closed #dashboard-content { display:none; }
 #dashboard-drawer.closed .dashboard-label { display:none; }
 #dashboard-header { padding:8px; border-bottom:1px solid var(--border);
