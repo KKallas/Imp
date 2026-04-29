@@ -14,8 +14,10 @@ The HTML can include interactive elements. To send events back to the chat:
   window.parent.postMessage({type: 'widget_event', action: 'clicked', value: 42}, '*');
 """
 import argparse
+import hashlib
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -61,20 +63,15 @@ def main() -> int:
     else:
         html = SHELL.format(content=content)
 
-    base = f"http://127.0.0.1:{args.port}"
-    try:
-        req = urllib.request.Request(
-            f"{base}/api/dashboard",
-            data=json.dumps({"html": html}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        print(f"Failed: {e}", file=sys.stderr)
-        return 1
+    from pathlib import Path
+    artifact_id = hashlib.md5(f"custom{time.time()}".encode()).hexdigest()[:12]
+    artifact_dir = Path("public/charts")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    html_path = artifact_dir / f"{artifact_id}.html"
+    html_path.write_text(html)
 
-    print(f"[Open in dashboard]({base}/dashboard)")
+    base = f"http://127.0.0.1:{args.port}"
+    print(f"[Open in dashboard]({base}/public/charts/{artifact_id}.html)")
     return 0
 
 

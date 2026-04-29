@@ -10,10 +10,13 @@ Inputs:
 Process: Generates self-contained HTML using Frappe Charts, pushes to dashboard.
 Output: Prints confirmation."""
 import argparse
+import hashlib
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 TEMPLATE = """<!DOCTYPE html>
 <html>
@@ -66,24 +69,18 @@ def main() -> int:
         chart_type=args.type,
     )
 
+    # Save as artifact file with unique name
+    artifact_id = hashlib.md5(f"{args.title}{time.time()}".encode()).hexdigest()[:12]
+    artifact_dir = Path("public/charts")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    html_path = artifact_dir / f"{artifact_id}.html"
+    html_path.write_text(html)
+
     base = f"http://127.0.0.1:{args.port}"
 
-    # Push HTML to dashboard
-    req = urllib.request.Request(
-        f"{base}/api/dashboard",
-        data=json.dumps({"html": html}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        print(f"Failed: {e}", file=sys.stderr)
-        return 1
-
-    # Output links for the agent to put in chat
-    print(f"[Open in dashboard]({base}/dashboard)")
-    print(f"[Download PNG]({base}/dashboard?png=1)")
+    # Output links — each chart has a unique permanent URL
+    print(f"[Open in dashboard]({base}/public/charts/{artifact_id}.html)")
+    print(f"[Download PNG]({base}/render/chart?path=public/charts/{artifact_id}.html)")
     return 0
 
 

@@ -9,8 +9,10 @@ Inputs:
 Process: Generates sortable/filterable HTML table, pushes to dashboard.
 Output: Prints confirmation."""
 import argparse
+import hashlib
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -108,21 +110,16 @@ def main() -> int:
         data_json=json.dumps(data),
     )
 
-    base = f"http://127.0.0.1:{args.port}"
-    req = urllib.request.Request(
-        f"{base}/api/dashboard",
-        data=json.dumps({"html": html}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        print(f"Failed: {e}", file=sys.stderr)
-        return 1
+    from pathlib import Path
+    artifact_id = hashlib.md5(f"{args.title}{time.time()}".encode()).hexdigest()[:12]
+    artifact_dir = Path("public/charts")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    html_path = artifact_dir / f"{artifact_id}.html"
+    html_path.write_text(html)
 
-    print(f"[Open in dashboard]({base}/dashboard)")
-    print(f"[Download PNG]({base}/dashboard?png=1)")
+    base = f"http://127.0.0.1:{args.port}"
+    print(f"[Open in dashboard]({base}/public/charts/{artifact_id}.html)")
+    print(f"[Download PNG]({base}/render/chart?path=public/charts/{artifact_id}.html)")
     return 0
 
 

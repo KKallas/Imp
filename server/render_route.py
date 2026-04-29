@@ -208,40 +208,34 @@ async def serve_chat_ui():
     return Response("chat.html not found", status_code=404)
 
 
-_dashboard_html: str = ""
 
 
-@app.post("/api/dashboard")
-async def push_dashboard(request: Request):
-    """Push HTML content to the dashboard. Tools call this to display charts/widgets."""
-    global _dashboard_html
-    data = await request.json()
-    _dashboard_html = data.get("html", "")
-    return {"ok": True, "length": len(_dashboard_html)}
+@app.get("/public/{path:path}")
+async def serve_public(path: str):
+    """Serve files from public/ (charts, artifacts, etc.)."""
+    import mimetypes
+    full = _ROOT / "public" / path
+    if not full.is_file() or not str(full.resolve()).startswith(str((_ROOT / "public").resolve())):
+        return Response("not found", status_code=404)
+    ct = mimetypes.guess_type(full.name)[0] or "application/octet-stream"
+    return FileResponse(full, media_type=ct)
 
 
-@app.get("/api/dashboard")
-async def get_dashboard():
-    """Get current dashboard HTML content."""
-    return {"html": _dashboard_html}
-
-
-@app.get("/dashboard")
-async def serve_dashboard(request: Request):
-    """Serve the current dashboard HTML, or a PNG screenshot with ?png=1."""
-    if not _dashboard_html:
-        return HTMLResponse("<html><body style='background:#0d1117;color:#8b949e;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;'>No dashboard content</body></html>")
-    if request.query_params.get("png"):
-        from server.screenshot import available as _pw_available, screenshot
-        if _pw_available():
-            delay_ms = int(request.query_params.get("delay", 1000))
-            try:
-                png = await screenshot(_dashboard_html, delay_ms=delay_ms)
-                return Response(png, media_type="image/png")
-            except Exception:
-                pass
-        return HTMLResponse(_dashboard_html, headers={"X-Render-Fallback": "no-screenshot"})
-    return HTMLResponse(_dashboard_html)
+@app.get("/render/chart")
+async def render_chart_screenshot(path: str, delay: int = 1000):
+    """Screenshot an HTML chart file as PNG."""
+    full = _ROOT / path
+    if not full.is_file():
+        return Response("not found", status_code=404)
+    html = full.read_text()
+    from server.screenshot import available as _pw_available, screenshot
+    if not _pw_available():
+        return HTMLResponse(html, headers={"X-Render-Fallback": "playwright-not-installed"})
+    try:
+        png = await screenshot(html, delay_ms=delay)
+        return Response(png, media_type="image/png")
+    except Exception:
+        return HTMLResponse(html, headers={"X-Render-Fallback": "screenshot-failed"})
 
 
 @app.get("/static/{path:path}")

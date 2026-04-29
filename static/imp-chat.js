@@ -80,8 +80,8 @@ function renderMd(text) {
     }
     return `<span style="position:relative;display:inline-block;"><a href="${linkUrl}" target="_blank" title="Open in new tab"><img src="${src}"${rest}></a><a href="${src}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
   });
-  // Make /dashboard links open in the dashboard drawer
-  html = html.replace(/<a href="([^"]*\/dashboard[^"]*)">/g, (match, url) => {
+  // Make chart links open in the dashboard drawer
+  html = html.replace(/<a href="([^"]*(?:\/dashboard|\/public\/charts\/)[^"]*)">/g, (match, url) => {
     return `<a href="#" onclick="event.preventDefault();loadInDashboard('${url}')">`;
   });
   return html;
@@ -349,7 +349,7 @@ function formatToolOutput(raw) {
   // Escape HTML but preserve markdown links as clickable <a> tags
   var escaped = (raw || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
-    if (url.includes('/dashboard')) {
+    if (url.includes('/dashboard') || url.includes('/public/charts/')) {
       return '<a href="#" onclick="event.preventDefault();loadInDashboard(\'' + url + '\')">' + text + '</a>';
     }
     return '<a href="' + url + '" target="_blank">' + text + '</a>';
