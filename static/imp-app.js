@@ -29,9 +29,7 @@ function switchTab(tab) {
   document.getElementById('chat-tab').style.display = tab === 'chat' ? '' : 'none';
   document.getElementById('workflows-tab').style.display = tab === 'workflows' ? '' : 'none';
   document.getElementById('tools-tab').style.display = tab === 'tools' ? '' : 'none';
-  var sb = document.getElementById('sidebar');
-  sb.style.display = tab === 'chat' ? '' : 'none';
-  if (tab === 'chat') sb.classList.add('closed');
+  // sidebar is inside chat-tab now, no display toggle needed
   if (tab === 'queue') loadQueue();
   if (tab === 'workflows') loadWorkflows();
   if (tab === 'tools') loadToolsPanel();
@@ -46,7 +44,7 @@ function toggleDashboard() {
   var db = document.getElementById('dashboard-drawer');
   db.classList.toggle('closed');
   var btn = document.getElementById('dashboard-toggle');
-  btn.innerHTML = db.classList.contains('closed') ? '&#x25B6;' : '&#x25C0;';
+  btn.innerHTML = db.classList.contains('closed') ? '&#x25C0;' : '&#x25B6;';
 }
 
 function openDashboard(html) {
@@ -54,7 +52,7 @@ function openDashboard(html) {
   var content = document.getElementById('dashboard-content');
   content.innerHTML = html;
   db.classList.remove('closed');
-  document.getElementById('dashboard-toggle').innerHTML = '&#x25C0;';
+  document.getElementById('dashboard-toggle').innerHTML = '&#x25B6;';
 }
 
 function lockTabsForSetup() {
