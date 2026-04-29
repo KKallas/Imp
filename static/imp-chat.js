@@ -144,6 +144,8 @@ function setWorking(v) {
   document.getElementById('send-btn').style.display = v ? 'none' : '';
   document.getElementById('stop-btn').style.display = v ? '' : 'none';
   document.getElementById('input').disabled = v;
+  var newBtn = document.querySelector('#sidebar-header button:nth-child(2)');
+  if (newBtn) { newBtn.disabled = v; newBtn.style.opacity = v ? '0.3' : ''; }
 }
 
 // --- websocket ---
