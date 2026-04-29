@@ -43,10 +43,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 #sidebar.closed { width:36px; background:var(--bg); border-right:none; }
 #sidebar.closed #chat-list { display:none; }
 #sidebar.closed #sidebar-header button:not(#sidebar-toggle) { display:none; }
-#sidebar-toggle { background:none; border:none; color:var(--muted); cursor:pointer; font-size:16px; padding:4px; }
 #sidebar-header { padding:12px; border-bottom:1px solid var(--border); display:flex; gap:8px; }
 #sidebar-header button { flex:1; padding:6px; background:var(--accent); color:#fff;
   border:none; border-radius:4px; cursor:pointer; font-size:13px; }
+#sidebar-header #sidebar-toggle { background:none; color:var(--muted); flex:0 0 auto; font-size:16px; padding:4px; }
 #sidebar-header button.del { background:#da3633; flex:0.4; }
 #chat-list { flex:1; overflow-y:auto; padding:8px; }
 #version { padding:8px 12px; font-size:10px; color:var(--muted); opacity:0.5;
