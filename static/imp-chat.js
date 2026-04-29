@@ -230,11 +230,14 @@ function connectWs() {
 
       case 'done':
         if (currentAgentMsg && msg.full_text) {
-          // Only use full_text as fallback when streaming delivered nothing
           if (!agentText.trim()) {
             agentText = msg.full_text;
           }
           renderAgentBody();
+        }
+        // Send the composed agentText back so it's saved as-is
+        if (agentText.trim() && msg.chat_id && ws) {
+          ws.send(JSON.stringify({type: 'save_rendered', chat_id: msg.chat_id, rendered: agentText}));
         }
         currentAgentMsg = null;
         agentText = '';
@@ -355,6 +358,11 @@ function formatToolOutput(raw) {
 }
 
 function renderTurnFull(turn) {
+  // If content has tool-block HTML, it was saved from the live stream — use as-is
+  if (turn.content && turn.content.includes('tool-block')) {
+    return turn.content;
+  }
+  // Fallback: rebuild from structured blocks (old format)
   let parts = [];
   if (turn.blocks && turn.blocks.length) {
     turn.blocks.forEach(b => {
