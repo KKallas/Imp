@@ -96,8 +96,10 @@ def main() -> int:
 
     base = f"http://127.0.0.1:{args.port}"
 
-    print(f"Open in dashboard: {base}/public/charts/{artifact_id}.html")
-    print(f"Download: {base}/public/charts/{artifact_id}.html")
+    chart_url = f"{base}/public/charts/{artifact_id}.html"
+    png_url = f"{base}/renderpng?src=/public/charts/{artifact_id}.html"
+    print(f"[Open in dashboard]({chart_url})")
+    print(f"[Download PNG]({png_url})")
     return 0
 
 
