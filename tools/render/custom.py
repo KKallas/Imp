@@ -61,20 +61,21 @@ def main() -> int:
     else:
         html = SHELL.format(content=content)
 
+    base = f"http://127.0.0.1:{args.port}"
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{args.port}/api/dashboard",
+            f"{base}/api/dashboard",
             data=json.dumps({"html": html}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            result = json.loads(resp.read().decode())
-            print(f"Custom widget pushed to dashboard. The dashboard will refresh automatically.")
-            return 0
+        urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        print(f"Failed to push to dashboard: {e}", file=sys.stderr)
+        print(f"Failed: {e}", file=sys.stderr)
         return 1
+
+    print(f"[Open in dashboard]({base}/dashboard)")
+    return 0
 
 
 if __name__ == "__main__":

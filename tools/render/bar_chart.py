@@ -66,22 +66,25 @@ def main() -> int:
         chart_type=args.type,
     )
 
-    # Push to dashboard
     base = f"http://127.0.0.1:{args.port}"
+
+    # Push HTML to dashboard
+    req = urllib.request.Request(
+        f"{base}/api/dashboard",
+        data=json.dumps({"html": html}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        req = urllib.request.Request(
-            f"{base}/api/dashboard",
-            data=json.dumps({"html": html}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            json.loads(resp.read().decode())
-        print(f"Chart '{args.title}' pushed to dashboard. The dashboard will refresh automatically.")
-        return 0
+        urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        print(f"Failed to push to dashboard: {e}", file=sys.stderr)
+        print(f"Failed: {e}", file=sys.stderr)
         return 1
+
+    # Output links for the agent to put in chat
+    print(f"[Open in dashboard]({base}/dashboard)")
+    print(f"[Download PNG]({base}/render/dashboard?delay=1000)")
+    return 0
 
 
 if __name__ == "__main__":

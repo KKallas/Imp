@@ -85,19 +85,6 @@ window.addEventListener('message', function(e) {
   }
 });
 
-// --- dashboard polling ---
-let _lastDashboardLen = 0;
-function refreshDashboard() {
-  fetch(API + '/api/dashboard').then(function(r) { return r.json(); }).then(function(d) {
-    if (d.html && d.html.length > 0 && d.html.length !== _lastDashboardLen) {
-      _lastDashboardLen = d.html.length;
-      loadInDashboard('/dashboard?' + Date.now());
-    }
-  }).catch(function() {});
-}
-setInterval(function() {
-  if (activeTab === 'chat') refreshDashboard();
-}, 2000);
 
 // --- init ---
 connectWs();
