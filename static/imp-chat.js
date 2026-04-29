@@ -252,6 +252,10 @@ function connectWs() {
         unlockTabs();
         break;
 
+      case 'dashboard':
+        openDashboard(msg.html || '');
+        break;
+
       case 'confirm': {
         ensureAgentMsg();
         const confirmId = msg.id;
