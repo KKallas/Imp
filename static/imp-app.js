@@ -29,10 +29,31 @@ function switchTab(tab) {
   document.getElementById('chat-tab').style.display = tab === 'chat' ? '' : 'none';
   document.getElementById('workflows-tab').style.display = tab === 'workflows' ? '' : 'none';
   document.getElementById('tools-tab').style.display = tab === 'tools' ? '' : 'none';
-  document.getElementById('sidebar').style.display = tab === 'chat' ? '' : 'none';
+  // sidebar is inside chat-tab now, no display toggle needed
   if (tab === 'queue') loadQueue();
   if (tab === 'workflows') loadWorkflows();
   if (tab === 'tools') loadToolsPanel();
+}
+
+function toggleSidebar() {
+  var sb = document.getElementById('sidebar');
+  sb.classList.toggle('closed');
+}
+
+function toggleDashboard() {
+  document.getElementById('dashboard-drawer').classList.toggle('closed');
+}
+
+function openDashboard(html) {
+  var content = document.getElementById('dashboard-content');
+  content.innerHTML = html;
+  document.getElementById('dashboard-drawer').classList.remove('closed');
+}
+
+function loadInDashboard(url) {
+  var content = document.getElementById('dashboard-content');
+  content.innerHTML = '<iframe id="dashboard-iframe" src="' + url + '" style="width:100%;height:100%;border:none;"></iframe>';
+  document.getElementById('dashboard-drawer').classList.remove('closed');
 }
 
 function lockTabsForSetup() {
@@ -55,6 +76,15 @@ function unlockTabs() {
     t.style.pointerEvents = '';
   });
 }
+
+// --- widget events ---
+window.addEventListener('message', function(e) {
+  if (e.data && e.data.type === 'widget_event') {
+    console.log('Widget event:', e.data);
+    if (ws) ws.send(JSON.stringify({type: 'widget_event', event: e.data}));
+  }
+});
+
 
 // --- init ---
 connectWs();

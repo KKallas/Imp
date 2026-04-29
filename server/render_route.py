@@ -117,6 +117,26 @@ async def version():
     return {"version": ts}
 
 
+@app.get("/renderpng")
+async def render_png(src: str, width: int = 800, height: int = 600, delay: int = 1000):
+    """Screenshot any served HTML page as PNG. src is a path like /public/charts/abc.html"""
+    # Resolve the file from the src path
+    clean = src.lstrip("/")
+    full = _ROOT / clean
+    if not full.is_file():
+        return Response(f"File not found: {src}", status_code=404)
+    html = full.read_text()
+    from server.screenshot import available as _pw_available, screenshot
+    if not _pw_available():
+        return Response("playwright not installed — run: playwright install chromium", status_code=501)
+    try:
+        png = await screenshot(html, delay_ms=delay, width=width, height=height)
+    except Exception as exc:
+        return Response(f"Screenshot failed: {exc}", status_code=500)
+    return Response(png, media_type="image/png",
+                    headers={"Content-Disposition": f"attachment; filename={Path(clean).stem}.png"})
+
+
 @app.get("/render/{renderer_name}")
 async def handle_render(request: Request, renderer_name: str) -> Response:
     mode = request.query_params.get("mode", "image")
@@ -206,6 +226,20 @@ async def serve_chat_ui():
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
     return Response("chat.html not found", status_code=404)
+
+
+
+
+@app.get("/public/{path:path}")
+async def serve_public(path: str):
+    """Serve files from public/ (charts, artifacts, etc.)."""
+    import mimetypes
+    full = _ROOT / "public" / path
+    if not full.is_file() or not str(full.resolve()).startswith(str((_ROOT / "public").resolve())):
+        return Response("not found", status_code=404)
+    ct = mimetypes.guess_type(full.name)[0] or "application/octet-stream"
+    return FileResponse(full, media_type=ct)
+
 
 
 @app.get("/static/{path:path}")

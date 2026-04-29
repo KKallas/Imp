@@ -59,7 +59,7 @@ function renderMd(text) {
     const encoded = encodeURIComponent(diagram.trim());
     const imgUrl = `${API}/render/mermaid?diagram=${encoded}`;
     const viewUrl = `${API}/render/mermaid?diagram=${encoded}&mode=viewer`;
-    return `<span style="position:relative;display:inline-block;"><a href="${viewUrl}" target="_blank"><img src="${imgUrl}" alt="mermaid diagram"></a><a href="${imgUrl}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
+    return `<span style="position:relative;display:inline-block;"><a href="#" onclick="event.preventDefault();loadInDashboard('${viewUrl}')" title="Open in dashboard"><img src="${imgUrl}" alt="mermaid diagram"></a><a href="${imgUrl}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
   });
   let html = marked.parse(text);
   toolBlocks.forEach((block, i) => {
@@ -75,7 +75,14 @@ function renderMd(text) {
     } else if (src.includes('/public/charts/')) {
       linkUrl = src;
     }
+    if (src.includes('/render/')) {
+      return `<span style="position:relative;display:inline-block;"><a href="#" onclick="event.preventDefault();loadInDashboard('${linkUrl}')" title="Open in dashboard"><img src="${src}"${rest}></a><a href="${src}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
+    }
     return `<span style="position:relative;display:inline-block;"><a href="${linkUrl}" target="_blank" title="Open in new tab"><img src="${src}"${rest}></a><a href="${src}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
+  });
+  // Make chart links open in the dashboard drawer
+  html = html.replace(/<a href="([^"]*(?:\/dashboard|\/public\/charts\/)[^"]*)">/g, (match, url) => {
+    return `<a href="#" onclick="event.preventDefault();loadInDashboard('${url}')">`;
   });
   return html;
 }
@@ -96,6 +103,10 @@ function formatStepOutput(text) {
     md += '| ' + rows[0].map(() => '---').join(' | ') + ' |\n';
     rows.slice(1).forEach(cols => { md += '| ' + cols.map(c => c.trim()).join(' | ') + ' |\n'; });
     return marked.parse(md);
+  }
+  // If output has markdown links, render as markdown (not code block)
+  if (/\[.+\]\(.+\)/.test(trimmed)) {
+    return marked.parse(trimmed);
   }
   return marked.parse('```\n' + trimmed + '\n```');
 }
@@ -219,11 +230,14 @@ function connectWs() {
 
       case 'done':
         if (currentAgentMsg && msg.full_text) {
-          // Only use full_text as fallback when streaming delivered nothing
           if (!agentText.trim()) {
             agentText = msg.full_text;
           }
           renderAgentBody();
+        }
+        // Send the composed agentText back so it's saved as-is
+        if (agentText.trim() && msg.chat_id && ws) {
+          ws.send(JSON.stringify({type: 'save_rendered', chat_id: msg.chat_id, rendered: agentText}));
         }
         currentAgentMsg = null;
         agentText = '';
@@ -250,6 +264,10 @@ function connectWs() {
 
       case 'setup_complete':
         unlockTabs();
+        break;
+
+      case 'dashboard':
+        openDashboard(msg.html || '');
         break;
 
       case 'confirm': {
@@ -327,10 +345,26 @@ async function loadChats() {
   } catch (e) { console.error('loadChats failed:', e); }
 }
 
+function formatToolOutput(raw) {
+  // Escape HTML but preserve markdown links as clickable <a> tags
+  var escaped = (raw || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
+    if (url.includes('/dashboard') || url.includes('/public/charts/')) {
+      return '<a href="#" onclick="event.preventDefault();loadInDashboard(\'' + url + '\')">' + text + '</a>';
+    }
+    return '<a href="' + url + '" target="_blank">' + text + '</a>';
+  });
+  return escaped;
+}
+
 function renderTurnFull(turn) {
+  // If content has tool-block HTML, it was saved from the live stream — use as-is
+  if (turn.content && turn.content.includes('tool-block')) {
+    return turn.content;
+  }
+  // Fallback: rebuild from structured blocks (old format)
   let parts = [];
   if (turn.blocks && turn.blocks.length) {
-    // Ordered blocks preserve the interleaved sequence
     turn.blocks.forEach(b => {
       if (b.type === 'thinking') {
         const escaped = b.text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -338,12 +372,10 @@ function renderTurnFull(turn) {
       } else if (b.type === 'tool') {
         const icon = b.status === 'ok' ? '✅' : (b.status === 'error' ? '❌' : '⏳');
         const dur = b.duration_s ? ` · ${b.duration_s.toFixed(1)}s` : '';
-        const output = (b.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        parts.push(`<details class="tool-block ${b.status || ''}"><summary>${icon} ${b.name}(${formatArgs(b.args || {})})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+        parts.push(`<details class="tool-block ${b.status || ''}"><summary>${icon} ${b.name}(${formatArgs(b.args || {})})${dur}</summary><pre>${formatToolOutput(b.output)}</pre></details>`);
       }
     });
   } else {
-    // Fallback for old turns without blocks
     if (turn.thinking && turn.thinking.length) {
       turn.thinking.forEach(t => {
         const escaped = t.replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -354,8 +386,7 @@ function renderTurnFull(turn) {
       turn.tool_calls.forEach(tc => {
         const icon = tc.status === 'ok' ? '✅' : (tc.status === 'error' ? '❌' : '⏳');
         const dur = tc.duration_s ? ` · ${tc.duration_s.toFixed(1)}s` : '';
-        const output = (tc.output || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(tc.args || {})})${dur}</summary><pre>${output || '(no output)'}</pre></details>`);
+        parts.push(`<details class="tool-block ${tc.status || ''}"><summary>${icon} ${tc.name}(${formatArgs(tc.args || {})})${dur}</summary><pre>${formatToolOutput(tc.output)}</pre></details>`);
       });
     }
   }

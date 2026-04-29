@@ -26,14 +26,6 @@
 
 <div id="app-body">
 
-<div id="sidebar" style="display:none">
-  <div id="sidebar-header">
-    <button onclick="newChat()">+ New</button>
-    <button class="del" onclick="deleteChat()">Del</button>
-  </div>
-  <div id="chat-list"></div>
-</div>
-
 <div id="main">
   <!-- Queue tab (default) -->
   <div id="queue-tab" class="tab-content">
@@ -55,15 +47,37 @@
 
   <!-- Chat tab -->
   <div id="chat-tab" class="tab-content" style="display:none;">
-  <div id="messages"></div>
-  <div id="input-area">
-    <div id="input-row">
-      <textarea id="input" rows="1" placeholder="Ask Foreman..." onkeydown="onKey(event)"></textarea>
-      <button id="send-btn" onclick="send()">Send</button>
-      <button id="stop-btn" onclick="stop()">Stop</button>
+  <div id="chat-split">
+    <!-- Sidebar drawer (history) -->
+    <div id="sidebar" class="drawer closed">
+      <div id="sidebar-header">
+        <button onclick="toggleSidebar()" id="sidebar-toggle">&#x2630;</button>
+        <button onclick="newChat()">+ New</button>
+        <button class="del" onclick="deleteChat()">Del</button>
+      </div>
+      <div id="chat-list"></div>
+    </div>
+    <!-- Chat main -->
+    <div id="chat-main">
+      <div id="messages"></div>
+      <div id="input-area">
+        <div id="input-row">
+          <textarea id="input" rows="1" placeholder="Ask Foreman..." onkeydown="onKey(event)"></textarea>
+          <button id="send-btn" onclick="send()">Send</button>
+          <button id="stop-btn" onclick="stop()">Stop</button>
+        </div>
+      </div>
+      <div id="status"></div>
+    </div>
+    <!-- Dashboard drawer (right side) -->
+    <div id="dashboard-drawer" class="drawer closed">
+      <div id="dashboard-header">
+        <button onclick="toggleDashboard()" id="dashboard-toggle">&#x2630;</button>
+        <span class="dashboard-label">Dashboard</span>
+      </div>
+      <div id="dashboard-content"></div>
     </div>
   </div>
-  <div id="status"></div>
   </div><!-- /chat-tab -->
 
   <!-- Queue item popup -->

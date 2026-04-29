@@ -176,6 +176,19 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                 await confirm_queue.put(msg.get("approved", False))
                 continue
 
+            if msg.get("type") == "save_rendered":
+                # Frontend sends back the composed HTML so history looks the same
+                cid = msg.get("chat_id", "")
+                rendered = msg.get("rendered", "")
+                if cid and rendered:
+                    session = chat_history.load_session(cid)
+                    if session and session.turns:
+                        last = session.turns[-1]
+                        if last.role == "assistant":
+                            last.content = rendered
+                            chat_history.save_session(session)
+                continue
+
             if msg.get("type") != "message":
                 continue
 
