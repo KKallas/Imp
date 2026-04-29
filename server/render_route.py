@@ -326,6 +326,37 @@ async def delete_chat(chat_id: str):
     return {"deleted": ok}
 
 
+@app.get("/api/chats/{chat_id}/artifacts")
+async def list_artifacts(chat_id: str):
+    """List all artifact files in a chat's artifacts/ folder."""
+    from server import chat_history
+    d = chat_history.artifacts_dir(chat_id)
+    files = []
+    if d.exists():
+        for f in sorted(d.rglob("*")):
+            if f.is_file():
+                files.append({
+                    "name": f.name,
+                    "path": str(f.relative_to(d)),
+                    "size": f.stat().st_size,
+                    "url": f"/api/chats/{chat_id}/artifacts/{f.relative_to(d)}",
+                })
+    return {"artifacts": files, "count": len(files)}
+
+
+@app.get("/api/chats/{chat_id}/artifacts/{path:path}")
+async def serve_artifact(chat_id: str, path: str):
+    """Serve an artifact file with download header."""
+    from server import chat_history
+    d = chat_history.artifacts_dir(chat_id)
+    full = d / path
+    if not full.is_file() or not str(full.resolve()).startswith(str(d.resolve())):
+        return Response("not found", status_code=404)
+    import mimetypes
+    ct = mimetypes.guess_type(full.name)[0] or "application/octet-stream"
+    return FileResponse(full, media_type=ct)
+
+
 # ── queue API ───────────────────────────────────────────────────────
 
 @app.get("/api/queue")
