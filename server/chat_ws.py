@@ -142,6 +142,21 @@ async def handle_ws_chat(ws: WebSocket) -> None:
     except Exception:
         pass
 
+    confirm_queue: asyncio.Queue[bool] = asyncio.Queue()
+    _confirm_counter = [0]
+
+    async def confirm_tool(tool: str, description: str, preview: str) -> bool:
+        _confirm_counter[0] += 1
+        confirm_id = f"confirm-{_confirm_counter[0]}"
+        await ws.send_json({
+            "type": "confirm",
+            "id": confirm_id,
+            "tool": tool,
+            "description": description,
+            "preview": preview[:3000],
+        })
+        return await confirm_queue.get()
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -155,6 +170,10 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                     current_task.cancel()
                     await ws.send_json({"type": "status", "text": ""})
                     await ws.send_json({"type": "done", "full_text": "(stopped)"})
+                continue
+
+            if msg.get("type") == "confirm_response":
+                await confirm_queue.put(msg.get("approved", False))
                 continue
 
             if msg.get("type") != "message":
@@ -227,6 +246,7 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                         chart=chart,
                         history=history_turns,
                         turn_ui=turn_ui,
+                        confirm=confirm_tool,
                     )
 
                     # Save assistant turn with full structured log
