@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Save workflows and tools as a reusable preset.
+"""Save all workflows and tools as a preset with activation state.
 
 Inputs:
   --name: str — preset name.
   --description: str — what this preset does.
-  --workflow: str (repeatable) — workflow names to include.
-  --tool-group: str (repeatable) — tool group names to include.
 
-Process: Copies the specified workflows and tool groups into
-         .imp/presets/<name>/ with a manifest file.
-Output: Prints the preset path and contents."""
+Process: Copies all workflows and tool groups into .imp/presets/<name>/,
+         saves which ones are currently active in the manifest.
+Output: Prints the preset contents."""
 import argparse
 import json
 import shutil
@@ -20,12 +18,20 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 PRESETS_DIR = ROOT / ".imp" / "presets"
 
 
+def _load_config() -> dict:
+    cfg_file = ROOT / ".imp" / "config.json"
+    if cfg_file.exists():
+        try:
+            return json.loads(cfg_file.read_text())
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Save an automation preset")
     parser.add_argument("--name", required=True, help="Preset name")
     parser.add_argument("--description", default="", help="What this preset does")
-    parser.add_argument("--workflow", action="append", default=[], help="Workflow name to include")
-    parser.add_argument("--tool-group", action="append", default=[], help="Tool group to include")
     args = parser.parse_args()
 
     preset_dir = PRESETS_DIR / args.name
@@ -34,44 +40,43 @@ def main() -> int:
         return 1
 
     preset_dir.mkdir(parents=True)
+    cfg = _load_config()
 
-    # Copy workflows
-    wf_count = 0
-    for wf_name in args.workflow:
-        src = ROOT / "workflows" / wf_name
-        if src.is_dir():
-            dst = preset_dir / "workflows" / wf_name
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "last_run.json"))
-            wf_count += 1
-            print(f"  + workflow: {wf_name}")
-        else:
-            print(f"  ! workflow not found: {wf_name}")
+    # Copy all workflows
+    wf_dir = ROOT / "workflows"
+    wf_names = []
+    if wf_dir.is_dir():
+        for d in sorted(wf_dir.iterdir()):
+            if d.is_dir() and not d.name.startswith(("_", ".")):
+                dst = preset_dir / "workflows" / d.name
+                shutil.copytree(d, dst, ignore=shutil.ignore_patterns("__pycache__", "last_run.json"))
+                wf_names.append(d.name)
+                print(f"  + workflow: {d.name}")
 
-    # Copy tool groups
-    tg_count = 0
-    for tg_name in args.tool_group:
-        src = ROOT / "tools" / tg_name
-        if src.is_dir():
-            dst = preset_dir / "tools" / tg_name
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
-            tg_count += 1
-            print(f"  + tools: {tg_name}")
-        else:
-            print(f"  ! tool group not found: {tg_name}")
+    # Copy all tool groups
+    tg_dir = ROOT / "tools"
+    tg_names = []
+    if tg_dir.is_dir():
+        for d in sorted(tg_dir.iterdir()):
+            if d.is_dir() and not d.name.startswith(("_", ".")) and any(d.glob("*.py")):
+                dst = preset_dir / "tools" / d.name
+                shutil.copytree(d, dst, ignore=shutil.ignore_patterns("__pycache__"))
+                tg_names.append(d.name)
+                print(f"  + tools: {d.name}")
 
-    # Write manifest
+    # Save manifest with activation state
     manifest = {
         "name": args.name,
         "description": args.description,
-        "workflows": args.workflow,
-        "tool_groups": args.tool_group,
-        "workflow_count": wf_count,
-        "tool_group_count": tg_count,
+        "workflows": wf_names,
+        "tool_groups": tg_names,
+        "active_tools": cfg.get("active_tools", []),
+        "active_workflows": cfg.get("active_workflows", []),
     }
     (preset_dir / "preset.json").write_text(json.dumps(manifest, indent=2))
 
     print(f"\nPreset saved: {preset_dir}")
-    print(f"  {wf_count} workflow(s), {tg_count} tool group(s)")
+    print(f"  {len(wf_names)} workflow(s), {len(tg_names)} tool group(s)")
     return 0
 
 

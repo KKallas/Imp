@@ -391,6 +391,62 @@ async def serve_artifact(chat_id: str, path: str):
     return FileResponse(full, media_type=ct)
 
 
+# ── activation API ─────────────────────────────────────────────────
+
+def _load_imp_config() -> dict:
+    cfg_file = _ROOT / ".imp" / "config.json"
+    if cfg_file.exists():
+        try:
+            return json.loads(cfg_file.read_text())
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+def _save_imp_config(cfg: dict) -> None:
+    cfg_file = _ROOT / ".imp" / "config.json"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text(json.dumps(cfg, indent=2))
+
+
+@app.get("/api/active")
+async def get_active():
+    """Get active tools and workflows."""
+    cfg = _load_imp_config()
+    return {
+        "active_tools": cfg.get("active_tools", []),
+        "active_workflows": cfg.get("active_workflows", []),
+    }
+
+
+@app.post("/api/active/toggle")
+async def toggle_active(request: Request):
+    """Toggle a tool group or workflow active/inactive."""
+    data = await request.json()
+    kind = data.get("kind", "")  # "tool" or "workflow"
+    name = data.get("name", "")
+    cfg = _load_imp_config()
+
+    key = "active_tools" if kind == "tool" else "active_workflows"
+    active = cfg.get(key, [])
+
+    if name in active:
+        active.remove(name)
+    else:
+        active.append(name)
+
+    cfg[key] = active
+    _save_imp_config(cfg)
+
+    # Reload foreman prompt so it picks up the change
+    try:
+        from server.foreman_agent import reload_prompt
+        reload_prompt()
+    except Exception:
+        pass
+
+    return {"active": active}
+
+
 # ── queue API ───────────────────────────────────────────────────────
 
 @app.get("/api/queue")
