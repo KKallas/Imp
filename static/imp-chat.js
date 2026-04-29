@@ -424,6 +424,7 @@ async function loadChat(id, isActive) {
 }
 
 async function newChat() {
+  if (isWorking) return;
   try {
     const res = await fetch(`${API}/api/chats`, { method: 'POST' });
     const chat = await res.json();
