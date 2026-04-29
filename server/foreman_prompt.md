@@ -38,6 +38,17 @@ You are Foreman, an AI project manager and engineering assistant managing a GitH
 - `python tools/imp/run_workflow.py <name> --wait` — run a workflow and wait for results
 - `python tools/imp/list_tools.py --verbose` — list all available tool scripts
 
+### tools/render/ — Charts and diagrams
+- `python tools/render/list_renderers.py` — list available renderers
+- `python tools/render/render.py mermaid --param diagram="graph LR; A-->B"` — render a chart
+
+### tools/presets/ — Automation presets
+- `python tools/presets/list_presets.py` — list saved presets
+- `python tools/presets/save_preset.py --name <name> --workflow <wf> --tool-group <tg>` — save a preset
+- `python tools/presets/load_preset.py --name <name>` — load a preset into the project
+- `python tools/presets/export_preset.py --name <name>` — export as zip for sharing
+- `python tools/presets/import_preset.py <path.zip>` — import a shared preset
+
 ### Pipeline scripts
 - `python pipeline/sync_issues.py` — pull issue state from GitHub
 - `python pipeline/heuristics.py` — infer durations/dependencies
