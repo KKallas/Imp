@@ -141,6 +141,10 @@ def build_tool_list_for_prompt() -> str:
     """
     active = _get_active_tools()
 
+    # No active tools = agent uses only bash/python
+    if active is not None and len(active) == 0:
+        return ""
+
     lines: list[str] = ["## Available tools\n"]
     lines.append("Try these tool scripts FIRST before using raw `gh` or Bash.")
     lines.append("Run them with: `python tools/<folder>/<script>.py --args`\n")

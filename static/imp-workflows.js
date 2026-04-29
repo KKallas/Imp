@@ -34,7 +34,7 @@ async function loadWorkflows() {
       const statusIcons = {idle:'⚪', running:'🔄', paused:'⏸', done:'✅', error:'❌'};
       const sIcon = statusIcons[wf.status] || '⚪';
       const isThisBusy = wf.status === 'running' || wf.status === 'paused';
-      const isWfActive = _activeWorkflows.length === 0 || _activeWorkflows.includes(wf.name);
+      const isWfActive = _activeWorkflows.includes(wf.name);
       const wfCheckbox = `<input type="checkbox" ${isWfActive ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkflowActive('${wf.name}')" title="Active" style="margin-right:6px;cursor:pointer;">`;
 
       let stepsHtml = '', readmeHtml = '', rawReadme = '';

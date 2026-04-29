@@ -36,7 +36,7 @@ async function loadToolsPanel() {
       } catch (e) {}
 
       const isEditing = _editingToolGroup === group;
-      const isActive = _activeTools.length === 0 || _activeTools.includes(group);
+      const isActive = _activeTools.includes(group);
       const checkbox = `<input type="checkbox" ${isActive ? 'checked' : ''} onclick="event.stopPropagation();toggleToolActive('${group}')" title="Active" style="margin-right:6px;cursor:pointer;">`;
 
       const groupBtns = isEditing ? [
