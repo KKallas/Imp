@@ -19,7 +19,7 @@ TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/npm/frappe-charts@2/dist/frappe-charts.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/frappe-charts/dist/frappe-charts.umd.min.js"></script>
 <style>
   body {{ margin:0; padding:16px; background:#0d1117; color:#c9d1d9; font-family:sans-serif; }}
   .chart-container {{ background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }}
