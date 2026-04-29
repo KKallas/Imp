@@ -3,10 +3,19 @@
 let _toolsCache = [];
 let _editingToolGroup = null;
 let _editingTool = null;
+let _activeTools = [];
+
 async function loadToolsPanel() {
   const el = document.getElementById('tools-list-panel');
   const openState = imp.getOpenState(el);
   try {
+    // Fetch active state
+    try {
+      const ar = await fetch(`${API}/api/active`);
+      const ad = await ar.json();
+      _activeTools = ad.active_tools || [];
+    } catch(e) {}
+
     const res = await fetch(`${API}/api/tools`);
     _toolsCache = await res.json();
 
@@ -27,6 +36,8 @@ async function loadToolsPanel() {
       } catch (e) {}
 
       const isEditing = _editingToolGroup === group;
+      const isActive = _activeTools.includes(group);
+      const checkbox = `<input type="checkbox" ${isActive ? 'checked' : ''} onclick="event.stopPropagation();toggleToolActive('${group}')" title="Active" style="margin-right:6px;cursor:pointer;">`;
 
       const groupBtns = isEditing ? [
         imp.btn('OK', `saveToolGroupReadme('${group}')`, {cls:'ok'}),
@@ -67,7 +78,7 @@ async function loadToolsPanel() {
       }).join('');
 
       bodyHtml += imp.items(toolsHtml);
-      html += imp.card({id: `tg-${group}`, name: group, meta: `${tools.length} tools`, buttons: groupBtns, body: bodyHtml});
+      html += imp.card({id: `tg-${group}`, name: checkbox + group, meta: `${tools.length} tools`, buttons: groupBtns, body: bodyHtml, cls: isActive ? '' : 'inactive'});
     }
     el.innerHTML = html;
 
@@ -130,6 +141,13 @@ function openPromptGroup(group) {
   for (const t of groupTools) files.push(`tools/${group}/${t.name}.py`);
   const instructions = `Edit tools in the "${group}" group based on the user's request. You can modify the README, edit existing tool scripts, or create new ones. All files are under tools/${group}/.`;
   openChatWithContext(files, instructions, '', {type: 'group', id: `tg-${group}`}, `Edit: ${group}`);
+}
+
+function toggleToolActive(group) {
+  fetch(`${API}/api/active/toggle`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: 'tool', name: group}),
+  }).then(() => loadToolsPanel()).catch(e => console.error('Toggle failed:', e));
 }
 
 function editToolGroup(group) { _editingToolGroup = group; loadToolsPanel(); }

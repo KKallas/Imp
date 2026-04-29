@@ -1,69 +1,37 @@
 #!/usr/bin/env python3
-"""Stop the Imp render server.
+"""Stop a developer remote session.
 
-Inputs:
-  --port (int, optional): Port the server runs on (default: 8421).
+Inputs: None.
 
-Process: Finds the process listening on the port and sends SIGTERM.
-Falls back to SIGKILL if the process doesn't exit within 5 seconds.
+Process: Removes the session marker file (.imp/remote_session.json),
+which tells the server that sync access is no longer active.
+Does NOT stop the server itself.
 
-Output: Prints whether the server was stopped or wasn't running."""
+Output: Prints whether a session was stopped or none was active."""
 
-import argparse
-import signal
-import subprocess
+import json
 import sys
-import time
+from pathlib import Path
 
-
-def find_pids(port):
-    """Find PIDs listening on the given port."""
-    try:
-        result = subprocess.run(
-            ["lsof", "-i", f":{port}", "-t"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return [int(p) for p in result.stdout.strip().split("\n")]
-    except Exception:
-        pass
-    return []
+SESSION_FILE = Path(".imp/remote_session.json")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Stop the Imp server")
-    parser.add_argument("--port", type=int, default=8421)
-    args = parser.parse_args()
-
-    pids = find_pids(args.port)
-    if not pids:
-        print(f"No server running on port {args.port}")
+    if not SESSION_FILE.exists():
+        print("No active remote session.")
         return 0
 
-    print(f"Stopping server (PIDs: {pids})...")
-    import os
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+    try:
+        session = json.loads(SESSION_FILE.read_text())
+        started = session.get("started", "unknown")
+        ip = session.get("ip", "unknown")
+        port = session.get("port", "unknown")
+        print(f"Stopping session (started {started}, {ip}:{port})...")
+    except Exception:
+        print("Stopping session...")
 
-    # Wait for clean shutdown
-    for _ in range(5):
-        time.sleep(1)
-        if not find_pids(args.port):
-            print("Server stopped")
-            return 0
-
-    # Force kill
-    print("Force killing...")
-    for pid in find_pids(args.port):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    print("Server stopped")
+    SESSION_FILE.unlink(missing_ok=True)
+    print("Remote session stopped. Sync endpoints are no longer accessible.")
     return 0
 
 

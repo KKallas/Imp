@@ -1,14 +1,14 @@
-"""Activate developer sync — pause with download link."""
+"""Start a developer remote session — verify endpoints and show the sync download link."""
 
 
 def run(context):
     # URLs use relative paths — the browser resolves them to whatever host it's connected to
     return {
         "pause": True,
-        "title": "Developer sync active",
+        "title": "Remote session active",
         "detail_html": (
-            "<h3>Developer Sync Active</h3>"
-            "<p>The sync endpoint is ready. Download the sync script and run it locally:</p>"
+            "<h3>Remote Session Active</h3>"
+            "<p>All sync endpoints verified. Download the sync script and run it on your local machine:</p>"
             '<p style="margin:16px 0;">'
             '<a href="/imp-sync.py" download="imp-sync.py"'
             ' style="display:inline-block;padding:8px 20px;background:#58a6ff;color:#fff;'
@@ -22,8 +22,8 @@ def run(context):
             "Syncing: tools/, workflows/, renderers/, public/</p>"
         ),
         "actions": [
-            {"label": "Stop sync", "action": "continue"},
+            {"label": "Stop session", "action": "continue"},
         ],
         "ok": True,
-        "output": "Sync active — download link in queue popup",
+        "output": "Remote session active — download link in queue popup",
     }

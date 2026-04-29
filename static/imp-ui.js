@@ -55,7 +55,8 @@ const imp = {
       ? `<span class="wf-item-status ${opts.status.cls || ''}">${opts.status.icon || ''} ${opts.status.text || ''}</span>`
       : '';
     const open = opts.open ? ' open' : '';
-    return `<details class="wf-item" data-id="${opts.id}"${open}>
+    const cls = opts.cls ? ` ${opts.cls}` : '';
+    return `<details class="wf-item${cls}" data-id="${opts.id}"${open}>
       <summary>
         <span class="wf-item-name">${opts.name}</span>
         <span class="wf-item-meta">${opts.meta || ''}</span>

@@ -88,7 +88,12 @@ window.addEventListener('message', function(e) {
 
 // --- init ---
 connectWs();
-loadChats();
+loadChats().then(() => {
+  // Open the most recent chat on startup
+  const list = document.getElementById('chat-list');
+  const first = list && list.querySelector('.chat-item');
+  if (first) first.click();
+});
 loadQueue();
 queuePollInterval = setInterval(() => { if (activeTab === 'queue') loadQueue(); }, 5000);
 fetch(`${API}/api/setup-status`).then(r => r.json()).then(d => {
