@@ -118,7 +118,8 @@ def main() -> int:
     html_path.write_text(html)
 
     base = f"http://127.0.0.1:{args.port}"
-    print(f"{base}/public/charts/{artifact_id}.html")
+    print(f"[Open in dashboard]({base}/public/charts/{artifact_id}.html)")
+    print(f"[Download PNG]({base}/public/charts/{artifact_id}.html)")
     return 0
 
 
