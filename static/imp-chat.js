@@ -55,15 +55,6 @@ function renderMd(text) {
     toolBlocks.push(match);
     return `%%TOOL_BLOCK_${toolBlocks.length - 1}%%`;
   });
-  // Intercept iframes and dashboard URLs — route to dashboard panel
-  text = text.replace(/<iframe\s[^>]*src="([^"]*)"[^>]*>[\s\S]*?<\/iframe>/gi, (match, src) => {
-    openDashboard(match);
-    return '_Loaded in dashboard →_';
-  });
-  text = text.replace(/(?:Widget URL|Dashboard|Viewer):\s*(https?:\/\/[^\s]+\/dashboard\/[^\s]+)/gi, (match, url) => {
-    openDashboard('<iframe src="' + url + '" style="width:100%;height:100%;border:none;"></iframe>');
-    return '_Loaded in dashboard →_';
-  });
   text = text.replace(/```mermaid\n([\s\S]*?)```/g, (_, diagram) => {
     const encoded = encodeURIComponent(diagram.trim());
     const imgUrl = `${API}/render/mermaid?diagram=${encoded}`;
