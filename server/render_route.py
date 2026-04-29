@@ -121,22 +121,6 @@ async def version():
 async def handle_render(request: Request, renderer_name: str) -> Response:
     mode = request.query_params.get("mode", "image")
 
-    # Dashboard screenshot: render the current dashboard HTML as PNG
-    if renderer_name == "dashboard":
-        if not _dashboard_html:
-            return Response("No dashboard content", status_code=404)
-        if mode == "viewer":
-            return HTMLResponse(_dashboard_html)
-        from server.screenshot import available as _pw_available, screenshot
-        if not _pw_available():
-            return HTMLResponse(_dashboard_html, headers={"X-Render-Fallback": "playwright-not-installed"})
-        delay_ms = int(request.query_params.get("delay", 1000))
-        try:
-            png = await screenshot(_dashboard_html, delay_ms=delay_ms)
-            return Response(png, media_type="image/png")
-        except Exception:
-            return HTMLResponse(_dashboard_html, headers={"X-Render-Fallback": "screenshot-failed"})
-
     plugin = _renderers.get(renderer_name)
     if plugin is None:
         available = ", ".join(sorted(_renderers.discover()))
@@ -243,10 +227,20 @@ async def get_dashboard():
 
 
 @app.get("/dashboard")
-async def serve_dashboard():
-    """Serve the current dashboard HTML as a full page (for iframe embedding)."""
+async def serve_dashboard(request: Request):
+    """Serve the current dashboard HTML, or a PNG screenshot with ?png=1."""
     if not _dashboard_html:
         return HTMLResponse("<html><body style='background:#0d1117;color:#8b949e;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;'>No dashboard content</body></html>")
+    if request.query_params.get("png"):
+        from server.screenshot import available as _pw_available, screenshot
+        if _pw_available():
+            delay_ms = int(request.query_params.get("delay", 1000))
+            try:
+                png = await screenshot(_dashboard_html, delay_ms=delay_ms)
+                return Response(png, media_type="image/png")
+            except Exception:
+                pass
+        return HTMLResponse(_dashboard_html, headers={"X-Render-Fallback": "no-screenshot"})
     return HTMLResponse(_dashboard_html)
 
 

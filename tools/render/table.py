@@ -122,7 +122,7 @@ def main() -> int:
         return 1
 
     print(f"[Open in dashboard]({base}/dashboard)")
-    print(f"[Download PNG]({base}/render/dashboard?delay=1000)")
+    print(f"[Download PNG]({base}/dashboard?png=1)")
     return 0
 
 
