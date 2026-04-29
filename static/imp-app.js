@@ -56,6 +56,15 @@ function unlockTabs() {
   });
 }
 
+// --- widget events ---
+window.addEventListener('message', function(e) {
+  if (e.data && e.data.type === 'widget_click') {
+    console.log('Widget click:', e.data);
+    // Forward to WebSocket so the agent can react
+    if (ws) ws.send(JSON.stringify({type: 'widget_event', event: e.data}));
+  }
+});
+
 // --- init ---
 connectWs();
 loadChats();

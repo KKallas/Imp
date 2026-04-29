@@ -208,6 +208,35 @@ async def serve_chat_ui():
     return Response("chat.html not found", status_code=404)
 
 
+@app.get("/dashboard/{widget_type}")
+async def serve_dashboard_widget(request: Request, widget_type: str):
+    """Serve a dashboard widget as embeddable HTML.
+
+    Widget types are stored as templates in static/widgets/<type>.html.
+    Falls back to the render system if no widget template exists.
+    Query params are passed through to the template.
+    """
+    widget_dir = _ROOT / "static" / "widgets"
+    widget_file = widget_dir / f"{widget_type}.html"
+    if widget_file.is_file():
+        html = widget_file.read_text()
+        # Simple param substitution: {{key}} → value
+        for key, value in request.query_params.items():
+            html = html.replace(f"{{{{{key}}}}}", value)
+        return HTMLResponse(html)
+    return Response(f"Widget '{widget_type}' not found", status_code=404)
+
+
+@app.get("/api/dashboard/widgets")
+async def list_dashboard_widgets():
+    """List available dashboard widget types."""
+    widget_dir = _ROOT / "static" / "widgets"
+    if not widget_dir.is_dir():
+        return {"widgets": []}
+    widgets = [f.stem for f in sorted(widget_dir.glob("*.html"))]
+    return {"widgets": widgets}
+
+
 @app.get("/static/{path:path}")
 async def serve_static(path: str):
     """Serve static JS/CSS files (no caching during dev)."""

@@ -38,9 +38,10 @@ You are Foreman, an AI project manager and engineering assistant managing a GitH
 - `python tools/imp/run_workflow.py <name> --wait` — run a workflow and wait for results
 - `python tools/imp/list_tools.py --verbose` — list all available tool scripts
 
-### tools/render/ — Charts and diagrams
+### tools/render/ — Charts, diagrams, and dashboard widgets
 - `python tools/render/list_renderers.py` — list available renderers
 - `python tools/render/render.py mermaid --param diagram="graph LR; A-->B"` — render a chart
+- `python tools/render/dashboard.py video --param url="http://camera/stream"` — embed a live widget
 
 ### tools/presets/ — Automation presets
 - `python tools/presets/list_presets.py` — list saved presets
