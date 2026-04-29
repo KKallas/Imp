@@ -70,7 +70,7 @@ def main() -> int:
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             result = json.loads(resp.read().decode())
-            print(f"Custom HTML pushed to dashboard ({result.get('length', '?')} chars)")
+            print(f"Custom widget pushed to dashboard. The dashboard will refresh automatically.")
             return 0
     except Exception as e:
         print(f"Failed to push to dashboard: {e}", file=sys.stderr)

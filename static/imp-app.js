@@ -87,22 +87,16 @@ window.addEventListener('message', function(e) {
 
 // --- dashboard polling ---
 let _lastDashboardLen = 0;
-setInterval(function() {
-  if (activeTab !== 'chat') return;
-  fetch(API + '/api/dashboard').then(r => r.json()).then(d => {
-    if (d.html && d.html.length !== _lastDashboardLen) {
+function refreshDashboard() {
+  fetch(API + '/api/dashboard').then(function(r) { return r.json(); }).then(function(d) {
+    if (d.html && d.html.length > 0 && d.html.length !== _lastDashboardLen) {
       _lastDashboardLen = d.html.length;
-      var iframe = document.getElementById('dashboard-iframe');
-      if (!iframe) {
-        var content = document.getElementById('dashboard-content');
-        content.innerHTML = '<iframe id="dashboard-iframe" src="/dashboard" style="width:100%;height:100%;border:none;"></iframe>';
-        iframe = document.getElementById('dashboard-iframe');
-      }
-      iframe.src = '/dashboard?' + Date.now(); // bust cache
-      var db = document.getElementById('dashboard-drawer');
-      if (db.classList.contains('closed')) toggleDashboard();
+      loadInDashboard('/dashboard?' + Date.now());
     }
   }).catch(function() {});
+}
+setInterval(function() {
+  if (activeTab === 'chat') refreshDashboard();
 }, 2000);
 
 // --- init ---
