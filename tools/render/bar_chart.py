@@ -79,8 +79,7 @@ def main() -> int:
     base = f"http://127.0.0.1:{args.port}"
 
     # Output links — each chart has a unique permanent URL
-    print(f"[Open in dashboard]({base}/public/charts/{artifact_id}.html)")
-    print(f"[Download PNG]({base}/render/chart?path=public/charts/{artifact_id}.html)")
+    print(f"{base}/public/charts/{artifact_id}.html")
     return 0
 
 

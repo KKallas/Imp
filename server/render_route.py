@@ -221,22 +221,6 @@ async def serve_public(path: str):
     return FileResponse(full, media_type=ct)
 
 
-@app.get("/render/chart")
-async def render_chart_screenshot(path: str, delay: int = 1000):
-    """Screenshot an HTML chart file as PNG."""
-    full = _ROOT / path
-    if not full.is_file():
-        return Response("not found", status_code=404)
-    html = full.read_text()
-    from server.screenshot import available as _pw_available, screenshot
-    if not _pw_available():
-        return HTMLResponse(html, headers={"X-Render-Fallback": "playwright-not-installed"})
-    try:
-        png = await screenshot(html, delay_ms=delay)
-        return Response(png, media_type="image/png")
-    except Exception:
-        return HTMLResponse(html, headers={"X-Render-Fallback": "screenshot-failed"})
-
 
 @app.get("/static/{path:path}")
 async def serve_static(path: str):
