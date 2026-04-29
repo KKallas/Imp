@@ -159,13 +159,23 @@ class ChatSession:
             "turns": [t.to_dict() for t in self.turns],
         }
 
-    def filename(self) -> str:
-        """`<created_at_safe>_<id>.json` — chronological sort works with
-        a plain `ls` because ISO timestamps sort lexically."""
-        return f"{_safe_stem(self.created_at)}_{self.id}.json"
+    def folder(self, base: Optional[Path] = None) -> Path:
+        """Return the chat folder: `.imp/chats/<id>/`."""
+        return (base or CHATS_DIR) / self.id
 
     def path(self, base: Optional[Path] = None) -> Path:
-        return (base or CHATS_DIR) / self.filename()
+        """Return the chat JSON path: `.imp/chats/<id>/chat.json`."""
+        return self.folder(base) / "chat.json"
+
+    def artifacts_dir(self, base: Optional[Path] = None) -> Path:
+        """Return the artifacts folder, creating it if needed."""
+        d = self.folder(base) / "artifacts"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    # Legacy compat
+    def _legacy_path(self, base: Optional[Path] = None) -> Path:
+        return (base or CHATS_DIR) / f"{_safe_stem(self.created_at)}_{self.id}.json"
 
     # ---- mutation ----
 
@@ -244,11 +254,11 @@ def ensure_chats_dir(base: Optional[Path] = None) -> Path:
 
 
 def save_session(session: ChatSession, *, base: Optional[Path] = None) -> Path:
-    """Write the session as pretty-printed JSON. Overwrites the file
-    atomically — write to a sibling tempfile then rename, so a crash
-    mid-write can't leave a half-written chat on disk.
+    """Write the session as pretty-printed JSON inside its folder.
+    `.imp/chats/<id>/chat.json`. Atomic write via tempfile rename.
     """
-    ensure_chats_dir(base)
+    folder = session.folder(base)
+    folder.mkdir(parents=True, exist_ok=True)
     final = session.path(base)
     tmp = final.with_suffix(final.suffix + ".tmp")
     tmp.write_text(json.dumps(session.to_dict(), indent=2))
@@ -257,56 +267,68 @@ def save_session(session: ChatSession, *, base: Optional[Path] = None) -> Path:
 
 
 def load_session(chat_id: str, *, base: Optional[Path] = None) -> Optional[ChatSession]:
-    """Load a session by `chat_id`. Matches the `_<id>.json` suffix so
-    callers don't need to know the created_at prefix."""
+    """Load a session by `chat_id`. Checks folder format first, then legacy flat file."""
     d = base or CHATS_DIR
     if not d.exists():
         return None
+
+    # New format: .imp/chats/<id>/chat.json
+    folder_path = d / chat_id / "chat.json"
+    if folder_path.exists():
+        try:
+            return ChatSession.from_dict(json.loads(folder_path.read_text()))
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"[chat_history] corrupt {folder_path}: {exc}", file=sys.stderr)
+            return None
+
+    # Legacy format: .imp/chats/*_<id>.json
     for path in d.glob(f"*_{chat_id}.json"):
         try:
-            return ChatSession.from_dict(json.loads(path.read_text()))
+            session = ChatSession.from_dict(json.loads(path.read_text()))
+            # Migrate: save in new format, remove old file
+            save_session(session, base=base)
+            path.unlink()
+            print(f"[chat_history] migrated {path.name} → {chat_id}/chat.json", file=sys.stderr)
+            return session
         except (json.JSONDecodeError, KeyError) as exc:
-            print(
-                f"[chat_history] corrupt session file {path.name}: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
+            print(f"[chat_history] corrupt {path.name}: {exc}", file=sys.stderr)
             return None
     return None
 
 
-def asset_dir(chat_id: str, *, base: Optional[Path] = None) -> Path:
-    """Return the asset folder for a session, creating it if needed."""
-    d = (base or CHATS_DIR) / chat_id
+def artifacts_dir(chat_id: str, *, base: Optional[Path] = None) -> Path:
+    """Return the artifacts folder for a chat, creating it if needed."""
+    d = (base or CHATS_DIR) / chat_id / "artifacts"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def delete_session(chat_id: str, *, base: Optional[Path] = None) -> bool:
-    """Delete a session file + asset folder by id."""
+    """Delete a chat folder (or legacy flat file). Everything goes."""
     import shutil
 
     d = base or CHATS_DIR
     if not d.exists():
         return False
     deleted = False
+
+    # New format: delete the whole folder
+    folder = d / chat_id
+    if folder.is_dir():
+        try:
+            shutil.rmtree(folder)
+            deleted = True
+        except OSError as exc:
+            print(f"[chat_history] delete failed for {folder}: {exc}", file=sys.stderr)
+
+    # Legacy flat files
     for path in d.glob(f"*_{chat_id}.json"):
         try:
             path.unlink()
             deleted = True
         except OSError as exc:
-            print(
-                f"[chat_history] delete failed for {path.name}: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-    # Remove asset folder
-    asset_path = d / chat_id
-    if asset_path.is_dir():
-        try:
-            shutil.rmtree(asset_path)
-        except OSError:
-            pass
+            print(f"[chat_history] delete failed for {path.name}: {exc}", file=sys.stderr)
+
     return deleted
 
 
@@ -352,12 +374,43 @@ def list_sessions(
     if not d.exists():
         return []
     rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    # New format: .imp/chats/<id>/chat.json
+    for subdir in d.iterdir():
+        if not subdir.is_dir() or subdir.name.startswith(("_", ".")):
+            continue
+        chat_json = subdir / "chat.json"
+        if not chat_json.exists():
+            continue
+        try:
+            data = json.loads(chat_json.read_text())
+            cid = str(data.get("id") or "")
+            seen_ids.add(cid)
+            rows.append(
+                {
+                    "id": cid,
+                    "title": str(data.get("title") or FALLBACK_TITLE),
+                    "title_source": str(data.get("title_source") or "fallback"),
+                    "last_active_at": str(data.get("last_active_at") or ""),
+                    "created_at": str(data.get("created_at") or ""),
+                    "turn_count": len(data.get("turns") or []),
+                    "path": str(chat_json),
+                }
+            )
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"[chat_history] skipping unreadable {chat_json}: {exc}", file=sys.stderr)
+
+    # Legacy format: .imp/chats/*_<id>.json
     for path in d.glob("*.json"):
         try:
             data = json.loads(path.read_text())
+            cid = str(data.get("id") or "")
+            if cid in seen_ids:
+                continue
             rows.append(
                 {
-                    "id": str(data.get("id") or ""),
+                    "id": cid,
                     "title": str(data.get("title") or FALLBACK_TITLE),
                     "title_source": str(data.get("title_source") or "fallback"),
                     "last_active_at": str(data.get("last_active_at") or ""),

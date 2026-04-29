@@ -75,7 +75,7 @@ function renderMd(text) {
     } else if (src.includes('/public/charts/')) {
       linkUrl = src;
     }
-    return `<a href="${linkUrl}" target="_blank" title="Open in new tab"><img src="${src}"${rest}></a>`;
+    return `<span style="position:relative;display:inline-block;"><a href="${linkUrl}" target="_blank" title="Open in new tab"><img src="${src}"${rest}></a><a href="${src}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
   });
   return html;
 }
