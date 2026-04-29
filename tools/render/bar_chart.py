@@ -67,21 +67,20 @@ def main() -> int:
     )
 
     # Push to dashboard
+    base = f"http://127.0.0.1:{args.port}"
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{args.port}/api/dashboard",
+            f"{base}/api/dashboard",
             data=json.dumps({"html": html}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
-            result = json.loads(resp.read().decode())
-            print(f"Chart pushed to dashboard ({result.get('length', '?')} chars)")
-            return 0
+            json.loads(resp.read().decode())
+        print(f"Chart '{args.title}' loaded in dashboard.")
+        return 0
     except Exception as e:
         print(f"Failed to push to dashboard: {e}", file=sys.stderr)
-        # Still print the HTML so the agent can use it
-        print(html)
         return 1
 
 

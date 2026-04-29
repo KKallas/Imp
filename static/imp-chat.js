@@ -59,7 +59,7 @@ function renderMd(text) {
     const encoded = encodeURIComponent(diagram.trim());
     const imgUrl = `${API}/render/mermaid?diagram=${encoded}`;
     const viewUrl = `${API}/render/mermaid?diagram=${encoded}&mode=viewer`;
-    return `<span style="position:relative;display:inline-block;"><a href="${viewUrl}" target="_blank"><img src="${imgUrl}" alt="mermaid diagram"></a><a href="${imgUrl}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
+    return `<span style="position:relative;display:inline-block;"><a href="#" onclick="event.preventDefault();loadInDashboard('${viewUrl}')" title="Open in dashboard"><img src="${imgUrl}" alt="mermaid diagram"></a><a href="${imgUrl}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
   });
   let html = marked.parse(text);
   toolBlocks.forEach((block, i) => {
@@ -74,6 +74,9 @@ function renderMd(text) {
       linkUrl = src.includes('mode=') ? src : src + (src.includes('?') ? '&' : '?') + 'mode=viewer';
     } else if (src.includes('/public/charts/')) {
       linkUrl = src;
+    }
+    if (src.includes('/render/')) {
+      return `<span style="position:relative;display:inline-block;"><a href="#" onclick="event.preventDefault();loadInDashboard('${linkUrl}')" title="Open in dashboard"><img src="${src}"${rest}></a><a href="${src}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
     }
     return `<span style="position:relative;display:inline-block;"><a href="${linkUrl}" target="_blank" title="Open in new tab"><img src="${src}"${rest}></a><a href="${src}" download style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;text-decoration:none;cursor:pointer;" title="Download PNG">⬇</a></span>`;
   });

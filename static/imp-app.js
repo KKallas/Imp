@@ -41,18 +41,19 @@ function toggleSidebar() {
 }
 
 function toggleDashboard() {
-  var db = document.getElementById('dashboard-drawer');
-  db.classList.toggle('closed');
-  var btn = document.getElementById('dashboard-toggle');
-  btn.innerHTML = db.classList.contains('closed') ? '&#x25C0;' : '&#x25B6;';
+  document.getElementById('dashboard-drawer').classList.toggle('closed');
 }
 
 function openDashboard(html) {
-  var db = document.getElementById('dashboard-drawer');
   var content = document.getElementById('dashboard-content');
   content.innerHTML = html;
-  db.classList.remove('closed');
-  document.getElementById('dashboard-toggle').innerHTML = '&#x25B6;';
+  document.getElementById('dashboard-drawer').classList.remove('closed');
+}
+
+function loadInDashboard(url) {
+  var content = document.getElementById('dashboard-content');
+  content.innerHTML = '<iframe id="dashboard-iframe" src="' + url + '" style="width:100%;height:100%;border:none;"></iframe>';
+  document.getElementById('dashboard-drawer').classList.remove('closed');
 }
 
 function lockTabsForSetup() {
