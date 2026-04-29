@@ -78,12 +78,31 @@ function unlockTabs() {
 
 // --- widget events ---
 window.addEventListener('message', function(e) {
-  if (e.data && e.data.type === 'widget_click') {
-    console.log('Widget click:', e.data);
-    // Forward to WebSocket so the agent can react
+  if (e.data && e.data.type === 'widget_event') {
+    console.log('Widget event:', e.data);
     if (ws) ws.send(JSON.stringify({type: 'widget_event', event: e.data}));
   }
 });
+
+// --- dashboard polling ---
+let _lastDashboardLen = 0;
+setInterval(function() {
+  if (activeTab !== 'chat') return;
+  fetch(API + '/api/dashboard').then(r => r.json()).then(d => {
+    if (d.html && d.html.length !== _lastDashboardLen) {
+      _lastDashboardLen = d.html.length;
+      var iframe = document.getElementById('dashboard-iframe');
+      if (!iframe) {
+        var content = document.getElementById('dashboard-content');
+        content.innerHTML = '<iframe id="dashboard-iframe" src="/dashboard" style="width:100%;height:100%;border:none;"></iframe>';
+        iframe = document.getElementById('dashboard-iframe');
+      }
+      iframe.src = '/dashboard?' + Date.now(); // bust cache
+      var db = document.getElementById('dashboard-drawer');
+      if (db.classList.contains('closed')) toggleDashboard();
+    }
+  }).catch(function() {});
+}, 2000);
 
 // --- init ---
 connectWs();

@@ -208,33 +208,30 @@ async def serve_chat_ui():
     return Response("chat.html not found", status_code=404)
 
 
-@app.get("/dashboard/{widget_type}")
-async def serve_dashboard_widget(request: Request, widget_type: str):
-    """Serve a dashboard widget as embeddable HTML.
-
-    Widget types are stored as templates in static/widgets/<type>.html.
-    Falls back to the render system if no widget template exists.
-    Query params are passed through to the template.
-    """
-    widget_dir = _ROOT / "static" / "widgets"
-    widget_file = widget_dir / f"{widget_type}.html"
-    if widget_file.is_file():
-        html = widget_file.read_text()
-        # Simple param substitution: {{key}} → value
-        for key, value in request.query_params.items():
-            html = html.replace(f"{{{{{key}}}}}", value)
-        return HTMLResponse(html)
-    return Response(f"Widget '{widget_type}' not found", status_code=404)
+_dashboard_html: str = ""
 
 
-@app.get("/api/dashboard/widgets")
-async def list_dashboard_widgets():
-    """List available dashboard widget types."""
-    widget_dir = _ROOT / "static" / "widgets"
-    if not widget_dir.is_dir():
-        return {"widgets": []}
-    widgets = [f.stem for f in sorted(widget_dir.glob("*.html"))]
-    return {"widgets": widgets}
+@app.post("/api/dashboard")
+async def push_dashboard(request: Request):
+    """Push HTML content to the dashboard. Tools call this to display charts/widgets."""
+    global _dashboard_html
+    data = await request.json()
+    _dashboard_html = data.get("html", "")
+    return {"ok": True, "length": len(_dashboard_html)}
+
+
+@app.get("/api/dashboard")
+async def get_dashboard():
+    """Get current dashboard HTML content."""
+    return {"html": _dashboard_html}
+
+
+@app.get("/dashboard")
+async def serve_dashboard():
+    """Serve the current dashboard HTML as a full page (for iframe embedding)."""
+    if not _dashboard_html:
+        return HTMLResponse("<html><body style='background:#0d1117;color:#8b949e;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;'>No dashboard content</body></html>")
+    return HTMLResponse(_dashboard_html)
 
 
 @app.get("/static/{path:path}")
