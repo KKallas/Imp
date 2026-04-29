@@ -119,18 +119,39 @@ def delete_config(tool_name: str, exec_name: str) -> bool:
 
 # ── prompt generation ───────────────────────────────────────────────
 
+def _get_active_tools() -> list[str] | None:
+    """Return list of active tool groups from config, or None if no filter set."""
+    import json
+    cfg_file = _TOOLS_DIR.parent / ".imp" / "config.json"
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text())
+            active = cfg.get("active_tools")
+            if isinstance(active, list) and len(active) > 0:
+                return active
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return None  # no filter = all active
+
+
 def build_tool_list_for_prompt() -> str:
     """Auto-generate the 'Tools available' section for the system prompt.
 
-    Scans ``tools/*/`` and lists every executable with its README
-    description if available.
+    Only includes active tool groups (if activation is configured).
     """
+    active = _get_active_tools()
+
+    # No active tools = agent uses only bash/python
+    if active is not None and len(active) == 0:
+        return ""
+
     lines: list[str] = ["## Available tools\n"]
     lines.append("Try these tool scripts FIRST before using raw `gh` or Bash.")
     lines.append("Run them with: `python tools/<folder>/<script>.py --args`\n")
 
     for name, path in sorted(discover().items()):
-        # Try to get description from README
+        if active is not None and name not in active:
+            continue
         readme = path / "README.md"
         desc = ""
         if readme.exists():

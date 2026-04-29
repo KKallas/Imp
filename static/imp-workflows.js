@@ -2,9 +2,17 @@
 
 let _allTools = [];
 let editingWorkflow = null;
+let _activeWorkflows = [];
 
 async function loadWorkflows() {
   try {
+    // Fetch active state
+    try {
+      const ar = await fetch(`${API}/api/active`);
+      const ad = await ar.json();
+      _activeWorkflows = ad.active_workflows || [];
+    } catch(e) {}
+
     const res = await fetch(`${API}/api/workflows`);
     const data = await res.json();
     const workflows = data.workflows || [];
@@ -26,6 +34,8 @@ async function loadWorkflows() {
       const statusIcons = {idle:'⚪', running:'🔄', paused:'⏸', done:'✅', error:'❌'};
       const sIcon = statusIcons[wf.status] || '⚪';
       const isThisBusy = wf.status === 'running' || wf.status === 'paused';
+      const isWfActive = _activeWorkflows.includes(wf.name);
+      const wfCheckbox = `<input type="checkbox" ${isWfActive ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkflowActive('${wf.name}')" title="Active" style="margin-right:6px;cursor:pointer;">`;
 
       let stepsHtml = '', readmeHtml = '', rawReadme = '';
       try {
@@ -80,10 +90,11 @@ async function loadWorkflows() {
       bodyHtml += imp.items(stepsHtml);
 
       html += imp.card({
-        id: `wf-${wf.name}`, name: wf.name, meta: `${wf.step_count} steps`,
+        id: `wf-${wf.name}`, name: wfCheckbox + wf.name, meta: `${wf.step_count} steps`,
         status: {cls: statusClass, icon: sIcon, text: wf.status},
         buttons: wfBtns, body: bodyHtml,
-        open: wf.status !== 'idle'
+        open: wf.status !== 'idle',
+        cls: isWfActive ? '' : 'inactive'
       });
     }
     el.innerHTML = html;
@@ -112,6 +123,13 @@ async function startWorkflow(name) {
       } catch(e) { clearInterval(poll); }
     }, 800);
   } catch (e) { console.error('startWorkflow failed:', e); }
+}
+
+function toggleWorkflowActive(name) {
+  fetch(`${API}/api/active/toggle`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: 'workflow', name: name}),
+  }).then(() => loadWorkflows()).catch(e => console.error('Toggle failed:', e));
 }
 
 async function interruptWorkflow(name) {

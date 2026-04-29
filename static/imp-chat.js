@@ -144,6 +144,8 @@ function setWorking(v) {
   document.getElementById('send-btn').style.display = v ? 'none' : '';
   document.getElementById('stop-btn').style.display = v ? '' : 'none';
   document.getElementById('input').disabled = v;
+  var newBtn = document.querySelector('#sidebar-header button:nth-child(2)');
+  if (newBtn) { newBtn.disabled = v; newBtn.style.opacity = v ? '0.3' : ''; }
 }
 
 // --- websocket ---
@@ -424,11 +426,14 @@ async function loadChat(id, isActive) {
 }
 
 async function newChat() {
+  if (isWorking) return;
   try {
     const res = await fetch(`${API}/api/chats`, { method: 'POST' });
     const chat = await res.json();
     currentChatId = chat.id;
-    document.getElementById('messages').innerHTML = '';
+    const msgs = document.getElementById('messages');
+    const dateStr = new Date().toLocaleString();
+    msgs.innerHTML = `<div style="text-align:center;padding:16px 0 8px;"><strong>New chat</strong><br><span style="font-size:11px;color:var(--muted);">${dateStr}</span></div>`;
     setHistoricMode(false);
     loadChats();
   } catch (e) { console.error('newChat failed:', e); }

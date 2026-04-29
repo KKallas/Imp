@@ -1,0 +1,21 @@
+{
+  "status": "done",
+  "current_step": 2,
+  "ran_at": "2026-04-29T07:10:04+00:00",
+  "steps": [
+    {
+      "name": "step_1_start_server",
+      "description": "Activate developer sync \u2014 create session marker, pause with download link.",
+      "result": {
+        "ok": true,
+        "output": "Sync session stopped (192.168.2.114:8421). Endpoints no longer accessible.",
+        "duration_s": 0.0
+      }
+    },
+    {
+      "name": "step_2_stop_server",
+      "description": "End the sync session \u2014 remove session marker to disable sync access.",
+      "result": null
+    }
+  ]
+}

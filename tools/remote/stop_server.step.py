@@ -1,4 +1,4 @@
-"""Stop the Imp server."""
+"""Stop the developer remote session and remove sync access."""
 
 import subprocess
 

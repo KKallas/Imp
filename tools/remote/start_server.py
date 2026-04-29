@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Check the Imp server is running and return its URL.
+"""Start a developer remote session.
 
 Inputs:
-  --port (int, optional): Port to check (default: 8421).
+  --port (int, optional): Server port (default: 8421).
 
-Process: Checks the health endpoint. If responding, returns the server URL.
-If not, reports the error.
+Process: Verifies the server is running and the sync endpoints
+(/health, /imp-sync.py, /api/sync/manifest) are all accessible.
+If everything checks out, writes a session marker file to
+.imp/remote_session.json so the server knows sync is active.
 
-Output: Prints the server URL or error details."""
+Output: Prints connection details or which endpoints failed."""
 
 import argparse
+import json
 import socket
 import sys
+import time
 import urllib.request
+from pathlib import Path
+
+SESSION_FILE = Path(".imp/remote_session.json")
 
 
 def get_lan_ip():
@@ -26,28 +33,54 @@ def get_lan_ip():
         return "127.0.0.1"
 
 
+def check_endpoint(url, label):
+    """Return True if the endpoint responds with 2xx."""
+    try:
+        urllib.request.urlopen(url, timeout=5)
+        print(f"  OK  {label}")
+        return True
+    except Exception as e:
+        print(f"  FAIL  {label}: {e}")
+        return False
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check the Imp server")
+    parser = argparse.ArgumentParser(
+        description="Start a developer remote session",
+    )
     parser.add_argument("--port", type=int, default=8421)
     args = parser.parse_args()
 
     ip = get_lan_ip()
+    base = f"http://127.0.0.1:{args.port}"
     url = f"http://{ip}:{args.port}"
 
-    try:
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{args.port}/health", timeout=3)
-        print(f"Server running at {url}")
-        print(f"Sync download: {url}/imp-sync.py")
-        return 0
-    except urllib.error.URLError as e:
-        print(f"Server not responding on port {args.port}")
-        print(f"Error: {e.reason}")
-        print(f"Start with: python -m server.render_route --port {args.port}")
+    # ── verify every endpoint the session needs ──────────────────
+    print("Checking endpoints...")
+    ok = True
+    ok &= check_endpoint(f"{base}/health", "/health")
+    ok &= check_endpoint(f"{base}/imp-sync.py", "/imp-sync.py")
+    ok &= check_endpoint(f"{base}/api/sync/manifest", "/api/sync/manifest")
+
+    if not ok:
+        print("\nOne or more endpoints are not accessible.")
+        print(f"Make sure the server is running: python -m server.render_route --port {args.port}")
         return 1
-    except Exception as e:
-        print(f"Server not responding on port {args.port}")
-        print(f"Error: {e}")
-        return 1
+
+    # ── activate session ─────────────────────────────────────────
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    session = {
+        "active": True,
+        "port": args.port,
+        "ip": ip,
+        "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    SESSION_FILE.write_text(json.dumps(session, indent=2))
+
+    print(f"\nRemote session active at {url}")
+    print(f"Sync script:  {url}/imp-sync.py")
+    print(f"Run on client: curl -o imp-sync.py {url}/imp-sync.py && python imp-sync.py")
+    return 0
 
 
 if __name__ == "__main__":
