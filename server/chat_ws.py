@@ -229,7 +229,10 @@ async def handle_ws_chat(ws: WebSocket) -> None:
             turn_ui = WebSocketTurnUI(ws)
 
             async def say(reply_text: str) -> None:
-                await ws.send_json({"type": "token", "text": reply_text})
+                try:
+                    await ws.send_json({"type": "token", "text": reply_text})
+                except Exception:
+                    pass
 
             async def ask(question: str) -> str | None:
                 return None  # not supported in lightweight UI yet
@@ -241,13 +244,21 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                 yield None
 
             async def chart(artifact: dict) -> None:
-                # Send chart artifacts as image URLs
                 template = artifact.get("template", "chart")
-                await ws.send_json({
-                    "type": "image",
-                    "url": f"/render/{template}",
-                    "alt": f"{template} chart",
-                })
+                try:
+                    await ws.send_json({
+                        "type": "image",
+                        "url": f"/render/{template}",
+                        "alt": f"{template} chart",
+                    })
+                except Exception:
+                    pass
+
+            async def _safe_send(msg: dict) -> None:
+                try:
+                    await ws.send_json(msg)
+                except Exception:
+                    pass
 
             async def _run_dispatch() -> None:
                 try:
@@ -283,20 +294,20 @@ async def handle_ws_chat(ws: WebSocket) -> None:
                             except Exception:
                                 pass
 
-                    await ws.send_json({
+                    await _safe_send({
                         "type": "done",
                         "full_text": reply or "",
                         "chat_id": chat_id,
                     })
 
                 except asyncio.CancelledError:
-                    await ws.send_json({"type": "done", "full_text": "(stopped)"})
+                    await _safe_send({"type": "done", "full_text": "(stopped)"})
                 except Exception as exc:
                     print(
                         f"[chat_ws] dispatch error: {type(exc).__name__}: {exc}",
                         file=sys.stderr,
                     )
-                    await ws.send_json({
+                    await _safe_send({
                         "type": "error",
                         "text": f"{type(exc).__name__}: {exc}",
                     })

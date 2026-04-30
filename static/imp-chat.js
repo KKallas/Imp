@@ -177,7 +177,11 @@ function formatArgs(args) {
 function connectWs() {
   ws = new WebSocket(WS_URL);
   ws.onopen = () => console.log('ws connected');
-  ws.onclose = () => { ws = null; setTimeout(connectWs, 2000); };
+  ws.onclose = () => {
+    ws = null;
+    if (isWorking) { setWorking(false); setStatus(''); }
+    setTimeout(connectWs, 2000);
+  };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
