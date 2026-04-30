@@ -262,23 +262,64 @@ async def ws_chat(ws: WebSocket):
 async def list_chats():
     from server import chat_history
     rows = chat_history.list_sessions(limit=50)
-    return [
-        {
+    result = []
+    for r in rows:
+        item: dict = {
             "id": r["id"],
             "title": r.get("title", "New chat"),
             "created_at": r.get("created_at", ""),
             "turn_count": r.get("turn_count", 0),
         }
-        for r in rows
-    ]
+        if r.get("branch"):
+            item["branch"] = r["branch"]
+        result.append(item)
+    return result
+
+
+async def _git_run(*args: str) -> tuple[bool, str]:
+    """Run a git command in the project root. Returns (ok, output)."""
+    import asyncio as _aio
+    try:
+        proc = await _aio.create_subprocess_exec(
+            "git", *args,
+            stdout=_aio.subprocess.PIPE,
+            stderr=_aio.subprocess.PIPE,
+            cwd=str(_ROOT),
+        )
+        stdout, stderr = await _aio.wait_for(proc.communicate(), timeout=15)
+        out = (stdout or b"").decode().strip()
+        err = (stderr or b"").decode().strip()
+        return proc.returncode == 0, out or err
+    except Exception as exc:
+        return False, str(exc)
+
+
+async def _git_current_branch() -> str | None:
+    """Return the current branch name, or None if not in a git repo."""
+    ok, out = await _git_run("rev-parse", "--abbrev-ref", "HEAD")
+    return out if ok else None
+
+
+async def _git_branch_exists(name: str) -> bool:
+    ok, _ = await _git_run("rev-parse", "--verify", name)
+    return ok
 
 
 @app.post("/api/chats")
 async def create_chat():
     from server import chat_history
     session = chat_history.ChatSession.new()
+
+    # Create a git branch for this chat
+    branch_name = f"imp/{session.id}"
+    ok, out = await _git_run("checkout", "-b", branch_name)
+    if ok:
+        session.branch = branch_name
+    else:
+        print(f"[chat] branch create failed: {out}", file=sys.stderr)
+
     chat_history.save_session(session)
-    return {"id": session.id, "title": session.title}
+    return {"id": session.id, "title": session.title, "branch": session.branch}
 
 
 @app.post("/api/chat/new-with-context")
@@ -331,6 +372,13 @@ async def new_chat_with_context(request: Request):
 
     # Create session
     session = chat_history.ChatSession.new()
+
+    # Create a git branch for this chat
+    branch_name = f"imp/{session.id}"
+    ok, out = await _git_run("checkout", "-b", branch_name)
+    if ok:
+        session.branch = branch_name
+
     session.append_turn("user", context_msg)
     session.append_turn("assistant",
         f"I have {len(loaded_files)} file(s) loaded: {file_list}.\n\n"
@@ -341,7 +389,7 @@ async def new_chat_with_context(request: Request):
     session.title_source = "agent"
     chat_history.save_session(session)
 
-    return {"id": session.id, "title": session.title, "prompt": prompt}
+    return {"id": session.id, "title": session.title, "prompt": prompt, "branch": session.branch}
 
 
 @app.get("/api/chats/{chat_id}")
@@ -356,8 +404,114 @@ async def get_chat(chat_id: str):
 @app.delete("/api/chats/{chat_id}")
 async def delete_chat(chat_id: str):
     from server import chat_history
+
+    # Clean up branch if it exists
+    session = chat_history.load_session(chat_id)
+    if session and session.branch:
+        # Switch to main first if we're on this branch
+        cur = await _git_current_branch()
+        if cur == session.branch:
+            await _git_run("checkout", "main")
+        # Delete the branch
+        await _git_run("branch", "-D", session.branch)
+
     ok = chat_history.delete_session(chat_id)
     return {"deleted": ok}
+
+
+@app.post("/api/chats/{chat_id}/merge")
+async def merge_chat_branch(chat_id: str):
+    """Merge the chat's branch into main and delete it."""
+    from server import chat_history
+    session = chat_history.load_session(chat_id)
+    if session is None:
+        return Response("chat not found", status_code=404)
+    if not session.branch:
+        return {"error": "no branch", "merged": False}
+
+    branch = session.branch
+
+    # Check branch exists
+    if not await _git_branch_exists(branch):
+        session.branch = None
+        chat_history.save_session(session)
+        return {"error": "branch not found", "merged": False}
+
+    # Switch to main
+    ok, out = await _git_run("checkout", "main")
+    if not ok:
+        return {"error": f"checkout main failed: {out}", "merged": False}
+
+    # Merge
+    ok, out = await _git_run("merge", branch, "--no-edit")
+    if not ok:
+        # Abort the merge on conflict
+        await _git_run("merge", "--abort")
+        return {"error": f"merge failed: {out}", "merged": False}
+
+    # Delete branch
+    await _git_run("branch", "-d", branch)
+
+    # Clear branch from session
+    session.branch = None
+    chat_history.save_session(session)
+
+    return {"merged": True, "branch": branch}
+
+
+@app.post("/api/chats/{chat_id}/discard")
+async def discard_chat_branch(chat_id: str):
+    """Delete the chat's branch without merging."""
+    from server import chat_history
+    session = chat_history.load_session(chat_id)
+    if session is None:
+        return Response("chat not found", status_code=404)
+    if not session.branch:
+        return {"error": "no branch", "discarded": False}
+
+    branch = session.branch
+
+    # Switch to main if on this branch
+    cur = await _git_current_branch()
+    if cur == branch:
+        ok, out = await _git_run("checkout", "main")
+        if not ok:
+            return {"error": f"checkout main failed: {out}", "discarded": False}
+
+    # Force-delete branch
+    await _git_run("branch", "-D", branch)
+
+    # Clear branch from session
+    session.branch = None
+    chat_history.save_session(session)
+
+    return {"discarded": True, "branch": branch}
+
+
+@app.post("/api/chats/{chat_id}/checkout")
+async def checkout_chat_branch(chat_id: str):
+    """Switch to the chat's branch."""
+    from server import chat_history
+    session = chat_history.load_session(chat_id)
+    if session is None:
+        return Response("chat not found", status_code=404)
+    if not session.branch:
+        return {"ok": True, "branch": None}
+
+    if not await _git_branch_exists(session.branch):
+        session.branch = None
+        chat_history.save_session(session)
+        return {"ok": True, "branch": None}
+
+    ok, out = await _git_run("checkout", session.branch)
+    return {"ok": ok, "branch": session.branch, "error": out if not ok else None}
+
+
+@app.get("/api/git/branch")
+async def git_current_branch():
+    """Return the current git branch."""
+    branch = await _git_current_branch()
+    return {"branch": branch}
 
 
 @app.get("/api/chats/{chat_id}/artifacts")
