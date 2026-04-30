@@ -428,10 +428,6 @@ async function loadChat(id, isActive) {
     });
     imp.highlightAll(msgs);
     setHistoricMode(!isActive);
-    // Switch to this chat's branch if it has one
-    if (chat.branch) {
-      fetch(`${API}/api/chats/${id}/checkout`, { method: 'POST' });
-    }
     loadChats();
   } catch (e) { console.error('loadChat failed:', e); }
 }

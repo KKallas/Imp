@@ -488,24 +488,6 @@ async def discard_chat_branch(chat_id: str):
     return {"discarded": True, "branch": branch}
 
 
-@app.post("/api/chats/{chat_id}/checkout")
-async def checkout_chat_branch(chat_id: str):
-    """Switch to the chat's branch."""
-    from server import chat_history
-    session = chat_history.load_session(chat_id)
-    if session is None:
-        return Response("chat not found", status_code=404)
-    if not session.branch:
-        return {"ok": True, "branch": None}
-
-    if not await _git_branch_exists(session.branch):
-        session.branch = None
-        chat_history.save_session(session)
-        return {"ok": True, "branch": None}
-
-    ok, out = await _git_run("checkout", session.branch)
-    return {"ok": ok, "branch": session.branch, "error": out if not ok else None}
-
 
 @app.get("/api/git/branch")
 async def git_current_branch():
