@@ -503,10 +503,10 @@ async function discardBranch() {
 }
 
 function promptFromChat(ev, chatId, chatTitle) {
-  // Open a new chat with instructions to create a workflow from this chat's conversation
   ev.stopPropagation();
-  const presetText = 'Review the conversation in chat "' + chatTitle + '" (id: ' + chatId + ') and create a reusable workflow from it. Extract the key steps, identify which tools were used, and create appropriate workflow step files under workflows/. If any custom tools are needed, create those too under tools/.';
-  openChatWithContext([], '', presetText, null, 'Workflow from: ' + chatTitle);
+  const chatFile = '.imp/chats/' + chatId + '/chat.json';
+  const presetText = 'Review the attached chat conversation and create a reusable workflow from it. Extract the key steps, identify which tools were used, and create appropriate workflow step files under workflows/. If any custom tools are needed, create those too under tools/.';
+  openChatWithContext([chatFile], '', presetText, null, 'Workflow from: ' + chatTitle);
 }
 
 async function openChatWithContext(files, instructions, userPrompt, sourceLock, title) {
