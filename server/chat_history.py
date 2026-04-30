@@ -125,6 +125,7 @@ class ChatSession:
     created_at: str = field(default_factory=_utcnow_iso)
     last_active_at: str = field(default_factory=_utcnow_iso)
     repo: Optional[str] = None
+    branch: Optional[str] = None  # git branch name (e.g. "imp/chat-abc123")
     turns: list[Turn] = field(default_factory=list)
 
     # ---- factories ----
@@ -143,13 +144,14 @@ class ChatSession:
             created_at=str(data.get("created_at") or _utcnow_iso()),
             last_active_at=str(data.get("last_active_at") or _utcnow_iso()),
             repo=data.get("repo"),
+            branch=data.get("branch"),
             turns=[Turn.from_dict(t) for t in data.get("turns") or []],
         )
 
     # ---- serialization ----
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "id": self.id,
             "title": self.title,
             "title_source": self.title_source,
@@ -158,6 +160,9 @@ class ChatSession:
             "repo": self.repo,
             "turns": [t.to_dict() for t in self.turns],
         }
+        if self.branch:
+            d["branch"] = self.branch
+        return d
 
     def folder(self, base: Optional[Path] = None) -> Path:
         """Return the chat folder: `.imp/chats/<id>/`."""
@@ -387,8 +392,7 @@ def list_sessions(
             data = json.loads(chat_json.read_text())
             cid = str(data.get("id") or "")
             seen_ids.add(cid)
-            rows.append(
-                {
+            row: dict[str, Any] = {
                     "id": cid,
                     "title": str(data.get("title") or FALLBACK_TITLE),
                     "title_source": str(data.get("title_source") or "fallback"),
@@ -397,7 +401,9 @@ def list_sessions(
                     "turn_count": len(data.get("turns") or []),
                     "path": str(chat_json),
                 }
-            )
+            if data.get("branch"):
+                row["branch"] = data["branch"]
+            rows.append(row)
         except (json.JSONDecodeError, KeyError) as exc:
             print(f"[chat_history] skipping unreadable {chat_json}: {exc}", file=sys.stderr)
 
