@@ -33,6 +33,7 @@ function switchTab(tab) {
   if (tab === 'queue') loadQueue();
   if (tab === 'workflows') loadWorkflows();
   if (tab === 'tools') loadToolsPanel();
+  if (tab === 'chat') setTimeout(scrollBottom, 50);
 }
 
 function toggleSidebar() {

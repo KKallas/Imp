@@ -124,6 +124,7 @@ function addMessage(role, content) {
 
 function scrollBottom() {
   const m = document.getElementById('messages');
+  if (!m.offsetParent) return; // chat tab hidden — skip to preserve scroll position
   m.scrollTop = m.scrollHeight;
 }
 
