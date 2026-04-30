@@ -277,6 +277,7 @@ function connectWs() {
         break;
 
       case 'confirm': {
+        if (activeTab !== 'chat') switchTab('chat');
         ensureAgentMsg();
         const confirmId = msg.id;
         const preview = (msg.preview || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
