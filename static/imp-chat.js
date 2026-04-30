@@ -288,7 +288,11 @@ function connectWs() {
           `<button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="respondConfirm('${confirmId}',false)">Reject</button></div>` +
           `</details></div>\n\n`;
         renderAgentBody();
-        setStatus('Waiting for approval...');
+        document.getElementById('status').innerHTML =
+          `<span class="dot"></span>Waiting for approval...` +
+          `<button class="wf-start" style="margin-left:auto;font-size:11px;padding:2px 10px;" onclick="respondConfirm('${confirmId}',true)">Approve</button>` +
+          `<button class="wf-btn" style="color:#da3633;border-color:#da3633;margin-left:4px;font-size:11px;padding:2px 10px;" onclick="respondConfirm('${confirmId}',false)">Reject</button>`;
+        document.getElementById('status').className = 'active';
         break;
       }
     }
