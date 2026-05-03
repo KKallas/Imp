@@ -277,6 +277,7 @@ function connectWs() {
         break;
 
       case 'confirm': {
+        if (activeTab !== 'chat') switchTab('chat');
         ensureAgentMsg();
         const confirmId = msg.id;
         const preview = (msg.preview || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -288,7 +289,15 @@ function connectWs() {
           `<button class="wf-btn" style="color:#da3633;border-color:#da3633;" onclick="respondConfirm('${confirmId}',false)">Reject</button></div>` +
           `</details></div>\n\n`;
         renderAgentBody();
-        setStatus('Waiting for approval...');
+        // Status bar: show what needs approval + action buttons
+        const desc = msg.description || msg.tool;
+        document.getElementById('status').innerHTML =
+          `<span class="dot"></span>${desc}` +
+          `<button class="wf-start" style="margin-left:auto;font-size:11px;padding:2px 10px;" onclick="respondConfirm('${confirmId}',true)">Approve</button>` +
+          `<button class="wf-btn" style="color:#da3633;border-color:#da3633;margin-left:4px;font-size:11px;padding:2px 10px;" onclick="respondConfirm('${confirmId}',false)">Reject</button>`;
+        document.getElementById('status').className = 'active';
+        // Force scroll after DOM settles so the diff block is visible
+        setTimeout(scrollBottom, 100);
         break;
       }
     }
