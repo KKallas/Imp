@@ -23,7 +23,6 @@ def run(context: dict) -> dict:
             - test (bool): if True, pass --test.
             - issue (int|None): specific issue number to process.
             - max (int|None): max issues to process.
-            - max_tokens (int|None): cumulative token budget.
 
     Returns:
         dict with keys: ok (bool), output (str), solved (int), total (int).
@@ -53,10 +52,6 @@ def run(context: dict) -> dict:
     max_issues = context.get("max")
     if max_issues is not None:
         cmd.extend(["--max", str(max_issues)])
-
-    max_tokens = context.get("max_tokens")
-    if max_tokens is not None:
-        cmd.extend(["--max-tokens", str(max_tokens)])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     output = result.stdout + result.stderr

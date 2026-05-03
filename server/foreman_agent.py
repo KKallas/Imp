@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from . import budgets, guard
+from . import guard
 
 ROOT = Path(__file__).resolve().parent.parent
 _PROMPT_FILE = ROOT / "server" / "foreman_prompt.md"
@@ -125,12 +125,6 @@ def _make_security_hook(confirm: Optional[ConfirmFn] = None):
             command = tool_input.get("command", "")
             if not command.strip():
                 return PermissionResultAllow(behavior="allow")
-
-            # Budget check
-            b = budgets.get_budgets()
-            if b.any_exhausted():
-                exhausted = [c for c in ("tokens", "edits", "tasks") if b.exhausted(c)]
-                return PermissionResultDeny(behavior="deny", message=f"Budget exhausted: {', '.join(exhausted)}", interrupt=False)
 
             # Classify
             try:
@@ -341,11 +335,7 @@ async def dispatch(
                                     )
 
                     elif isinstance(message, ResultMessage):
-                        usage = getattr(message, "usage", None) or {}
-                        in_tok = int(usage.get("input_tokens", 0) or 0)
-                        out_tok = int(usage.get("output_tokens", 0) or 0)
-                        if in_tok > 0 or out_tok > 0:
-                            budgets.add_tokens(in_tok, out_tok)
+                        pass
 
     except Exception as exc:  # noqa: BLE001
         print(f"[foreman] backend error: {type(exc).__name__}: {exc}", file=sys.stderr)

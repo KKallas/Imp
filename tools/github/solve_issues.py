@@ -6,10 +6,9 @@ Inputs:
 --test (flag): Run Claude but skip pushing and PR creation.
 --issue (int): Process a single issue by number instead of the full queue.
 --max (int): Maximum issues to process in one run (default: 5).
---max-tokens (int): Stop after exceeding this cumulative token budget.
 
 Process: For each issue, claims it with an "in-progress" label, clones the repo into a temp directory, builds a prompt from external templates, streams Claude's output, validates changes, commits, pushes a branch, and opens a PR. Releases the issue back to the queue on failure.
-Output: Streams Claude's response and prints per-issue status lines; logs token usage to .state.json."""
+Output: Streams Claude's response and prints per-issue status lines."""
 
 import subprocess
 import json
@@ -21,7 +20,6 @@ import shutil
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import _state
 
 # Config - can override with environment variables
 REPO = os.environ.get("ROBOT_ARENA_REPO", "KKallas/Robot-Arena")
@@ -249,10 +247,6 @@ def run_claude(prompt: str, repo_dir: str, issue_number: int, test_mode: bool = 
         print(f"\n--- End output ---")
 
         success = process.returncode == 0
-        _state.record_run("solve_issues", f"#{issue_number}",
-                          usage["input_tokens"], usage["output_tokens"],
-                          usage["cost_usd"], success)
-
         return success
 
     except Exception as e:
@@ -462,8 +456,6 @@ Examples:
                         help="Process a specific issue number")
     parser.add_argument("--max", type=int, default=MAX_ISSUES,
                         help=f"Max issues to process (default: {MAX_ISSUES})")
-    parser.add_argument("--max-tokens", type=int, default=0,
-                        help="Stop after using this many tokens total (reads from .state.json)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -506,9 +498,6 @@ Examples:
 
         solved = 0
         for issue in issues[:args.max]:
-            if args.max_tokens and not _state.check_budget(args.max_tokens):
-                print(f"\n⏸️  Token budget reached ({_state.get_tokens_used():,} / {args.max_tokens:,}). Stopping.")
-                break
             if process_issue(issue, dry_run=args.dry_run, test_mode=args.test):
                 solved += 1
             else:

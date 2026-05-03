@@ -517,32 +517,11 @@ async def _default_title_backend(system_prompt: str, user_prompt: str) -> str:
     )
 
     chunks: list[str] = []
-    usage_total = {"input_tokens": 0, "output_tokens": 0}
     async for message in query(prompt=user_prompt, options=options):
         if isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):
                     chunks.append(block.text)
-        elif isinstance(message, ResultMessage):
-            usage = getattr(message, "usage", None) or {}
-            usage_total["input_tokens"] += int(usage.get("input_tokens", 0) or 0)
-            usage_total["output_tokens"] += int(usage.get("output_tokens", 0) or 0)
-
-    # Charge the titling call to the token budget so it's visible to
-    # the admin just like any other LLM turn. Late import avoids a
-    # hard dep when the module is used headless.
-    try:
-        from server import budgets
-
-        budgets.add_tokens(
-            usage_total["input_tokens"], usage_total["output_tokens"]
-        )
-    except Exception as exc:  # noqa: BLE001 — never block titling on budget I/O
-        print(
-            f"[chat_history] title-token accounting failed: "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
 
     return "".join(chunks)
 

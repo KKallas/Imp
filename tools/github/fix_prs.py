@@ -27,7 +27,6 @@ import shutil
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import _state
 
 # Config - can override with environment variables
 REPO = os.environ.get("ROBOT_ARENA_REPO", "KKallas/Robot-Arena")
@@ -381,11 +380,6 @@ def run_claude(prompt: str, repo_dir: str, allowed_tools: str, pr_number: int,
         print(f"\n--- End output ---")
 
         success = process.returncode == 0
-        target = f"PR#{pr_number}" + (f"/{phase}" if phase else "")
-        _state.record_run("fix_prs", target,
-                          usage["input_tokens"], usage["output_tokens"],
-                          usage["cost_usd"], success)
-
         return success, output_text
 
     except Exception as e:
@@ -628,8 +622,6 @@ Examples:
                         help="Process a specific PR number")
     parser.add_argument("--max", type=int, default=MAX_PRS,
                         help=f"Max PRs to process (default: {MAX_PRS})")
-    parser.add_argument("--max-tokens", type=int, default=0,
-                        help="Stop after using this many tokens total (reads from .state.json)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -672,9 +664,6 @@ Examples:
 
         fixed = 0
         for pr in prs[:args.max]:
-            if args.max_tokens and not _state.check_budget(args.max_tokens):
-                print(f"\n⏸️  Token budget reached ({_state.get_tokens_used():,} / {args.max_tokens:,}). Stopping.")
-                break
             if process_pr(pr, dry_run=args.dry_run, test_mode=args.test):
                 fixed += 1
             else:

@@ -22,7 +22,6 @@ def run(context):
             - test (optional): bool, if True run in test mode
             - issue (optional): int, specific issue number to process
             - max_issues (optional): int, max issues to process
-            - max_tokens (optional): int, token budget limit
 
     Returns:
         dict with keys: ok (bool), output (str), processed_count (int)
@@ -59,10 +58,6 @@ def run(context):
     max_issues = context.get("max_issues")
     if max_issues:
         cmd.extend(["--max", str(max_issues)])
-
-    max_tokens = context.get("max_tokens")
-    if max_tokens:
-        cmd.extend(["--max-tokens", str(max_tokens)])
 
     try:
         result = subprocess.run(
