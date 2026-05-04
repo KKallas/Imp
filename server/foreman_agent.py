@@ -212,7 +212,6 @@ async def dispatch(
         ResultMessage,
         TextBlock,
         ThinkingBlock,
-        ThinkingConfigEnabled,
         ToolUseBlock,
         UserMessage,
     )
@@ -225,7 +224,7 @@ async def dispatch(
         system_prompt=_load_system_prompt(),
         can_use_tool=_make_security_hook(confirm),
         max_turns=20,
-        thinking=ThinkingConfigEnabled(budget_tokens=10000),
+        thinking={"type": "enabled", "budget_tokens": 10000},
     )
 
     cm_factory = thinking if thinking is not None else (lambda _label: _NullAsyncContext())
