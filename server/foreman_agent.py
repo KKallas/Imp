@@ -276,7 +276,9 @@ def _make_security_hook(confirm: Optional[ConfirmFn] = None):
             # Writes need user confirmation
             if confirm:
                 desc = tool_input.get("description", command[:80])
-                approved = await confirm(tool_name, desc, command)
+                cmd_lines = command.splitlines() or [command]
+                preview = "@@ -0,0 +1," + str(len(cmd_lines)) + " @@\n" + "\n".join("+" + l for l in cmd_lines)
+                approved = await confirm(tool_name, desc, preview)
                 if not approved:
                     return PermissionResultDeny(behavior="deny", message="User rejected", interrupt=False)
             return PermissionResultAllow(behavior="allow")

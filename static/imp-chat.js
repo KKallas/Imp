@@ -8,21 +8,13 @@ function renderDiff(text) {
   var lines = text.split('\n');
   var rows = '';
   var oldN = 0, newN = 0;
-  var hasHeader = lines.some(function(l) { return l.startsWith('@@'); });
-  var hasPlus = lines.some(function(l) { return l.startsWith('+'); });
-  var hasMinus = lines.some(function(l) { return l.startsWith('-'); });
-  // Plain text (Bash command, generic tool input): no diff markers — no line numbers
-  var isPlain = !hasHeader && !hasPlus && !hasMinus;
-  // New file: + lines but no - lines (Write of new file) — single line-number column
-  var isNewFile = !isPlain && hasPlus && !hasMinus;
-  var cols = isPlain ? 1 : (isNewFile ? 2 : 3);
+  // Detect new-file diffs (all content lines are +, no - lines)
+  var isNewFile = lines.some(function(l) { return l.startsWith('+'); }) &&
+                  !lines.some(function(l) { return l.startsWith('-'); });
+  var cols = isNewFile ? 2 : 3; // single line-number col for new files
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
     var bg, sign, lOld, lNew, content;
-    if (isPlain) {
-      rows += '<tr><td style="padding:0 6px;font-family:monospace;font-size:11px;white-space:pre-wrap;">' + line + '</td></tr>';
-      continue;
-    }
     if (line.startsWith('@@')) {
       var m = line.match(/@@ -(\d+)/);
       if (m) { oldN = parseInt(m[1]) - 1; }
