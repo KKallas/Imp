@@ -106,6 +106,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 .msg .body .thinking-block .thinking-content { padding:8px 12px; border-top:1px solid var(--border);
   font-size:12px; color:var(--muted); line-height:1.5; white-space:pre-wrap; }
 
+/* --- LLM bootstrap --- */
+.llm-bootstrap { max-width:420px; }
+.llm-bootstrap h3 { font-size:16px; color:var(--fg); }
+
 /* --- input area --- */
 #input-area { border-top:1px solid var(--border); padding:12px 24px; background:#010409; }
 #input-row { display:flex; gap:8px; }

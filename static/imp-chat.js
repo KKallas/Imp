@@ -286,6 +286,10 @@ function connectWs() {
         unlockTabs();
         break;
 
+      case 'need_llm_config':
+        showLlmBootstrap();
+        break;
+
       case 'dashboard':
         openDashboard(msg.html || '');
         break;
@@ -364,6 +368,93 @@ function respondApiKey(envVar, cancel) {
   var btnRe = new RegExp('<div style="padding:0 12px 10px;display:flex[\\s\\S]*?</div></div>');
   agentText = agentText.replace(btnRe, '<div style="padding:4px 12px 10px;font-size:11px;color:var(--muted);">' + icon + ' ' + label + '</div></div>');
   renderAgentBody();
+}
+
+function showLlmBootstrap() {
+  // Show LLM backend picker in the messages area
+  if (activeTab !== 'chat') switchTab('chat');
+  var msgs = document.getElementById('messages');
+  msgs.innerHTML = '';
+  var div = document.createElement('div');
+  div.className = 'msg agent';
+  div.innerHTML = '<div class="llm-bootstrap">' +
+    '<h3 style="margin:0 0 8px;">Configure LLM Backend</h3>' +
+    '<p style="margin:0 0 12px;color:var(--muted);font-size:13px;">' +
+    'No Claude access detected. Configure an alternative LLM backend to proceed with setup.</p>' +
+    '<div id="llm-presets-list" style="margin-bottom:12px;"><em>Loading presets...</em></div>' +
+    '<div style="border-top:1px solid var(--border);padding-top:12px;">' +
+    '<label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">API Key</label>' +
+    '<input type="password" id="llm-bootstrap-key" placeholder="Paste your API key" ' +
+    'style="width:100%;padding:8px 10px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:13px;box-sizing:border-box;margin-bottom:12px;">' +
+    '<button id="llm-bootstrap-btn" class="wf-start" onclick="submitLlmBootstrap()" disabled>Connect</button>' +
+    '<span id="llm-bootstrap-status" style="margin-left:8px;font-size:12px;color:var(--muted);"></span>' +
+    '</div></div>';
+  msgs.appendChild(div);
+  // Fetch presets
+  fetch(API + '/api/llm-presets').then(function(r) { return r.json(); }).then(function(data) {
+    var list = document.getElementById('llm-presets-list');
+    if (!list) return;
+    var presets = (data.presets || []).filter(function(p) { return p.base_url !== 'https://api.anthropic.com'; });
+    var html = '';
+    presets.forEach(function(p, i) {
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:6px;cursor:pointer;">' +
+        '<input type="radio" name="llm-preset" value="' + i + '" onchange="selectLlmPreset(' + i + ')" style="margin:0;">' +
+        '<div><strong>' + p.name + '</strong><br><span style="font-size:11px;color:var(--muted);">' + p.model + ' &middot; ' + p.notes + '</span></div>' +
+        '</label>';
+    });
+    list.innerHTML = html;
+    window._llmPresets = presets;
+  }).catch(function() {
+    var list = document.getElementById('llm-presets-list');
+    if (list) list.innerHTML = '<em style="color:#da3633;">Failed to load presets</em>';
+  });
+}
+
+function selectLlmPreset(index) {
+  window._selectedLlmPreset = window._llmPresets[index];
+  var btn = document.getElementById('llm-bootstrap-btn');
+  if (btn) btn.disabled = false;
+}
+
+function submitLlmBootstrap() {
+  var preset = window._selectedLlmPreset;
+  if (!preset) return;
+  var key = document.getElementById('llm-bootstrap-key').value.trim();
+  var status = document.getElementById('llm-bootstrap-status');
+  var btn = document.getElementById('llm-bootstrap-btn');
+  if (!key) {
+    if (status) status.textContent = 'API key is required';
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Saving...';
+  fetch(API + '/api/llm-bootstrap', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: preset.model,
+      base_url: preset.base_url,
+      api_key_env: preset.api_key_env,
+      api_key: key
+    })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.ok) {
+      if (status) status.textContent = 'Connected! Starting setup...';
+      // Tell the WebSocket handler we're ready
+      if (ws) ws.send(JSON.stringify({type: 'llm_configured'}));
+      // Clear the bootstrap UI
+      setTimeout(function() {
+        var msgs = document.getElementById('messages');
+        if (msgs) msgs.innerHTML = '';
+      }, 500);
+    } else {
+      if (status) status.textContent = data.error || 'Failed';
+      if (btn) btn.disabled = false;
+    }
+  }).catch(function(err) {
+    if (status) status.textContent = 'Error: ' + err.message;
+    if (btn) btn.disabled = false;
+  });
 }
 
 function send() {

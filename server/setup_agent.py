@@ -54,6 +54,54 @@ def is_setup_complete() -> bool:
     return load_config().get("setup_complete", False)
 
 
+def has_llm_access() -> bool:
+    """Check if any LLM backend is reachable (Claude auth or custom config).
+
+    Returns True if:
+    - ANTHROPIC_API_KEY is set, OR
+    - Claude Code CLI is logged in (claude_agent_sdk importable), OR
+    - A custom LLM backend is configured in .imp/config.json with a resolvable key.
+    """
+    import os
+
+    # Direct Anthropic key
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+
+    # Custom backend configured?
+    cfg = load_config()
+    llm = cfg.get("llm") or {}
+    if llm.get("base_url"):
+        # Has a custom backend — check if key is available
+        api_key_env = llm.get("api_key_env", "")
+        if not api_key_env or api_key_env == "ANTHROPIC_API_KEY":
+            return True  # No special key needed
+        if os.environ.get(api_key_env):
+            return True
+        # Check OS keychain
+        try:
+            from . import keystore
+            if keystore.get(api_key_env):
+                return True
+        except Exception:
+            pass
+        return False
+
+    # Try Claude Code CLI session (SDK can auth without explicit key)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 # ---------- gh / git helpers ----------
 
 
@@ -536,10 +584,17 @@ async def run_setup(
     )
     from claude_agent_sdk.types import ToolResultBlock
 
+    # Honor custom LLM backend config (e.g. Kimi via OpenRouter)
+    from .foreman_agent import _load_llm_config, _llm_sdk_kwargs
+
+    llm_cfg = _load_llm_config()
+    llm_kwargs = _llm_sdk_kwargs(llm_cfg)
+
     options = ClaudeAgentOptions(
         system_prompt=_build_setup_prompt(),
         can_use_tool=_allow_all,
         max_turns=30,
+        **llm_kwargs,
     )
     print("[setup] SDK options ready, starting agent loop...", file=sys.stderr)
 
@@ -568,7 +623,16 @@ async def run_setup(
                         if isinstance(block, TextBlock):
                             assistant_text_parts.append(block.text)
                         elif isinstance(block, ToolUseBlock):
-                            desc = (block.input or {}).get("description", block.name)
+                            # Non-Anthropic backends sometimes serialize tool input as a
+                            # JSON string instead of a dict — handle both.
+                            raw = block.input
+                            if isinstance(raw, str):
+                                try:
+                                    raw = json.loads(raw)
+                                except (json.JSONDecodeError, TypeError):
+                                    raw = {}
+                            args = raw if isinstance(raw, dict) else {}
+                            desc = args.get("description", block.name)
                             pending_tools[block.id] = (block.name, time.time())
                             if tool_start:
                                 await tool_start(block.name, {"description": desc})

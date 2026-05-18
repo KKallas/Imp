@@ -152,6 +152,62 @@ async def setup_status():
     return {"complete": complete}
 
 
+@app.get("/api/llm-presets")
+async def llm_presets():
+    """Return available LLM backend presets for the bootstrap UI."""
+    import importlib.util
+
+    options_path = _ROOT / "tools" / "llm" / "options.py"
+    spec = importlib.util.spec_from_file_location("llm_options", options_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return {"presets": mod.PRESETS}
+
+
+@app.post("/api/llm-bootstrap")
+async def llm_bootstrap(request: Request):
+    """Configure LLM backend before setup starts.
+
+    Accepts: {model, base_url, api_key_env, api_key}
+    Writes the llm block to .imp/config.json and stores the key in keychain.
+    """
+    data = await request.json()
+    model = data.get("model", "")
+    base_url = data.get("base_url", "")
+    api_key_env = data.get("api_key_env", "")
+    api_key = data.get("api_key", "")
+
+    if not model or not base_url:
+        return Response(
+            json.dumps({"error": "model and base_url are required"}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    # Write LLM config
+    cfg = _load_imp_config()
+    cfg["llm"] = {
+        "model": model,
+        "base_url": base_url,
+        "api_key_env": api_key_env or "ANTHROPIC_API_KEY",
+    }
+    _save_imp_config(cfg)
+
+    # Store API key in OS keychain if provided
+    if api_key and api_key_env:
+        from server import keystore
+        keystore.set(api_key_env, api_key)
+
+    return {"ok": True, "llm": cfg["llm"]}
+
+
+@app.get("/api/llm-status")
+async def llm_status():
+    """Check if any LLM backend is accessible."""
+    from server.setup_agent import has_llm_access
+    return {"has_access": has_llm_access()}
+
+
 @app.post("/api/reload-prompt")
 async def reload_prompt():
     """Force-reload the Foreman system prompt (re-scans tools and workflows)."""

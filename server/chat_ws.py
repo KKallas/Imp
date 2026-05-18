@@ -105,8 +105,27 @@ async def handle_ws_chat(ws: WebSocket) -> None:
 
     # Auto-start setup if needed
     try:
-        from server.setup_agent import is_setup_complete
+        from server.setup_agent import is_setup_complete, has_llm_access
         if not is_setup_complete():
+            # Check if we have any LLM access before starting the setup agent
+            if not has_llm_access():
+                # No Claude auth and no custom backend configured — ask user
+                # to configure an LLM backend first via the bootstrap UI.
+                await ws.send_json({"type": "need_llm_config"})
+                # Wait for the user to complete LLM bootstrap, then retry
+                while True:
+                    raw2 = await ws.receive_text()
+                    msg2 = json.loads(raw2)
+                    if msg2.get("type") == "llm_configured":
+                        # User completed bootstrap — re-check and proceed
+                        if has_llm_access():
+                            break
+                        else:
+                            await ws.send_json({"type": "need_llm_config"})
+                    elif msg2.get("type") == "message":
+                        # User tried to chat before configuring — remind them
+                        await ws.send_json({"type": "need_llm_config"})
+
             from server import setup_agent
 
             async def setup_say(t: str) -> None:
